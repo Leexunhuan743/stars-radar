@@ -19,7 +19,7 @@ import {
   seedHarvested,
 } from './documents.js'
 import { DIMS, EMBEDDING_MODEL, isEmbedding } from './embeddings.js'
-import { bindReadmeEvidence, buildReadmeEvidence } from './evidence.js'
+import { bindResultReadmeEvidence, buildReadmeEvidence } from './evidence.js'
 import {
   BadRequestError,
   booleanParam,
@@ -1025,17 +1025,19 @@ async function researchDocuments(env) {
 }
 
 async function attachReadmeEvidence(env, results, query) {
+  const manifest = await getReadmeManifest(env)
+
+  // Binding semantic README evidence to immutable generation identity is cheap: it only consults
+  // the already-loaded manifest, so every returned result gets complete provenance. Blob reads and
+  // literal snippet expansion remain capped to the top-N results below.
+  bindResultReadmeEvidence(results, manifest)
+
   const candidates = results
     .slice(0, README_EVIDENCE_MAX_RESULTS)
     .filter(result => /^[\w.-]+\/[\w.-]+$/.test(result.repo || ''))
-  const manifest = await getReadmeManifest(env)
 
   await Promise.all(candidates.map(async (result) => {
     const ref = manifest.repos?.[result.repo.toLowerCase()]
-    result.evidence = (result.evidence || []).map(item => bindReadmeEvidence(item, {
-      ref,
-      generation: manifest.generation,
-    }))
 
     const readmeState = {
       status: ref?.status === 'unavailable' ? 'unavailable' : (ref?.status === 'absent' ? 'absent' : 'missing'),
