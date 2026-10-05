@@ -49,8 +49,9 @@ export function buildReadmeEvidence({
   readmeSha256,
   contentSha256,
   ordinal,
+  fetchedAt,
 } = {}) {
-  const identity = chunkId || `${ref?.sha256 || 'live'}:${heading || 'README'}`
+  const identity = chunkId || ref?.sha256 || readmeSha256 || fetchedAt || `live:${heading || 'README'}`
   return {
     id: evidenceId(kind, repo, identity),
     kind,
@@ -60,6 +61,7 @@ export function buildReadmeEvidence({
     source: {
       kind: 'github_readme',
       url: repo ? `https://github.com/${repo}` : null,
+      fetched_at: fetchedAt || null,
       snapshot_at: generation?.published_at || null,
     },
     content: {
