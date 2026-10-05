@@ -949,7 +949,8 @@ async function handleRequest(req, env, ctx) {
       { description: TOOL_DEFINITIONS.get_radar_status.description, inputSchema: TOOL_DEFINITIONS.get_radar_status.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_radar_status.readOnly } },
       async () => {
         try {
-          const [catalog, rankings, vectors, harvested] = await Promise.all([
+          const [generation, catalog, rankings, vectors, harvested] = await Promise.all([
+            getDataGeneration(env),
             getCatalog(env),
             getRankings(env),
             getVectors(env),
@@ -962,6 +963,9 @@ async function handleRequest(req, env, ctx) {
               text: JSON.stringify({
                 workspace: 'Stars Radar',
                 version: VERSION,
+                data_generation: generation.id
+                  ? { id: generation.id, published_at: generation.published_at, commit: generation.commit }
+                  : null,
                 total_starred: Object.keys(catalog.repos || {}).length,
                 vector_db_capacity: vectorRecords.length,
                 repo_vector_count: vectorRecords.filter(record => record.kind === 'repo').length,
