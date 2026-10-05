@@ -224,6 +224,7 @@ jobs:
           aws configure set default.region auto
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           aws s3 cp "s3://${R2_BUCKET}/generations/${ACTIVE_GENERATION_ID}/readmes.json"             "${RUNNER_TEMP}/readmes.json" --endpoint-url "${endpoint}"
+          cp "${RUNNER_TEMP}/readmes.json" previous-readmes.json
           node --input-type=module - "${RUNNER_TEMP}/readmes.json" > "${RUNNER_TEMP}/readmes.tsv" <<'NODE'
           import fs from 'node:fs'
           const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
