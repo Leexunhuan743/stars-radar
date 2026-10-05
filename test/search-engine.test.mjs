@@ -221,3 +221,21 @@ test('explicit community searches are not truncated by mixed-view diversity poli
   assert.equal(byScope.length, 5, 'scope=rankings explicitly asks for a community result set')
   assert.equal(mixed.length, 2, 'the default mixed view keeps its discovery diversity cap')
 })
+
+
+test('a strong semantic vector can recover an ordinary feature absent from short metadata', () => {
+  const values = new Float32Array(DIMS)
+  values[0] = 1
+  const queryVector = new Float32Array(DIMS)
+  queryVector[0] = 0.9
+
+  const [result] = search('webdav', { scope: 'starred', explain: true }, {
+    catalog: { repos: { 'me/storage': { repo: 'me/storage', description: 'self-hosted data service' } } },
+    vectors: { values, names: ['me/storage'] },
+    queryVector,
+  })
+
+  assert.equal(result.repo, 'me/storage')
+  assert.deepEqual(result.explanation.channels, ['vector'])
+  assert.deepEqual(result.explanation.matched_subjects, [])
+})
