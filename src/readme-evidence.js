@@ -46,7 +46,7 @@ function upstreamReadmeBody(markdown) {
   if (!repo)
     return body
 
-  const generatedPrefix = '# ' + repo
+  const generatedPrefix = `# ${repo}`
   const generatedMarker = '> **分类 (Categories)**:'
   if (!body.startsWith(generatedPrefix) || !body.slice(0, 1200).includes(generatedMarker))
     return body
@@ -69,10 +69,18 @@ export function splitReadmeSections(markdown) {
   }
 
   for (const line of lines) {
-    const match = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/)
-    if (match) {
+    const leadingSpaces = line.length - line.trimStart().length
+    const candidate = leadingSpaces <= 3 ? line.trimStart() : line
+    let headingLevel = 0
+    while (headingLevel < 6 && candidate[headingLevel] === '#')
+      headingLevel++
+
+    if (leadingSpaces <= 3 && headingLevel > 0 && candidate[headingLevel] === ' ') {
       flush()
-      heading = cleanMarkdown(match[2]) || 'README'
+      let rawHeading = candidate.slice(headingLevel + 1).trim()
+      while (rawHeading.endsWith('#'))
+        rawHeading = rawHeading.slice(0, -1).trimEnd()
+      heading = cleanMarkdown(rawHeading) || 'README'
       continue
     }
     bodyLines.push(line)
@@ -110,7 +118,7 @@ export function findReadmeEvidence(markdown, query, intents, { limit = 2 } = {})
   const hits = []
 
   for (const section of splitReadmeSections(markdown)) {
-    const pool = (section.heading + ' ' + section.text).toLowerCase()
+    const pool = `${section.heading} ${section.text}`.toLowerCase()
     if (!matchesSubjectGate(pool, specificSubjects))
       continue
 
