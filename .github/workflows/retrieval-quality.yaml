@@ -62,9 +62,21 @@ jobs:
         run: |
           aws configure set default.region auto
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          aws s3 cp "s3://${R2_BUCKET}/active-generation.json" "${RUNNER_TEMP}/active-generation.json" --endpoint-url "${endpoint}"
-          active=$(node --input-type=module -e 'import fs from "node:fs"; import { parseGenerationPointer } from "./src/data-generation.js"; console.log(parseGenerationPointer(JSON.parse(fs.readFileSync(process.argv[1],"utf8"))).id)' "${RUNNER_TEMP}/active-generation.json")
           mkdir -p rankings data
+          if aws s3api head-object --bucket "${R2_BUCKET}" --key "active-generation.json" --endpoint-url "${endpoint}" >/dev/null 2>active.err; then
+            aws s3 cp "s3://${R2_BUCKET}/active-generation.json" "${RUNNER_TEMP}/active-generation.json" --endpoint-url "${endpoint}"
+            active=$(node --input-type=module -e 'import fs from "node:fs"; import { parseGenerationPointer } from "./src/data-generation.js"; console.log(parseGenerationPointer(JSON.parse(fs.readFileSync(process.argv[1],"utf8"))).id)' "${RUNNER_TEMP}/active-generation.json")
+            prefix="generations/${active}/"
+            echo "Evaluating immutable production generation ${active}"
+          elif grep -q "HeadObject" active.err && grep -Eq "\\(404\\)|NoSuchKey" active.err; then
+            prefix=""
+            echo "No v2 generation is active yet; evaluating the current legacy flat production plane before first migration."
+          else
+            echo "::error::Could not resolve the production retrieval plane:"
+            cat active.err
+            exit 1
+          fi
+          rm -f active.err
           for spec in \
             "catalog.json:catalog.json" \
             "rankings.json:rankings/rankings.json" \
@@ -73,9 +85,8 @@ jobs:
             "embeddings-index.json:embeddings-index.json"; do
             key="${spec%%:*}"
             local_path="${spec##*:}"
-            aws s3 cp "s3://${R2_BUCKET}/generations/${active}/${key}" "${local_path}" --endpoint-url "${endpoint}"
+            aws s3 cp "s3://${R2_BUCKET}/${prefix}${key}" "${local_path}" --endpoint-url "${endpoint}"
           done
-          echo "Evaluating active production generation ${active}"
 
       - name: Derive mandatory production benchmark
         run: node scripts/build_retrieval_benchmark_from_corpus.js --output data/retrieval-benchmark.derived.json
