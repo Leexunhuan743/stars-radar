@@ -94,6 +94,7 @@ export function compileResults({
                 ...(stats.kwWeight > 0 ? [stats.channel || 'keyword'] : []),
               ],
               keyword_weight: stats.kwWeight,
+              scoring_source: stats.scoringSource || null,
               vector_similarity: stats.vScore > 0 ? Number(stats.vScore.toFixed(4)) : null,
               matched_tokens: stats.evidence?.matched_tokens || [],
               matched_subjects: stats.evidence?.matched_subjects || [],
