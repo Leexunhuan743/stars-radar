@@ -6,7 +6,7 @@ import { analyzeQuery } from './query-analysis.js'
 import { fuseRankings } from './ranking.js'
 import { snippetAround } from './readme-evidence.js'
 import { compileResults } from './result-compiler.js'
-import { explainTextMatch, matchesSubjectGate, scoreText, termMatcher } from './scoring.js'
+import { explainTextMatch, intentMatchScore, matchesSubjectGate, scoreText, termMatcher } from './scoring.js'
 
 export function searchDocuments({ catalog, rankings, assetIndex, harvested, vectors, queryVector, intents }, query, { category, source, scope = 'all', limit = 5, min_score = 0.25, explain = false } = {}) {
   const genericIntents = intents
@@ -149,18 +149,20 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
         }
       }
 
-      // Intent group matches (synonym expansion)
+      // Intent groups are evidence dimensions, not bags of synonyms. Repeating several
+      // ontology words from one domain may strengthen a match slightly, but cannot outscore a
+      // repository that covers several distinct user requirements.
       for (const group of matchedGroups) {
         const groupWords = genericIntents[group] || []
-        for (const w of groupWords) {
-          if (matches(w)) {
-            if (queryTokens.includes(w))
-              score += 8
-            else score += 5
-            if (matchesReason(w))
-              score += 6
-          }
-        }
+        const matchedWords = groupWords.filter(matches)
+        if (matchedWords.length === 0)
+          continue
+        const explicitlyTyped = matchedWords.filter(word => queryTokens.includes(word))
+        score += explicitlyTyped.length > 0
+          ? 8 + Math.min(explicitlyTyped.length - 1, 2)
+          : intentMatchScore(groupWords, matches)
+        if (matchedWords.some(matchesReason))
+          score += 6
       }
 
       if (score > 0) {
