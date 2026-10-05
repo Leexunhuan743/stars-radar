@@ -211,27 +211,24 @@ async function handleRequest(req, env, ctx) {
     const authHeader = req.headers.get('Authorization')
     const apiKey = authHeader?.replace(/^bearer\s+/i, '').trim()
 
-    if (!env.MCP_API_KEY) {
-      // The two runtimes need different commands, and naming only the production one sends a
-      // developer running `wrangler dev` down a path that cannot work locally.
+    if (!env.MCP_API_KEY || !env.MCP_WRITE_API_KEY) {
       return errorResponse(
         'server_misconfigured',
-        'MCP_API_KEY is not set. Locally (`wrangler dev`) put it in `.dev.vars` — a plain environment '
-        + 'variable is not passed to the Worker. In production run: pnpm exec wrangler secret put MCP_API_KEY',
+        'MCP_API_KEY and MCP_WRITE_API_KEY are both required. Configure separate read and write credentials before starting the Worker.',
         500,
       )
     }
 
     const writeKey = env.MCP_WRITE_API_KEY
-    const canRead = apiKey === env.MCP_API_KEY || (writeKey && apiKey === writeKey)
-    const canWrite = writeKey ? apiKey === writeKey : apiKey === env.MCP_API_KEY
+    const canRead = apiKey === env.MCP_API_KEY || apiKey === writeKey
+    const canWrite = apiKey === writeKey
 
     if (!canRead) {
       return errorResponse('unauthorized', 'Invalid API key. Supply your key via Authorization: Bearer <KEY> header.', 401)
     }
 
-    // MCP_WRITE_API_KEY is optional for backward compatibility. When configured, MCP_API_KEY is
-    // strictly read-only while the write key can both read and mutate.
+    // Read and write capabilities are intentionally separate. The write credential may read so a
+    // privileged operator does not need to juggle two keys in one session; the read key never writes.
     const writeForbidden = () => errorResponse(
       'write_forbidden',
       'This credential is read-only. Use MCP_WRITE_API_KEY for capture or ingest operations.',
