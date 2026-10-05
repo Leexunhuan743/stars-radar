@@ -169,6 +169,10 @@ test('results expose ranking separately from factual fields and explain adds pro
         description: 'external description',
         reason: 'my research note',
         categories: ['research'],
+        fieldOrigins: {
+          reason: { source: 'catalog', snapshotAt: '2026-10-05T00:00:00Z', trust: 'user_trusted' },
+          categories: { source: 'github_lists', snapshotAt: '2026-10-05T00:00:00Z', trust: 'user_trusted' },
+        },
       },
     },
     explain: true,
@@ -188,6 +192,44 @@ test('results expose ranking separately from factual fields and explain adds pro
   assert.equal(result.evidence.find(item => item.kind === 'personal_note').trust, 'user_trusted')
   assert.equal(result.evidence.find(item => item.kind === 'repository_metadata').trust, 'external_structured')
   assert.equal(result.evidence.find(item => item.kind === 'repository_description').trust, 'external_untrusted')
+})
+
+test('field origins drive personal-note source and unknown prose is never promoted to user_trusted', () => {
+  const results = compile({
+    rrfMap: new Map([['a/b', vectorEntry({ kwWeight: 10 })]]),
+    repos: {
+      'a/b': {
+        repo: 'a/b',
+        reason: 'ingest reason',
+        summary: 'catalog summary',
+        fieldOrigins: {
+          reason: { source: 'ingest_journal', snapshotAt: '2026-10-05T01:00:00Z', trust: 'user_trusted' },
+          summary: { source: 'catalog', snapshotAt: '2026-10-05T00:00:00Z', trust: 'user_trusted' },
+        },
+      },
+    },
+    explain: true,
+    catalogSnapshotAt: '2026-10-05T00:00:00Z',
+  })
+
+  const result = results[0]
+  const reason = result.evidence.find(item => item.id === result.provenance.reason)
+  const summary = result.evidence.find(item => item.id === result.provenance.summary)
+  assert.equal(reason.source.kind, 'ingest_journal')
+  assert.equal(reason.source.snapshot_at, '2026-10-05T01:00:00Z')
+  assert.equal(summary.source.kind, 'catalog')
+  assert.equal(result.trust.reason, 'user_trusted')
+  assert.equal(result.trust.summary, 'user_trusted')
+
+  const [community] = compile({
+    rrfMap: new Map([['x/y', vectorEntry({ source: 'ranking', kwWeight: 10, extraItem: { summary: 'public feed summary' } })]]),
+    explain: true,
+    rankingSnapshotAt: '2026-10-05T02:00:00Z',
+  })
+  const externalSummary = community.evidence.find(item => item.id === community.provenance.summary)
+  assert.equal(externalSummary.kind, 'community_text')
+  assert.equal(externalSummary.trust, 'external_untrusted')
+  assert.equal(community.trust.summary, 'external_untrusted')
 })
 
 test('targetCategory matches the record categories case-insensitively', () => {
