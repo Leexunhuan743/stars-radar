@@ -2,11 +2,24 @@
 // Ordinary feature subjects may use a conservative semantic fallback because README evidence is
 // embedded even when GitHub's short metadata does not mention the feature.
 
-import { matchesSubjectGate } from './scoring.js'
+import { evaluateFacetCoverage, matchesSubjectGate } from './scoring.js'
 
 export const RRF_K = 60
 export const STARRED_BOOST = 1.5
 export const SEMANTIC_SUBJECT_FALLBACK = 0.65
+
+function mergeFacetCoverage(left, right, total) {
+  const matched = new Set([
+    ...(left?.matched_facets || []),
+    ...(right?.matched_facets || []),
+  ])
+  return {
+    matched: matched.size,
+    total,
+    ratio: total > 0 ? Number((matched.size / total).toFixed(4)) : null,
+    matched_facets: [...matched],
+  }
+}
 
 /**
  * @returns Map<repoName, {rrf, vScore, kwWeight, source, badge, tier?, extraItem?}>
@@ -18,6 +31,7 @@ export function fuseRankings({
   repos,
   specificSubjects,
   hardSubjects = specificSubjects,
+  facets = [],
 }) {
   const rrfMap = new Map()
 
@@ -47,6 +61,7 @@ export function fuseRankings({
     if (!matchesSubjectGate(pool, specificSubjects) && vScore < SEMANTIC_SUBJECT_FALLBACK)
       return
 
+    const vectorFacetCoverage = evaluateFacetCoverage(pool, facets)
     const cur = rrfMap.get(repo) || {
       rrf: 0,
       vScore,
@@ -54,10 +69,12 @@ export function fuseRankings({
       source: 'starred',
       badge: '⭐ Starred',
       vectorEvidence: semantic,
+      facetCoverage: vectorFacetCoverage,
     }
     cur.rrf += 1 / (RRF_K + rank + 1)
     cur.vScore = vScore
     cur.vectorEvidence = semantic || cur.vectorEvidence
+    cur.facetCoverage = mergeFacetCoverage(cur.facetCoverage, vectorFacetCoverage, facets.length)
     rrfMap.set(repo, cur)
   })
 
@@ -73,6 +90,7 @@ export function fuseRankings({
       extraItem: meta.item,
       sourceChannels: meta.sourceChannels,
       scoringSource: meta.scoringSource,
+      facetCoverage: meta.facetCoverage,
     }
     // Private stars keep their visibility without displacing relevance: the boost
     // only breaks ties, because relevance_score is the primary sort key.
@@ -87,6 +105,7 @@ export function fuseRankings({
     cur.channel = meta.channel || 'keyword'
     cur.sourceChannels = meta.sourceChannels || cur.sourceChannels
     cur.scoringSource = meta.scoringSource || cur.scoringSource
+    cur.facetCoverage = mergeFacetCoverage(cur.facetCoverage, meta.facetCoverage, facets.length)
     rrfMap.set(repo, cur)
   })
 
