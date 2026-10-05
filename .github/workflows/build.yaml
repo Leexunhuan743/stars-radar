@@ -1,0 +1,391 @@
+name: Update Repos Info
+
+on:
+  schedule:
+    # Runs every 6 hours (00:22, 06:22, 12:22, 18:22 UTC) to keep community rankings and new stars fresh
+    - cron: '22 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Least privilege: this job publishes through R2 and the Worker's own credentials, never through
+    # git. It carried `contents: write` for the commit-and-push step that used to publish its
+    # outputs; that step is gone (§P2), so the token no longer needs to write anything.
+    permissions:
+      contents: read
+    # Two overlapping runs would race on the bucket-root `aws s3 sync --delete` and on the document
+    # uploads, so they are serialised. (The race used to include `git push` as well; that half went
+    # away when the job stopped committing.)
+    concurrency:
+      group: stars-radar-data-publish
+      cancel-in-progress: false
+    # Job-level env so the deploy step's `if:` can actually see the token: a step's
+    # own `env:` block is not available while its `if:` is evaluated, which made the
+    # deploy step unreachable no matter how the secret was configured.
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: |
+            - recursive: true
+              args: [--frozen-lockfile, --strict-peer-dependencies]
+
+      - name: Download existing vector pair (embeddings.bin + index) from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          aws configure set default.region auto
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          # The vector bin and its index must travel together: restoring only the
+          # binary leaves the committed index in place and the pair disagrees.
+          for obj in embeddings.bin embeddings-index.json embeddings-fingerprints.json; do
+            # Existence is decided by head-object's own answer. Matching text in a
+            # failed transfer report also matched credential failures such as
+            # InvalidAccessKeyId ("... does not exist ..."), which were then reported
+            # as a first run and deleted the local pair. The 404 signature is not anchored on
+            # the start of the line: the CLI prefixes it with "aws: [ERROR]: ", and an anchored
+            # pattern turns a genuine first run into a credentials failure.
+            if aws s3api head-object --bucket "${R2_BUCKET}" --key "${obj}" \
+              --endpoint-url "${endpoint}" >/dev/null 2>dl.err; then
+              aws s3 cp "s3://${R2_BUCKET}/${obj}" "${obj}" --endpoint-url "${endpoint}"
+            elif grep -q "HeadObject" dl.err && grep -Eq "\(404\)|NoSuchKey" dl.err; then
+              echo "${obj} does not exist yet in R2 (first run), continuing with clean index."
+              rm -f embeddings.bin embeddings-index.json embeddings-fingerprints.json dl.err
+              break
+            else
+              echo "::error::Failed to check ${obj} in R2 due to a credential, permission, or network error:"
+              cat dl.err
+              exit 1
+            fi
+          done
+          rm -f dl.err
+
+      - name: Download the ingest journal from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          aws configure set default.region auto
+          mkdir -p state/ingest-journal
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          # The journal is the source of truth for user ingests and is never rewritten by this
+          # job — it is only read, folded into asset-state.json, and left in place. Not being
+          # here on a first run is normal, but a listing failure must not be mistaken for an
+          # empty journal: an empty fold silently drops every curated entry.
+          #
+          # `aws s3 ls` cannot draw that line: it exits non-zero for a prefix that does not exist
+          # yet, so a first run looked like a credentials failure. `list-objects-v2` answers 200
+          # with zero keys for an absent prefix and only fails when the request itself fails.
+          # Prints how many objects live under a prefix. Exits non-zero only when the request
+          # itself failed, so a prefix that is merely absent counts as zero instead of looking
+          # like a credentials problem.
+          #
+          # The count comes from the JSON listing, not `--query KeyCount`: that prints the literal
+          # string "None" for an empty listing, which then compares as a string against a number
+          # and makes the guards depending on it silently inert.
+          count_objects() {
+            local listing
+            listing=$(aws s3api list-objects-v2 --bucket "${R2_BUCKET}" --prefix "$1" \
+              --endpoint-url "${endpoint}" --output json 2>"${RUNNER_TEMP}/stars-radar-ls.err") || return 1
+            printf '%s' "${listing}" | grep -c '"Key"' || true
+          }
+          if keys=$(count_objects "state/ingest-journal/"); then
+            echo "Ingest journal objects in R2: ${keys}"
+            aws s3 sync "s3://${R2_BUCKET}/state/ingest-journal/" state/ingest-journal/ \
+              --endpoint-url "${endpoint}" \
+              --exclude "*" --include "*.jsonl"
+            echo "Ingest journal objects downloaded: $(find state/ingest-journal -name '*.jsonl' | wc -l)"
+          else
+            echo "::error::Could not list the ingest journal prefix. An empty fold would silently drop every curated entry, so this run is stopped rather than publishing an asset state without them:"
+            cat "${RUNNER_TEMP}/stars-radar-ls.err"
+            exit 1
+          fi
+
+      - name: Download the data-plane baseline from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          aws configure set default.region auto
+          mkdir -p rankings
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          # These three documents used to be committed to git, which made the checkout the
+          # build's input and allowed a stale copy to overwrite what the Worker had published.
+          # R2 is their only authority now. Each entry is "<bucket key>:<local path>": the bucket
+          # is flat (rankings.json sits at the root while the checkout keeps it under rankings/).
+          #
+          # Existence is decided by head-object's own answer, so a first run (404) is
+          # distinguishable from a credential or network failure — the latter must stop the job,
+          # because rebuilding from an empty baseline would publish an empty catalogue and
+          # rankings document over the live ones. The error text is matched without anchoring on
+          # its start: this CLI prefixes errors with "aws: [ERROR]: ".
+          for spec in "catalog.json:catalog.json" "rankings.json:rankings/rankings.json" "asset-state.json:asset-state.json"; do
+            key="${spec%%:*}"
+            local_path="${spec##*:}"
+            if aws s3api head-object --bucket "${R2_BUCKET}" --key "${key}" \
+              --endpoint-url "${endpoint}" >/dev/null 2>dl.err; then
+              aws s3 cp "s3://${R2_BUCKET}/${key}" "${local_path}" --endpoint-url "${endpoint}"
+            elif grep -q "HeadObject" dl.err && grep -Eq "\(404\)|NoSuchKey" dl.err; then
+              echo "${key} does not exist yet in R2 (first run); this run starts from an empty baseline."
+            else
+              echo "::error::Failed to check ${key} in R2 due to a credential, permission, or network error:"
+              cat dl.err
+              exit 1
+            fi
+          done
+          # Recorded so the read-back step can prove the Worker-owned prefixes survived the run.
+          # Nothing in this job writes them; a decrease means something deleted ingests, and with
+          # no snapshots that would be unrecoverable.
+          # Prints how many objects live under a prefix. Exits non-zero only when the request
+          # itself failed, so a prefix that is merely absent counts as zero instead of looking
+          # like a credentials problem.
+          #
+          # The count comes from the JSON listing, not `--query KeyCount`: that prints the literal
+          # string "None" for an empty listing, which then compares as a string against a number
+          # and makes the guards depending on it silently inert.
+          count_objects() {
+            local listing
+            listing=$(aws s3api list-objects-v2 --bucket "${R2_BUCKET}" --prefix "$1" \
+              --endpoint-url "${endpoint}" --output json 2>"${RUNNER_TEMP}/stars-radar-ls.err") || return 1
+            printf '%s' "${listing}" | grep -c '"Key"' || true
+          }
+          before=$(count_objects "state/ingest-journal/")
+          echo "BEFORE_INGEST_OBJECTS=${before}" >> "${GITHUB_ENV}"
+          echo "Ingest journal objects before this run: ${before}"
+          rm -f dl.err
+
+      - name: Download Worker-side probe captures from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          aws configure set default.region auto
+          mkdir -p state/probe-captures
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          # Read-only, like the ingest journal: captures are folded into asset-state.json and
+          # left on R2. They used to be listed, synced, and then deleted with `s3 rm --recursive`
+          # after the merge — a delete that raced with the Worker appending new captures, and one
+          # that the "no snapshots" decision makes unaffordable (there is no copy to fall back on).
+          #
+          # `list-objects-v2` rather than `s3 ls`: an absent prefix is zero keys, not a failure.
+          # Prints how many objects live under a prefix. Exits non-zero only when the request
+          # itself failed, so a prefix that is merely absent counts as zero instead of looking
+          # like a credentials problem.
+          #
+          # The count comes from the JSON listing, not `--query KeyCount`: that prints the literal
+          # string "None" for an empty listing, which then compares as a string against a number
+          # and makes the guards depending on it silently inert.
+          count_objects() {
+            local listing
+            listing=$(aws s3api list-objects-v2 --bucket "${R2_BUCKET}" --prefix "$1" \
+              --endpoint-url "${endpoint}" --output json 2>"${RUNNER_TEMP}/stars-radar-ls.err") || return 1
+            printf '%s' "${listing}" | grep -c '"Key"' || true
+          }
+          if keys=$(count_objects "state/probe-captures/"); then
+            echo "Probe capture objects in R2: ${keys}"
+            aws s3 sync "s3://${R2_BUCKET}/state/probe-captures/" state/probe-captures/ \
+              --endpoint-url "${endpoint}" \
+              --exclude "*" --include "*.jsonl"
+            echo "Probe capture objects downloaded: $(find state/probe-captures -name '*.jsonl' | wc -l)"
+          else
+            echo "::error::Could not list the probe capture prefix. An empty fold would silently drop every probe hit, so this run is stopped rather than publishing an asset state without them:"
+            cat "${RUNNER_TEMP}/stars-radar-ls.err"
+            exit 1
+          fi
+
+      - name: Download the README corpus from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          aws configure set default.region auto
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          mkdir -p stars
+          # The corpus is the previous run's output and lives on R2 as `<owner>/<repo>.md` at the
+          # bucket root (the local `stars/` is a staging directory this job uploads from and
+          # `--delete`s back to). Restoring it is what makes the sync incremental: with an empty
+          # stars/ every repository looks new, so all 932 READMEs were re-fetched from GitHub on
+          # every run — ~932 API calls and ~17 MB for files that had not changed.
+          #
+          # Only the corpus is restored. The JSON documents have their own step, and `state/**`
+          # belongs to the Worker.
+          aws s3 sync "s3://${R2_BUCKET}/" stars/ \
+            --endpoint-url "${endpoint}" \
+            --exclude "*" --include "*/*.md"
+          echo "Restored $(find stars -name '*.md' | wc -l) README(s) from R2 for the incremental sync."
+
+      - name: Fetch starred repos and READMEs (incremental)
+        run: pnpm build:stars
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          SILICONFLOW_KEY: ${{ secrets.SILICONFLOW_KEY }}
+
+      - name: Build unified asset index (accumulate starred + community + probes)
+        run: node scripts/asset_store.js
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Run test suite (schema snapshot + retrieval + asset store guards)
+        run: pnpm test
+
+      - name: Verify embeddings.bin invariant before upload
+        run: node scripts/verify_vector_pair.js
+
+      # This job is the one that actually writes production, and it is not verified by ci.yaml (a
+      # scheduled run has no push to hang a check on), so it verifies its own bundle before
+      # publishing — the same dry run the merge gate does.
+      - name: Verify the Worker bundles before publishing
+        run: pnpm exec wrangler deploy --dry-run --outdir dist
+
+      - name: Upload to Cloudflare R2 (parallel, retried)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_MAX_ATTEMPTS: '5'
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          aws configure set default.region auto
+          aws configure set s3.max_concurrent_requests 32
+          aws configure set s3.max_attempts 5
+          # `--delete` only ever removes what this job owns (the stars/ corpus). Every exclusion
+          # below names a prefix owned by somebody else: the vector pair and JSON documents are
+          # uploaded explicitly further down, and `state/*` is the Worker's append-only journal
+          # and captures — without that one, a single schedule tick would delete every ingest.
+          #
+          # A sweep is only safe if there is something to sweep with. An empty stars/ while the
+          # catalogue lists repositories means the corpus never arrived (a failed restore, a
+          # pruned checkout), and syncing that over the bucket would delete every README while
+          # reporting success. An empty corpus *with* an empty catalogue is a different situation:
+          # a fresh install has nothing to publish and the bucket holds nothing to lose, so the
+          # sweep flag is dropped instead of failing the first run.
+          local_readmes=$(find stars -name '*.md' 2>/dev/null | wc -l)
+          catalogued=$(node -e 'const fs=require("fs");try{console.log(Object.keys(JSON.parse(fs.readFileSync("catalog.json","utf-8")).repos||{}).length)}catch{console.log(0)}')
+          echo "Local READMEs: ${local_readmes}; repositories in catalog.json: ${catalogued}"
+          if [ "${local_readmes}" -eq 0 ] && [ "${catalogued}" -gt 0 ]; then
+            echo "::error::catalog.json lists ${catalogued} repositories but stars/ holds no READMEs. Sweeping the bucket with --delete here would delete the entire corpus; stopping instead."
+            exit 1
+          fi
+          sweep=()
+          if [ "${local_readmes}" -gt 0 ]; then
+            sweep=(--delete)
+            echo "Publishing ${local_readmes} READMEs."
+          else
+            echo "No README corpus to publish yet (empty catalogue); syncing without --delete."
+          fi
+          aws s3 sync stars/ "s3://${R2_BUCKET}/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --exclude "embeddings*" \
+            --exclude "*.json" \
+            --exclude "state/*" \
+            "${sweep[@]}" \
+            --cli-read-timeout 60 \
+            --cli-connect-timeout 20
+          aws s3 cp catalog.json "s3://${R2_BUCKET}/catalog.json" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp rankings/rankings.json "s3://${R2_BUCKET}/rankings.json" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          # Presence is tested separately from the upload: `[ -f x ] && cmd || echo`
+          # reports a FAILED upload as "file not found", hiding real errors.
+          # The vector pair may legitimately be absent, but only on a fresh install: the
+          # invariant step above already fails whenever a missing pair would silently
+          # disable semantic search. asset-index.json has no such excuse — scripts/asset_store.js
+          # writes it on every run, so its absence means the accumulator stage did not run
+          # and R2 would keep serving the previous index.
+          for obj in embeddings.bin embeddings-index.json embeddings-fingerprints.json embeddings-manifest.json; do
+            if [ -f "${obj}" ]; then
+              aws s3 cp "${obj}" "s3://${R2_BUCKET}/${obj}" \
+                --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+            else
+              echo "${obj} is absent: this run produced no vector pair (empty catalogue)."
+            fi
+          done
+          if [ ! -f asset-index.json ]; then
+            echo "::error::asset-index.json was not produced by this run. scripts/asset_store.js writes it unconditionally, so the asset store stage failed; uploading now would leave the Worker serving a stale index."
+            exit 1
+          fi
+          aws s3 cp asset-index.json "s3://${R2_BUCKET}/asset-index.json" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          # asset-state.json is the accumulator every run reads back: first_seen_at,
+          # trending_count, probe_hits and tier cannot be recomputed, so R2 is now its only
+          # home. It is uploaded last, after the index derived from it succeeded.
+          aws s3 cp asset-state.json "s3://${R2_BUCKET}/asset-state.json" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+      # Uploads are reported per object and nothing re-reads them: a transfer that silently
+      # truncated, or an upload that landed on a different key, would leave the Worker serving the
+      # previous revision of a document while this job reports success. Reading each uploaded
+      # document back and comparing its byte count is the cheapest way to make that impossible —
+      # the bucket is the only copy now, so "it uploaded" has to mean "it is there".
+      - name: Read the uploaded documents back from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          aws configure set default.region auto
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          # Each step gets its own shell, so the counting helper has to be defined here as well —
+          # using it without the definition failed the job with `command not found`.
+          count_objects() {
+            local listing
+            listing=$(aws s3api list-objects-v2 --bucket "${R2_BUCKET}" --prefix "$1" \
+              --endpoint-url "${endpoint}" --output json 2>"${RUNNER_TEMP}/stars-radar-ls.err") || return 1
+            printf '%s' "${listing}" | grep -c '"Key"' || true
+          }
+          failed=0
+          # "<bucket key>:<local path>" — the bucket is flat, the checkout is not.
+          for spec in "catalog.json:catalog.json" "rankings.json:rankings/rankings.json" "asset-index.json:asset-index.json" "asset-state.json:asset-state.json" "embeddings.bin:embeddings.bin" "embeddings-index.json:embeddings-index.json" "embeddings-fingerprints.json:embeddings-fingerprints.json" "embeddings-manifest.json:embeddings-manifest.json"; do
+            key="${spec%%:*}"
+            local_path="${spec##*:}"
+            expected=$(stat -c %s "${local_path}")
+            actual=$(aws s3api head-object --bucket "${R2_BUCKET}" --key "${key}" \
+              --endpoint-url "${endpoint}" --query ContentLength --output text 2>/dev/null || echo "missing")
+            if [ "${actual}" = "${expected}" ]; then
+              echo "✓ ${key}: ${actual} bytes in R2"
+            else
+              echo "::error::${key} is ${expected} bytes locally but ${actual} in R2 — the Worker would keep serving the previous revision."
+              failed=1
+            fi
+          done
+          # The Worker-owned prefixes must survive the run: nothing in this job writes them, and
+          # deleting one would be unrecoverable (there are no snapshots).
+          for prefix in state/ingest-journal/ state/probe-captures/; do
+            count=$(count_objects "${prefix}")
+            before=${BEFORE_INGEST_OBJECTS:-0}
+            echo "✓ ${prefix}: ${count} object(s) in R2"
+            if [ "${prefix}" = "state/ingest-journal/" ] && [ "${count}" -lt "${before}" ]; then
+              echo "::error::${prefix} held ${before} object(s) before this run and ${count} after it; ingests were destroyed."
+              failed=1
+            fi
+          done
+          exit ${failed}
+
+      - name: Deploy Cloudflare Worker (skipped unless CLOUDFLARE_API_TOKEN is set)
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: pnpm exec wrangler deploy
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

@@ -1,0 +1,44 @@
+name: CI
+
+# Merge gate. build.yaml only runs on a schedule, so before this workflow existed
+# nothing verified a push or a pull request: lint was never run anywhere and the
+# test suite only ran as a side effect of the 6-hourly data job.
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: |
+            - recursive: true
+              args: [--frozen-lockfile, --strict-peer-dependencies]
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      # Catches the drift class that only shows up at runtime: an invalid
+      # wrangler config or a module that cannot be bundled for workerd.
+      - name: Build (dry-run bundle for Cloudflare Workers)
+        run: pnpm exec wrangler deploy --dry-run --outdir dist

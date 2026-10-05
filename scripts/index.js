@@ -1,0 +1,203 @@
+import process from 'node:process'
+import fs from 'fs-extra'
+import { embeddingRepositories, foldJournalFiles } from '../src/ingest-journal.js'
+import { CATALOG_KEY, INGEST_JOURNAL_PREFIX, LOCAL_STARS_DIR, localReadmePath } from '../src/object-keys.js'
+import { needsReadmeDownload } from './download-plan.js'
+import { collectAllRankings } from './fetch_rankings.js'
+import { fetchUserLists, summarizeCategories } from './github-lists.js'
+import { fetchReadme, getAllStarredRepos, mapLimit } from './github_stars.js'
+import { useEnvProxy } from './outbound-proxy.js'
+import { renderEnrichedMarkdown } from './star_export.js'
+import { buildRepositoryVectors } from './vector_pipeline.js'
+
+const CONCURRENCY = 10
+
+if (!process.env.GITHUB_TOKEN) {
+  throw new Error('GITHUB_TOKEN is not set')
+}
+
+const TOKEN = process.env.GITHUB_TOKEN
+
+async function main() {
+  // The run's outbound calls (GitHub, the rankings sources, SiliconFlow, R2 over REST) all go
+  // through undici, so the proxy is installed once here rather than as an import-time side effect of
+  // whichever module happened to be loaded first.
+  useEnvProxy()
+
+  try {
+    fs.ensureDirSync(LOCAL_STARS_DIR)
+    let oldCatalog = { categories: [], repos: {} }
+    if (fs.existsSync(CATALOG_KEY)) {
+      try {
+        oldCatalog = fs.readJsonSync(CATALOG_KEY)
+      }
+      catch (e) {
+        // Unreadable is not the same as absent. Starting fresh from a corrupt catalogue would
+        // re-download all 900+ READMEs and, worse, publish a catalogue that has lost every
+        // cached category and reason.
+        throw new Error(`Could not read ${CATALOG_KEY}: ${e.message}. Fix or remove the file before syncing.`)
+      }
+    }
+
+    console.log('Fetching live starred repositories list from GitHub...')
+    const liveStarred = await getAllStarredRepos(TOKEN)
+    console.log(`Live stars count: ${liveStarred.length}`)
+
+    const liveNames = new Set(liveStarred.map(r => r.full_name))
+
+    // 1.5. Fetch live GitHub User Lists memberships as definitive categorization authority
+    const liveCloud = await fetchUserLists(TOKEN)
+    const liveMemberships = liveCloud.repoToCategories
+    const liveCategories = liveCloud.categoriesList
+
+    // 1. Remove deleted or unstarred repos from disk
+    const existingDirs = fs.readdirSync('stars')
+    let pruned = 0
+    for (const owner of existingDirs) {
+      const ownerPath = `stars/${owner}`
+      if (!fs.statSync(ownerPath).isDirectory())
+        continue
+      for (const file of fs.readdirSync(ownerPath)) {
+        if (!file.endsWith('.md'))
+          continue
+        const repoName = `${owner}/${file.replace(/\.md$/, '')}`
+        if (!liveNames.has(repoName)) {
+          fs.removeSync(`${ownerPath}/${file}`)
+          pruned++
+        }
+      }
+      if (fs.readdirSync(ownerPath).length === 0) {
+        fs.removeSync(ownerPath)
+      }
+    }
+    if (pruned > 0) {
+      console.log(`Pruned ${pruned} unstarred repositories from local stars/`)
+    }
+
+    // 2. Identify new or modified repositories
+    const toDownload = []
+    const updatedCatalogRepos = {}
+
+    for (const repo of liveStarred) {
+      const name = repo.full_name
+      const cached = oldCatalog.repos?.[name]
+      const targetFilePath = localReadmePath(name)
+      const fileExists = fs.existsSync(targetFilePath)
+
+      // Retain or initialize metadata (prioritizing live cloud lists over stale cache)
+      const categories = liveMemberships[name] || ['everything-else']
+
+      const repoInfo = {
+        repo: name,
+        name: repo.name,
+        owner: repo.owner.login,
+        url: repo.html_url || `https://github.com/${name}`,
+        stars: repo.stargazers_count,
+        license: repo.license?.spdx_id || null,
+        created_at: repo.created_at,
+        archived: repo.archived,
+        description: repo.description || cached?.description || '',
+        categories,
+        reason: cached?.reason || '',
+        summary: cached?.summary || '',
+        language: repo.language || cached?.language || '',
+        topics: repo.topics || cached?.topics || [],
+        primaryFunction: cached?.primaryFunction || null,
+        platforms: cached?.platforms || [],
+        facets: cached?.facets || [],
+        pushedAt: repo.pushed_at,
+        starredAt: repo.starred_at || cached?.starredAt,
+      }
+
+      updatedCatalogRepos[name] = repoInfo
+
+      const needsDownload = needsReadmeDownload({
+        fileExists,
+        cachedEntry: cached,
+        pushedAt: repo.pushed_at,
+      })
+
+      if (needsDownload) {
+        toDownload.push(repoInfo)
+      }
+    }
+
+    console.log(`Repos needing README download: ${toDownload.length} / ${liveStarred.length}`)
+
+    // A README that could not be fetched must leave NO file behind. `needsReadmeDownload` treats an
+    // existing file as up to date, so writing an empty document here would make the failure
+    // permanent: the corpus would keep a README-less entry for a repository that has one, and the
+    // next run would skip it. Leaving the file absent means the next run retries, and the failures
+    // are reported below rather than counted as successes.
+    let readmeFailures = []
+    if (toDownload.length > 0) {
+      const run = await mapLimit(toDownload, CONCURRENCY, async (repoInfo) => {
+        const readme = await fetchReadme(TOKEN, repoInfo.repo)
+        const content = renderEnrichedMarkdown(repoInfo, readme || '')
+        const ownerDir = `${LOCAL_STARS_DIR}/${repoInfo.owner}`
+        fs.ensureDirSync(ownerDir)
+        fs.writeFileSync(`stars/${repoInfo.repo}.md`, content, 'utf-8')
+      })
+      readmeFailures = run.failures
+      if (readmeFailures.length > 0) {
+        const named = readmeFailures.slice(0, 10).map(f => f.item.repo).join(', ')
+        console.warn(
+          `Could not fetch ${readmeFailures.length} README(s); they were left out of the corpus and will be `
+          + `retried on the next run: ${named}${readmeFailures.length > 10 ? ', …' : ''}`,
+        )
+      }
+    }
+
+    if (readmeFailures.length > 0)
+      throw new Error(`README sync failed for ${readmeFailures.length} repositories; refusing to publish a partial corpus. Retry the build.`)
+
+    const categoriesList = summarizeCategories(liveCategories, updatedCatalogRepos)
+
+    const newCatalog = {
+      version: '1.0',
+      generatedAt: new Date().toISOString(),
+      totalRepos: Object.keys(updatedCatalogRepos).length,
+      categories: categoriesList,
+      repos: updatedCatalogRepos,
+    }
+
+    // 3.5 Auto-embed any new starred repositories into Vector DB.
+    // Deliberately NOT wrapped in try/catch: a swallowed embedding failure leaves the
+    // vector pair stale while the export artifacts move ahead, which silently costs
+    // every newly starred repo its semantic search. The vector pipeline refuses to
+    // write or upload a pair whose bin and index disagree, so failing here stops the
+    // run instead of shipping a false success. (Note: the bin and index are two
+    // separate writes, so an interruption between them can leave a mismatched pair
+    // on disk — the next run detects that and rebuilds rather than propagating it.)
+    const journalFiles = fs.existsSync(INGEST_JOURNAL_PREFIX)
+      ? fs.readdirSync(INGEST_JOURNAL_PREFIX).filter(name => name.endsWith('.jsonl')).map(name => ({ key: name, text: fs.readFileSync(`${INGEST_JOURNAL_PREFIX}${name}`, 'utf-8') }))
+      : []
+    const { harvested, problems } = foldJournalFiles(journalFiles)
+    if (problems.length > 0)
+      throw new Error(`Could not read the ingest journal for embedding: ${problems.join('; ')}`)
+    await buildRepositoryVectors(embeddingRepositories(updatedCatalogRepos, harvested))
+
+    // catalog.json is written only once the vector stage has succeeded: failing after
+    // it used to leave a half-updated product set on disk.
+    fs.writeJsonSync(CATALOG_KEY, newCatalog, { spaces: 2 })
+    console.log(`Saved updated ${CATALOG_KEY}`)
+
+    // 5. Collect and update community rankings.
+    // Not wrapped in try/catch: the per-source fetches inside already degrade softly via
+    // Promise.allSettled, so anything thrown here is the baseline read or the write — i.e.
+    // the run would publish an empty community layer and drop harvested entries.
+    console.log('Refreshing community rankings...')
+    await collectAllRankings()
+
+    console.log(
+      `Incremental sync complete: ${toDownload.length - readmeFailures.length} downloaded, `
+      + `${readmeFailures.length} failed, ${pruned} pruned, ${liveStarred.length} total.`,
+    )
+  }
+  catch (e) {
+    console.error(`Fatal sync error: ${e}`, e?.response, e?.response?.headers)
+    process.exit(1)
+  }
+}
+
+await main()

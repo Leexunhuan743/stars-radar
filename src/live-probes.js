@@ -1,0 +1,315 @@
+import { appendJsonLines } from './append-store.js'
+import { buildCommunityIndex } from './community-index.js'
+import { parseDateRange } from './date-range.js'
+import { getCatalog, getHarvested, getRankings } from './documents.js'
+import { buildRepositoryQuery } from './github-query.js'
+import { enrichLiveResults } from './live-results.js'
+import { PROBE_CAPTURE_PREFIX } from './object-keys.js'
+import { buildProbeCaptures, PROBE_MAX_CAPTURES, PROBE_MIN_STARS } from './probe-capture.js'
+import { ProbeRequestError, readGithubSearch, requestProbe } from './probe-errors.js'
+
+export async function searchGithubLive(env, {
+  query = '',
+  language,
+  minStars = 15,
+  sort = 'stars',
+  order = 'desc',
+  since,
+  until,
+  limit = 10,
+  persist = false,
+} = {}, { fetcher = fetch } = {}) {
+  const catalog = await getCatalog(env)
+  const reposCatalog = catalog.repos || {}
+  const rankings = await getRankings(env)
+
+  // Inspect the user-supplied query for qualifiers we auto-inject, so we never
+  // duplicate them (GitHub Search API rejects conflicting duplicates with 422).
+  const userQuery = (query || '').trim()
+  const githubQuery = buildRepositoryQuery({ query: userQuery, since, until, minStars, language, parseDateRange })
+
+  const apiUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(githubQuery)}&sort=${sort}&order=${order}&per_page=${Math.min(limit, 30)}`
+
+  const headers = {
+    'User-Agent': 'Stars-Radar-MCP',
+    'Accept': 'application/vnd.github.v3+json',
+  }
+  if (env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`
+  }
+
+  const operation = 'GitHub repository search'
+  const response = await requestProbe(apiUrl, { headers, signal: AbortSignal.timeout(15000) }, fetcher, operation)
+  const data = await readGithubSearch(response, operation)
+  const items = data.items
+  const totalCount = data.total_count
+
+  // Live results carry the same badge as hybrid search, so they read the same community view —
+  // derived once, in one place, from the journal plus the community layers.
+  const communitySet = buildCommunityIndex({ rankings, harvested: await getHarvested(env) })
+
+  const enriched = enrichLiveResults(items, { reposCatalog, communityIndex: communitySet })
+
+  // 开集探测沉淀: persist=true 时, 把满足预过滤的发现项捕获到 R2 state/probe-captures/<key>.jsonl
+  // (每次响应一个新 key, 由 CI 的 asset_store 合并; 探针命中永不自动进向量库)
+  //
+  // 这里以前写的是一个按日共享的 probes/<date>.jsonl, 读出来拼接再整体写回 —— 同一天两个
+  // isolate 同时捕获就会互相覆盖。改成每次一个新对象后, 捕获之间不可能冲突。
+  // 预过滤规则本身在 src/probe-capture.js（纯函数，可测）。
+  //
+  // 结果里如实报告捕获了几条：`persist=true` 是调用方的一个请求，只说"我记下了"而没有任何
+  // 可核对的字段，就等于让调用方凭信任相信一次副作用发生了（捕获失败只写 console.warn，
+  // 线上的调用方看不到）。
+  let capture = null
+  if (persist && enriched.length > 0) {
+    const captures = buildProbeCaptures(enriched, { query: query || githubQuery })
+    if (captures.length > 0) {
+      try {
+        capture = { captured: captures.length, capture_key: await appendJsonLines(env, PROBE_CAPTURE_PREFIX, captures) }
+      }
+      catch (e) {
+        capture = { captured: 0, capture_error: e.message || String(e) }
+      }
+    }
+    else {
+      capture = { captured: 0, capture_skipped: `no discovery met the capture rule (>=${PROBE_MIN_STARS} stars, described, top ${PROBE_MAX_CAPTURES})` }
+    }
+  }
+
+  return {
+    source: 'github_live_search',
+    query: githubQuery,
+    total_found: totalCount,
+    ...(typeof data.incomplete_results === 'boolean' ? { incomplete_results: data.incomplete_results } : {}),
+    returned: enriched.length,
+    repos: enriched,
+    ...(capture ? { capture } : {}),
+  }
+}
+
+export async function searchGithubCode(env, {
+  query = '',
+  repo,
+  language,
+  extension,
+  path: filePath,
+  limit = 5,
+} = {}, { fetcher = fetch } = {}) {
+  const cleanQ = query.trim()
+  if (!cleanQ)
+    throw new ProbeRequestError('invalid_query', 'GitHub code search requires a non-empty code term.', 400)
+
+  const qParts = [cleanQ]
+  if (repo)
+    qParts.push(`repo:${repo.trim()}`)
+  if (language)
+    qParts.push(`language:${language.trim()}`)
+  if (extension)
+    qParts.push(`extension:${extension.trim().replace(/^\./, '')}`)
+  if (filePath)
+    qParts.push(`path:${filePath.trim()}`)
+
+  if (!extension && !filePath) {
+    qParts.push('-filename:package-lock.json -filename:pnpm-lock.yaml -filename:yarn.lock -extension:min.js')
+  }
+
+  const githubQuery = qParts.join(' ')
+  const apiUrl = `https://api.github.com/search/code?q=${encodeURIComponent(githubQuery)}&per_page=${Math.min(limit, 15)}`
+
+  const headers = {
+    'User-Agent': 'Stars-Radar-MCP',
+    'Accept': 'application/vnd.github.v3.text-match+json',
+  }
+  if (env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`
+  }
+
+  const operation = 'GitHub code search'
+  const response = await requestProbe(apiUrl, { headers, signal: AbortSignal.timeout(15000) }, fetcher, operation)
+  const data = await readGithubSearch(response, operation)
+  const items = data.items
+
+  const matches = items.map((item, idx) => {
+    const repoName = item.repository?.full_name || 'unknown'
+    const targetPath = item.path
+    const htmlUrl = item.html_url
+    const textMatch = item.text_matches?.[0]
+    const fragment = (textMatch?.fragment || '')
+      .trim()
+      .replace(/!\[.*?\]\(https?:\/\/.*?\)/g, '')
+
+    const ext = targetPath.split('.').pop() || ''
+
+    return {
+      rank: idx + 1,
+      repo: repoName,
+      path: targetPath,
+      url: htmlUrl,
+      language: ext,
+      snippet: fragment ? `\`\`\`${ext}\n${fragment}\n\`\`\`` : '(No snippet fragment returned)',
+    }
+  })
+
+  return {
+    source: 'github_code_search',
+    query: githubQuery,
+    total_found: data.total_count,
+    ...(typeof data.incomplete_results === 'boolean' ? { incomplete_results: data.incomplete_results } : {}),
+    returned: matches.length,
+    notice: 'Untrusted external code snippets are provided for structural and syntax reference only.',
+    matches,
+  }
+}
+
+export async function searchWebTech(env, {
+  query = '',
+  domain,
+  freshness = 'all',
+  limit = 5,
+} = {}, { fetcher = fetch } = {}) {
+  let fullQuery = query.trim()
+  if (!fullQuery)
+    throw new ProbeRequestError('invalid_query', 'Technical web search requires a non-empty query.', 400)
+  if (domain)
+    fullQuery += ` site:${domain.trim()}`
+
+  // 1. Primary Provider: Brave Search API
+  if (env.BRAVE_SEARCH_API_KEY) {
+    try {
+      const freshnessMap = { day: 'pd', week: 'pw', month: 'pm', year: 'py', all: '' }
+      const bFreshness = freshnessMap[freshness] || ''
+      let bUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(fullQuery)}&count=${limit}`
+      if (bFreshness)
+        bUrl += `&freshness=${bFreshness}`
+
+      const resp = await fetcher(bUrl, {
+        headers: {
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip',
+          'X-Subscription-Token': env.BRAVE_SEARCH_API_KEY,
+        },
+        signal: AbortSignal.timeout(8000),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        // Brave's documented web section is nullable, even in a valid search response.
+        const emptySearch = data?.type === 'search' && typeof data.query?.original === 'string' && data.web == null
+        if (!Array.isArray(data?.web?.results) && !emptySearch)
+          throw new ProbeRequestError('invalid_upstream_response', 'Brave search returned an invalid result list.')
+        const webResults = data.web?.results || []
+        const parsed = webResults.slice(0, limit).map((r, i) => ({
+          rank: i + 1,
+          title: r.title?.replace(/<[^>]+>/g, '').trim(),
+          url: r.url,
+          snippet: r.description?.replace(/<[^>]+>/g, '').trim() || '',
+          source: 'brave_search',
+        }))
+        return {
+          provider: 'brave_search',
+          freshness_applied: freshness !== 'all',
+          query: fullQuery,
+          count: parsed.length,
+          results: parsed,
+        }
+      }
+    }
+    catch (e) {
+      console.warn('Brave Search failed, falling back:', e.message)
+    }
+  }
+
+  // 2. Secondary Provider: Tavily Search API
+  if (env.TAVILY_API_KEY) {
+    try {
+      const resp = await fetcher('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: env.TAVILY_API_KEY,
+          query: fullQuery,
+          search_depth: 'basic',
+          max_results: limit,
+          ...(freshness !== 'all' ? { time_range: freshness } : {}),
+        }),
+        signal: AbortSignal.timeout(8000),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        if (!Array.isArray(data.results))
+          throw new ProbeRequestError('invalid_upstream_response', 'Tavily search returned an invalid result list.')
+        const results = data.results.slice(0, limit).map((r, i) => ({
+          rank: i + 1,
+          title: r.title,
+          url: r.url,
+          snippet: r.content || '',
+          source: 'tavily_search',
+        }))
+        return {
+          provider: 'tavily_search',
+          freshness_applied: freshness !== 'all',
+          query: fullQuery,
+          count: results.length,
+          results,
+        }
+      }
+    }
+    catch (e) {
+      console.warn('Tavily Search failed, falling back:', e.message)
+    }
+  }
+
+  // 3. Keyless Fallback: DuckDuckGo HTML parser
+  try {
+    const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(fullQuery)}`
+    const resp = await fetcher(ddgUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(6000),
+    })
+    if (resp.ok) {
+      const html = await resp.text()
+      const items = []
+      const regex = /<h2 class="result__title">[\s\S]*?<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g
+      let match = regex.exec(html)
+      while (match !== null && items.length < limit) {
+        let rawUrl = match[1]
+        const mUddg = rawUrl.match(/uddg=([^&]+)/)
+        if (mUddg)
+          rawUrl = decodeURIComponent(mUddg[1])
+        // Skip sponsored/ad results: DuckDuckGo routes ads through its y.js click
+        // tracker carrying ad_domain / ad_type / ad_provider params, instead of the
+        // uddg= organic redirect. They match the same result__a markup but are not
+        // organic web results, so drop them.
+        const isAd = /duckduckgo\.com\/y\.js/.test(rawUrl)
+          || /[?&](?:ad_domain|ad_type|ad_provider)=/.test(rawUrl)
+        if (!isAd) {
+          const title = match[2].replace(/<[^>]+>/g, '').trim()
+          const snippet = match[3].replace(/<[^>]+>/g, '').trim()
+          items.push({
+            rank: items.length + 1,
+            title,
+            url: rawUrl,
+            snippet,
+            source: 'duckduckgo_html',
+          })
+        }
+        match = regex.exec(html)
+      }
+      if (items.length > 0 || /<(?:div|p)[^>]*class=["'][^"']*\bno-results\b/i.test(html)) {
+        return {
+          provider: 'duckduckgo_html (keyless)',
+          freshness_applied: false,
+          query: fullQuery,
+          count: items.length,
+          results: items,
+        }
+      }
+    }
+  }
+  catch (e) {
+    console.warn('DuckDuckGo HTML fallback failed:', e.message)
+  }
+
+  throw new ProbeRequestError('search_unavailable', 'All configured web search providers failed or the keyless response could not be parsed. Configure BRAVE_SEARCH_API_KEY or TAVILY_API_KEY, or retry.', 503)
+}

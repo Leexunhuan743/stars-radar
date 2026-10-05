@@ -1,0 +1,938 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { createMcpHandler } from 'agents/mcp'
+import { z } from 'zod'
+import defaultIntents from '../data/intents.json'
+import { appendIngest } from './append-store.js'
+import { listReadmePage } from './archive-candidates.js'
+import { DocumentUnavailableError } from './document-cache.js'
+import {
+  dataPlaneStatus,
+  getAssetIndex,
+  getCatalog,
+  getHarvested,
+  getRankings,
+  getVectors,
+  JOURNAL_TTL_MS,
+  seedHarvested,
+} from './documents.js'
+import { DIMS, EMBEDDING_MODEL, isEmbedding } from './embeddings.js'
+import {
+  BadRequestError,
+  booleanParam,
+  corsHeaders,
+  enumParam,
+  errorResponse,
+  intParam,
+  okResponse,
+  optionalString,
+  PayloadTooLargeError,
+  readJsonBody,
+} from './http.js'
+import { foldIngestEntries } from './ingest-journal.js'
+import { searchGithubCode, searchGithubLive, searchWebTech } from './live-probes.js'
+import { ProbeRequestError, probeToolFailure } from './probe-errors.js'
+import { staleSources } from './rankings-document.js'
+import { compareRepositories, getRepositoryDetails, RepositoryRequestError } from './repository-details.js'
+import { RESULT_SOURCES } from './result-compiler.js'
+import { retryUntilAcceptable } from './retry.js'
+import { searchDocuments } from './search-engine.js'
+import { DEFAULT_INGEST_CATEGORIES, TOOL_DEFINITIONS } from './tool-schemas.js'
+
+const SILICONFLOW_URL = 'https://api.siliconflow.cn/v1/embeddings'
+
+// A failed ingest is a failed request. The status says whose problem it is: the caller's (400), the
+// upstream provider's (502), or ours (503).
+const INGEST_ERROR_STATUS = {
+  invalid_repo: 400,
+  github_star_failed: 502,
+  ingest_failed: 503,
+}
+
+// An ingest body is a repository name, a reason and a list of categories. 8 KiB is roughly forty
+// times the largest legitimate payload, and small enough that reading one costs the isolate nothing.
+const INGEST_BODY_LIMIT = 8 * 1024
+
+// How long the rest of the fleet may still be serving the previous fold, quoted back to the caller
+// so the statement matches what actually happens. Derived from the cache it describes.
+const JOURNAL_TTL_SECONDS = Math.round(JOURNAL_TTL_MS / 1000)
+
+// Query embeddings go through the shared retry shape (src/retry.js); the count lives here because
+// it is this caller's policy, not the mechanism's.
+const EMBED_ATTEMPTS = 2
+
+/**
+ * Whether the community data a response is built from came from the latest run.
+ *
+ * Every layer is collected from a different upstream and a failure keeps the previous copy, so
+ * without this a caller cannot tell a list refreshed an hour ago from one that has been riding on
+ * an old copy for days.
+ */
+function communityFreshness(rankings) {
+  const stale = staleSources(rankings)
+  return {
+    updatedAt: rankings?.updatedAt || null,
+    staleLayers: stale.map(entry => entry.name),
+    oldestFetchAt: stale
+      .map(entry => entry.at)
+      .filter(Boolean)
+      .sort()[0] || null,
+  }
+}
+
+// Single Embedding Authority: SiliconFlow BAAI/bge-m3.
+// Cross-provider fallback (e.g. to Cloudflare Workers AI) is intentionally prohibited:
+// differing quantization (FP16 vs INT8), pooling layers, and tokenization produce
+// non-isomorphic vector spaces. Comparing vectors across engines results in severe
+// geometric drift and corrupted cosine similarity scores.
+async function getQueryEmbedding(query, env) {
+  const sfKey = env.SILICONFLOW_KEY
+  const sfUrl = env.SILICONFLOW_URL || SILICONFLOW_URL
+
+  if (!sfKey) {
+    console.warn('[Embedding] SILICONFLOW_KEY not configured. Vector search disabled.')
+    return null
+  }
+
+  try {
+    return await retryUntilAcceptable(
+      async (attempt) => {
+        const resp = await fetch(sfUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${sfKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: EMBEDDING_MODEL,
+            input: query,
+          }),
+          signal: AbortSignal.timeout(10000),
+        })
+        if (!resp.ok)
+          console.warn(`[Embedding] SiliconFlow returned HTTP ${resp.status} (attempt ${attempt}/${EMBED_ATTEMPTS})`)
+        return resp.ok ? await resp.json() : null
+      },
+      // A 200 with an unusable body is retried like a failure: providers answer rate limits and
+      // proxy errors with one. Only a well-formed vector of the expected width is an answer.
+      payload => isEmbedding(payload?.data?.[0]?.embedding),
+      {
+        attempts: EMBED_ATTEMPTS,
+        baseMs: 400,
+        onRetry: ({ attempt, error }) => {
+          if (error)
+            console.warn(`[Embedding] SiliconFlow request failed (attempt ${attempt}/${EMBED_ATTEMPTS}):`, error.message || String(error))
+        },
+      },
+    ).then((payload) => {
+      return payload ? new Float32Array(payload.data[0].embedding) : null
+    })
+  }
+  catch (err) {
+    console.warn(`[Embedding] SiliconFlow request failed: ${err.message || String(err)}`)
+  }
+
+  console.warn('[Embedding] Single authority SiliconFlow unavailable after retries. Falling back cleanly to lexical intent mode without corrupted vector drift.')
+  return null
+}
+
+function enrichCategoriesWithTopRepos(catalog) {
+  const categories = catalog.categories || []
+  const hasTopRepos = categories.some(c => c.topRepos && c.topRepos.length > 0)
+  if (hasTopRepos) {
+    return categories
+  }
+  const catRepos = new Map()
+  for (const [name, info] of Object.entries(catalog.repos || {})) {
+    for (const cat of (info.categories || [])) {
+      const key = cat.toLowerCase()
+      if (!catRepos.has(key))
+        catRepos.set(key, [])
+      catRepos.get(key).push({ name, stars: info.stars || 0 })
+    }
+  }
+  for (const list of catRepos.values()) {
+    list.sort((a, b) => b.stars - a.stars)
+  }
+  return categories.map((c) => {
+    const top = (c.topRepos && c.topRepos.length > 0)
+      ? c.topRepos
+      : (catRepos.get(c.name.toLowerCase()) || []).slice(0, 3)
+    return {
+      ...c,
+      topRepos: top,
+    }
+  })
+}
+
+// The archive bucket also holds the JSON state objects, and `R2.list` applies its limit to
+// every object rather than to the READMEs. Listing therefore has to page past them, with a
+// cap so a bucket that never yields a README cannot spin forever.
+const MAX_LIST_PAGES = 20
+
+export default {
+  fetch: async (req, env, ctx) => {
+    try {
+      return await handleRequest(req, env, ctx)
+    }
+    catch (e) {
+      // A document that could not be read is a server-side fault, and it must not be answered
+      // with an empty-but-successful result: that is exactly how an R2 outage used to look
+      // like "no repositories matched".
+      if (e instanceof DocumentUnavailableError) {
+        console.error(e)
+        return errorResponse('data_unavailable', e.message, 503)
+      }
+      // A parameter the caller can fix is a 400, not a crash: the REST surface used to hand
+      // whatever it was given to the engine, so a typo became a wrong answer instead of an error.
+      if (e instanceof BadRequestError)
+        return errorResponse('invalid_parameter', e.message, 400)
+      if (e instanceof ProbeRequestError)
+        return errorResponse(e.code, e.message, e.status, { retryAfterSeconds: e.retryAfterSeconds })
+      if (e instanceof RepositoryRequestError)
+        return errorResponse('repository_unavailable', e.message, e.status)
+      throw e
+    }
+  },
+}
+
+async function handleRequest(req, env, ctx) {
+  // Preflight carries no Authorization header, so it must be answered before the key check.
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders() })
+  }
+
+  {
+    const url = new URL(req.url)
+    const authHeader = req.headers.get('Authorization')
+    const apiKey = authHeader?.replace(/^bearer\s+/i, '').trim()
+
+    if (!env.MCP_API_KEY) {
+      // The two runtimes need different commands, and naming only the production one sends a
+      // developer running `wrangler dev` down a path that cannot work locally.
+      return errorResponse(
+        'server_misconfigured',
+        'MCP_API_KEY is not set. Locally (`wrangler dev`) put it in `.dev.vars` — a plain environment '
+        + 'variable is not passed to the Worker. In production run: pnpm exec wrangler secret put MCP_API_KEY',
+        500,
+      )
+    }
+
+    if (apiKey !== env.MCP_API_KEY) {
+      return errorResponse('unauthorized', 'Invalid API key. Supply your key via Authorization: Bearer <KEY> header.', 401)
+    }
+
+    // Direct REST API Endpoints
+    if (url.pathname === '/health') {
+      const catalog = await getCatalog(env)
+      const rankings = await getRankings(env)
+      const assetIndex = await getAssetIndex(env)
+      const vectors = await getVectors(env)
+      const harvested = await getHarvested(env)
+      const dataPlane = dataPlaneStatus()
+      return okResponse({
+        // `degraded` is the difference between "nothing is published yet" and "R2 could not be
+        // read": both used to answer 200 ok with an empty body of data.
+        status: dataPlane.degraded ? 'degraded' : 'ok',
+        name: 'Stars Radar',
+        version: '1.0.0',
+        vectorModel: EMBEDDING_MODEL,
+        vectorDimensions: DIMS,
+        totalStarred: catalog.totalRepos || Object.keys(catalog.repos || {}).length,
+        totalAssets: assetIndex.totalRepos || Object.keys(assetIndex.repos || {}).length,
+        vectorCount: vectors.names?.length || 0,
+        harvestedIngests: harvested.length,
+        dataPlane: dataPlane.statuses,
+        // Which community layers are actually from the latest run, and how old the oldest one is.
+        // `updatedAt` alone cannot answer that: it moves on every run whether or not a layer
+        // refreshed, which is how stale data came to look fresh.
+        communityFreshness: communityFreshness(rankings),
+        rankingsAvailable: {
+          trendingCategories: Object.keys(rankings.trending || {}),
+          topStarredLanguages: Object.keys(rankings.topStarred || {}),
+          helloGitHubPicks: (rankings.helloGitHub || []).length,
+          agentSkillsTop: (rankings.agentSkills || []).length,
+          agentSkillRepos60d: (rankings.agentSkillRepos || []).length,
+        },
+      })
+    }
+
+    if (url.pathname === '/api/repository') {
+      const include_readme = booleanParam(url.searchParams.get('include_readme'))
+      const refresh = booleanParam(url.searchParams.get('refresh'))
+      return okResponse(await getRepositoryDetails(env, await researchDocuments(env), url.searchParams.get('repo'), { include_readme, refresh }))
+    }
+
+    if (url.pathname === '/api/compare') {
+      const repos = (url.searchParams.get('repos') || '').split(',')
+      const refresh = booleanParam(url.searchParams.get('refresh'))
+      return okResponse(await compareRepositories(env, await researchDocuments(env), repos, { refresh }))
+    }
+
+    if (url.pathname === '/api/categories') {
+      const catalog = await getCatalog(env)
+      return okResponse(enrichCategoriesWithTopRepos(catalog))
+    }
+
+    if (url.pathname === '/api/search') {
+      const q = url.searchParams.get('q') || ''
+      const category = optionalString(url.searchParams.get('category'))
+      const scope = enumParam(url.searchParams.get('scope'), { parameter: 'scope', allowed: ['all', 'starred', 'rankings'], fallback: 'all' })
+      const source = enumParam(url.searchParams.get('source'), { parameter: 'source', allowed: RESULT_SOURCES, fallback: undefined })
+      const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 10, min: 1, max: 20 })
+      const explain = booleanParam(url.searchParams.get('explain'))
+      const results = await performHybridSearch(env, q, { category, source, scope, limit, explain })
+      return okResponse(results, { pretty: true })
+    }
+
+    if (url.pathname === '/api/trending') {
+      const rankings = await getRankings(env)
+      const cat = url.searchParams.get('category') || 'overall_daily'
+      const list = cat === 'breakout_weekly' ? (rankings.breakoutWeekly || []) : (rankings.trending?.[cat] || [])
+      return okResponse(list, { meta: communityFreshness(rankings) })
+    }
+
+    if (url.pathname === '/api/skills') {
+      const rankings = await getRankings(env)
+      const type = enumParam(url.searchParams.get('type'), { parameter: 'type', allowed: ['all', 'repos'], fallback: 'all' })
+      const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 50, min: 1, max: 100 })
+      const meta = communityFreshness(rankings)
+      if (type === 'repos') {
+        return okResponse((rankings.agentSkillRepos || []).slice(0, limit), { meta })
+      }
+      const list = (rankings.agentSkills || []).slice(0, limit)
+      return okResponse(list, { meta })
+    }
+
+    if (url.pathname === '/api/live') {
+      const q = url.searchParams.get('q') || ''
+      const language = optionalString(url.searchParams.get('language'))
+      const minStars = intParam(url.searchParams.get('min_stars'), { parameter: 'min_stars', fallback: 15, min: 0 })
+      const sort = enumParam(url.searchParams.get('sort'), { parameter: 'sort', allowed: ['stars', 'updated', 'forks'], fallback: 'stars' })
+      const since = optionalString(url.searchParams.get('since'))
+      const until = optionalString(url.searchParams.get('until'))
+      const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 10, min: 1, max: 30 })
+      const persist = booleanParam(url.searchParams.get('persist'))
+      let result
+      try {
+        result = await searchGithubLive(env, {
+          query: q,
+          language,
+          minStars,
+          sort,
+          since,
+          until,
+          limit,
+          persist,
+        })
+      }
+      catch (e) {
+        // RangeError is the date-window parser rejecting caller input; anything
+        // else is a server-side fault and must not be reported as a bad request.
+        if (!(e instanceof RangeError))
+          throw e
+        return errorResponse('invalid_date_range', e.message, 400)
+      }
+      return okResponse(result, { pretty: true })
+    }
+
+    if (url.pathname === '/api/code') {
+      const q = url.searchParams.get('q') || ''
+      const repo = optionalString(url.searchParams.get('repo'))
+      const language = optionalString(url.searchParams.get('language'))
+      const extension = optionalString(url.searchParams.get('extension'))
+      const path = optionalString(url.searchParams.get('path'))
+      const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 5, min: 1, max: 15 })
+      const result = await searchGithubCode(env, {
+        query: q,
+        repo,
+        language,
+        extension,
+        path,
+        limit,
+      })
+      return okResponse(result, { pretty: true })
+    }
+
+    if (url.pathname === '/api/web') {
+      const q = url.searchParams.get('q') || ''
+      const domain = optionalString(url.searchParams.get('domain'))
+      const freshness = enumParam(url.searchParams.get('freshness'), { parameter: 'freshness', allowed: ['all', 'day', 'week', 'month', 'year'], fallback: 'all' })
+      const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 5, min: 1, max: 10 })
+      const result = await searchWebTech(env, {
+        query: q,
+        domain,
+        freshness,
+        limit,
+      })
+      return okResponse(result, { pretty: true })
+    }
+
+    if (url.pathname === '/api/ingest' && req.method === 'POST') {
+      try {
+        const body = z.object(TOOL_DEFINITIONS.star_and_ingest_repo.inputSchema).parse(await readJsonBody(req, { limit: INGEST_BODY_LIMIT }))
+        const result = await starAndIngestRepo(env, body)
+        // A domain failure (`invalid_repo`, `github_star_failed`, `ingest_failed`) is a failure:
+        // returning it inside a 200 with `ok: true` would make the envelope contradict itself, and
+        // a caller checking only the status would record a failed ingest as a success.
+        if (result?.error)
+          return errorResponse(result.error, result.message, INGEST_ERROR_STATUS[result.error] ?? 500)
+        return okResponse(result, { pretty: true })
+      }
+      catch (e) {
+        if (e instanceof PayloadTooLargeError)
+          return errorResponse('payload_too_large', e.message, 413)
+        // A body that is not JSON, or a `repo` that is missing entirely, never reaches the domain.
+        return errorResponse('invalid_request', e.message, 400)
+      }
+    }
+
+    // Initialize MCP Server with global tool-selection instructions
+    // NOTE: instructions must live in the SECOND argument (ServerOptions), not
+    // in serverInfo — the SDK only reads options.instructions into
+    // InitializeResult (server/index.js: `_instructions = options?.instructions`).
+    const server = new McpServer(
+      { name: 'Stars Radar MCP', version: '1.0.0' },
+      {
+        instructions: [
+          'Stars Radar is an open-source intelligence and GitHub stars retrieval cockpit.',
+          'Choose a tool by the task:',
+          '  1. search_github_stars: Curated high-trust anchor (your personal stars + ingested tools). Use when looking for the user\'s own saved tools or vetted solutions.',
+          '  2. search_github_live: Open-world GitHub explorer. Use when looking for newly born, trending, or unstarred tools across GitHub.',
+          '  3. search_github_code: Public repository code and API usage snippets.',
+          '  4. search_web_tech: Technical documentation, blogs, and forums beyond GitHub.',
+          '  5. star_and_ingest_repo: Graduate discoveries from search_github_live into permanent curated stars (only upon user confirmation).',
+          'Context management: prefer limit=5..10 and minimal fields to protect the context window.',
+        ].join('\n'),
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.search_github_stars.name,
+      { description: TOOL_DEFINITIONS.search_github_stars.description, inputSchema: TOOL_DEFINITIONS.search_github_stars.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_stars.readOnly } },
+      async ({ query, category, source, scope = 'all', limit = 5, min_score = 0.25, explain = false }) => {
+        try {
+          const results = await performHybridSearch(env, query, { category, source, scope, limit, min_score, explain })
+          return {
+            content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
+          }
+        }
+        catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Search failed: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.get_repo_readme.name,
+      { description: TOOL_DEFINITIONS.get_repo_readme.description, inputSchema: TOOL_DEFINITIONS.get_repo_readme.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_repo_readme.readOnly } },
+      async ({ repo, include_readme = true, refresh = false }) => {
+        try {
+          const result = await getRepositoryDetails(env, await researchDocuments(env), repo, { include_readme, refresh })
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+        }
+        catch (err) {
+          return { isError: true, content: [{ type: 'text', text: err.message }] }
+        }
+      },
+    )
+
+    server.registerTool(
+      TOOL_DEFINITIONS.compare_repositories.name,
+      { description: TOOL_DEFINITIONS.compare_repositories.description, inputSchema: TOOL_DEFINITIONS.compare_repositories.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.compare_repositories.readOnly } },
+      async ({ repos, refresh = false }) => {
+        try {
+          const result = await compareRepositories(env, await researchDocuments(env), repos, { refresh })
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+        }
+        catch (err) {
+          return { isError: true, content: [{ type: 'text', text: err.message }] }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.get_trending_repos.name,
+      { description: TOOL_DEFINITIONS.get_trending_repos.description, inputSchema: TOOL_DEFINITIONS.get_trending_repos.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_trending_repos.readOnly } },
+      async ({ category = 'overall_daily', limit = 10 }) => {
+        try {
+          const rankings = await getRankings(env)
+          const catalog = await getCatalog(env)
+          const starredSet = new Set(Object.keys(catalog.repos || {}).map(k => k.toLowerCase()))
+
+          let rawList = []
+          if (category === 'breakout_weekly') {
+            rawList = rankings.breakoutWeekly || []
+          }
+          else {
+            rawList = rankings.trending?.[category] || []
+          }
+
+          const enriched = rawList.slice(0, limit).map((r) => {
+            const isStarred = starredSet.has(r.repo.toLowerCase())
+            return {
+              ...r,
+              is_starred: isStarred,
+              badge: isStarred ? '⭐ Starred' : (category === 'breakout_weekly' ? '🚀 Breakout New' : '🔥 Trending'),
+            }
+          })
+
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                trending_category: category,
+                total: enriched.length,
+                repos: enriched,
+              }, null, 2),
+            }],
+          }
+        }
+        catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Failed to fetch trending: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.search_github_live.name,
+      { description: TOOL_DEFINITIONS.search_github_live.description, inputSchema: TOOL_DEFINITIONS.search_github_live.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_live.readOnly } },
+      async ({ query, language, min_stars = 15, sort = 'stars', order = 'desc', since, until, limit = 10, persist = false }) => {
+        try {
+          const result = await searchGithubLive(env, { query, language, minStars: min_stars, sort, order, since, until, limit, persist })
+          return {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          }
+        }
+        catch (err) {
+          if (err instanceof ProbeRequestError)
+            return probeToolFailure(err)
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Live GitHub search failed: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.search_github_code.name,
+      { description: TOOL_DEFINITIONS.search_github_code.description, inputSchema: TOOL_DEFINITIONS.search_github_code.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_code.readOnly } },
+      async ({ query, repo, language, extension, path: filePath, limit = 5 }) => {
+        try {
+          const result = await searchGithubCode(env, { query, repo, language, extension, path: filePath, limit })
+          return {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          }
+        }
+        catch (err) {
+          if (err instanceof ProbeRequestError)
+            return probeToolFailure(err)
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `GitHub code search failed: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.search_web_tech.name,
+      { description: TOOL_DEFINITIONS.search_web_tech.description, inputSchema: TOOL_DEFINITIONS.search_web_tech.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_web_tech.readOnly } },
+      async ({ query, domain, freshness = 'all', limit = 5 }) => {
+        try {
+          const result = await searchWebTech(env, { query, domain, freshness, limit })
+          return {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          }
+        }
+        catch (err) {
+          if (err instanceof ProbeRequestError)
+            return probeToolFailure(err)
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Web search failed: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.star_and_ingest_repo.name,
+      { description: TOOL_DEFINITIONS.star_and_ingest_repo.description, inputSchema: TOOL_DEFINITIONS.star_and_ingest_repo.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.star_and_ingest_repo.readOnly } },
+      async ({ repo, reason, categories = DEFAULT_INGEST_CATEGORIES }) => {
+        try {
+          const result = await starAndIngestRepo(env, { repo, reason, categories })
+          return {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          }
+        }
+        catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Star and ingest failed: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.get_top_skills.name,
+      { description: TOOL_DEFINITIONS.get_top_skills.description, inputSchema: TOOL_DEFINITIONS.get_top_skills.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_top_skills.readOnly } },
+      async ({ type = 'all', limit = 20 }) => {
+        try {
+          const rankings = await getRankings(env)
+          const allSkills = rankings.agentSkills || []
+          const skillRepos = rankings.agentSkillRepos || []
+
+          let list
+          if (type === 'repos') {
+            list = skillRepos.slice(0, limit)
+          }
+          else if (type === 'rising') {
+            list = allSkills.filter(s => (s.tags || []).includes('rising')).slice(0, limit)
+          }
+          else if (type === 'trending') {
+            list = allSkills.filter(s => (s.tags || []).includes('trending')).slice(0, limit)
+          }
+          else if (type === 'skills') {
+            list = allSkills.slice(0, limit)
+          }
+          else {
+            list = {
+              top_skills: allSkills.slice(0, Math.min(limit, 25)),
+              skill_repos_60d: skillRepos.slice(0, Math.min(limit, 25)),
+            }
+          }
+
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                source: 'LinklyAI 60d Multi-board + GitHub 60d Breakout Repos',
+                filter: type,
+                count: Array.isArray(list) ? list.length : (list.top_skills.length + list.skill_repos_60d.length),
+                result: list,
+              }, null, 2),
+            }],
+          }
+        }
+        catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Failed to fetch agent skills: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.get_hellogithub_picks.name,
+      { description: TOOL_DEFINITIONS.get_hellogithub_picks.description, inputSchema: TOOL_DEFINITIONS.get_hellogithub_picks.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_hellogithub_picks.readOnly } },
+      async ({ category, limit = 10 }) => {
+        try {
+          const rankings = await getRankings(env)
+          let picks = rankings.helloGitHub || []
+          if (category) {
+            const target = category.toLowerCase().trim()
+            picks = picks.filter(p => p.category?.toLowerCase().includes(target))
+          }
+          const sliced = picks.slice(0, limit)
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                source: 'HelloGitHub Monthly Curations',
+                count: sliced.length,
+                picks: sliced,
+              }, null, 2),
+            }],
+          }
+        }
+        catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Failed to fetch HelloGitHub picks: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.list_categories.name,
+      { description: TOOL_DEFINITIONS.list_categories.description, inputSchema: TOOL_DEFINITIONS.list_categories.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.list_categories.readOnly } },
+      async () => {
+        try {
+          const catalog = await getCatalog(env)
+          const enriched = enrichCategoriesWithTopRepos(catalog)
+          const categories = enriched.map(c => ({
+            name: c.name,
+            description: c.description,
+            count: c.count,
+            top_repos: (c.topRepos || []).map(r => `${r.name} (⭐ ${r.stars})`),
+          }))
+          return {
+            content: [{ type: 'text', text: JSON.stringify(categories, null, 2) }],
+          }
+        }
+        catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Failed to list categories: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.get_category_repos.name,
+      { description: TOOL_DEFINITIONS.get_category_repos.description, inputSchema: TOOL_DEFINITIONS.get_category_repos.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_category_repos.readOnly } },
+      async ({ category, limit = 25 }) => {
+        try {
+          const catalog = await getCatalog(env)
+          const targetCat = category.trim().toLowerCase()
+          const matched = []
+
+          for (const [name, info] of Object.entries(catalog.repos || {})) {
+            const cats = (info.categories || []).map(c => c.toLowerCase())
+            if (cats.includes(targetCat)) {
+              matched.push({
+                repo: name,
+                stars: info.stars,
+                url: info.url,
+                description: info.description,
+                reason: info.reason,
+                summary: info.summary,
+              })
+            }
+          }
+
+          matched.sort((a, b) => (b.stars || 0) - (a.stars || 0))
+          const sliced = matched.slice(0, limit)
+
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                category: targetCat,
+                total_in_category: matched.length,
+                returned: sliced.length,
+                repos: sliced,
+              }, null, 2),
+            }],
+          }
+        }
+        catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Failed to fetch category repos: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.list_starred_repos.name,
+      { description: TOOL_DEFINITIONS.list_starred_repos.description, inputSchema: TOOL_DEFINITIONS.list_starred_repos.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.list_starred_repos.readOnly } },
+      async ({ limit = 20, cursor }) => {
+        try {
+          // Pagination lives in the tested module: `R2.list` limits every object, not the
+          // READMEs, so a single page can be all JSON state and look like an empty library.
+          const result = await listReadmePage(env.R2, { limit, cursor }, MAX_LIST_PAGES)
+
+          return {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          }
+        }
+        catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Failed to list repositories: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.get_radar_status.name,
+      { description: TOOL_DEFINITIONS.get_radar_status.description, inputSchema: TOOL_DEFINITIONS.get_radar_status.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_radar_status.readOnly } },
+      async () => {
+        try {
+          const [catalog, rankings, vectors, harvested] = await Promise.all([
+            getCatalog(env),
+            getRankings(env),
+            getVectors(env),
+            getHarvested(env),
+          ])
+          const vectorNames = vectors?.names || []
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                workspace: 'Stars Radar',
+                version: '1.0.0',
+                total_starred: Object.keys(catalog.repos || {}).length,
+                vector_db_capacity: vectorNames.length,
+                vector_dimensions: DIMS,
+                vector_model: EMBEDDING_MODEL,
+                intent_domains: Object.keys(defaultIntents || {}).length,
+                community_layers: {
+                  trending_categories: Object.keys(rankings.trending || {}).length,
+                  breakout_new_stars: (rankings.breakoutWeekly || []).length,
+                  hello_github_picks: (rankings.helloGitHub || []).length,
+                  agent_skills: (rankings.agentSkills || []).length,
+                  agent_skill_repos_60d: (rankings.agentSkillRepos || []).length,
+                  harvested_ingests: harvested.length,
+                },
+                search_tool_hint: 'Curated+community: search_github_stars | whole-GitHub probe: search_github_live | code: search_github_code | web: search_web_tech',
+              }, null, 2),
+            }],
+          }
+        }
+        catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Failed to read radar status: ${err.message || String(err)}` }],
+          }
+        }
+      },
+    )
+
+    // MCP served on the canonical `/mcp` endpoint. `createMcpHandler` 404s any
+    // path that isn't its route.
+    if (url.pathname === '/mcp') {
+      return createMcpHandler(server, { route: '/mcp' })(req, env, ctx)
+    }
+
+    return errorResponse('not_found', `No endpoint matches ${url.pathname}. See the endpoint table in README.md.`, 404)
+  }
+}
+
+// True BAAI/bge-m3 1024-Dim Vectors + Intent & Subject Anchoring Hybrid Engine
+async function researchDocuments(env) {
+  const [catalog, assetIndex, harvested] = await Promise.all([getCatalog(env), getAssetIndex(env), getHarvested(env)])
+  return { catalog, assetIndex, harvested }
+}
+
+async function performHybridSearch(env, query, options = {}) {
+  const [catalog, rankings, assetIndex, harvested] = await Promise.all([
+    getCatalog(env),
+    getRankings(env),
+    getAssetIndex(env),
+    getHarvested(env),
+  ])
+  let vectors = { values: null, names: null }
+  let queryVector = null
+  if (options.scope !== 'rankings') {
+    const loaded = await getVectors(env)
+    vectors = { values: loaded.vectors, names: loaded.names }
+    if (vectors.values && vectors.names?.length > 0)
+      queryVector = await getQueryEmbedding(query, env)
+  }
+  return searchDocuments({ catalog, rankings, assetIndex, harvested, vectors, queryVector, intents: defaultIntents }, query, options)
+}
+
+async function starAndIngestRepo(env, { repo, reason, categories = DEFAULT_INGEST_CATEGORIES } = {}) {
+  const cleanRepo = repo.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/$/, '')
+  if (!/^[\w.-]+\/[\w.-]+$/.test(cleanRepo)) {
+    return {
+      error: 'invalid_repo',
+      message: 'Repo must be in "owner/repo" format with valid characters.',
+    }
+  }
+
+  const headers = {
+    'User-Agent': 'Stars-Radar-MCP',
+    'Accept': 'application/vnd.github.v3+json',
+  }
+  if (env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`
+  }
+
+  // Confirm the repository exists before anything is written, because the journal is permanent
+  // truth: an entry recorded from a repository GitHub has never heard of is an entry no later run
+  // repairs, and it folds into the hot set as a curated asset with no metadata. A typo used to be
+  // reported as a success (`staged_in_radar: true`) on the strength of the format check alone.
+  let repoData = null
+  try {
+    const repoResp = await fetch(`https://api.github.com/repos/${cleanRepo}`, { headers, signal: AbortSignal.timeout(10000) })
+    if (repoResp.status === 404) {
+      return {
+        error: 'invalid_repo',
+        message: `GitHub has no repository ${cleanRepo}. Check the owner and name; nothing was recorded.`,
+      }
+    }
+    if (!repoResp.ok) {
+      return {
+        error: 'github_star_failed',
+        message: `GitHub answered ${repoResp.status} for ${cleanRepo}, so its metadata could not be read; nothing was recorded.`,
+      }
+    }
+    repoData = await repoResp.json()
+  }
+  catch (e) {
+    return {
+      error: 'github_star_failed',
+      message: `Could not reach GitHub to confirm ${cleanRepo} exists (${e.message || String(e)}); nothing was recorded.`,
+    }
+  }
+
+  let starredOnGitHub = false
+  try {
+    const starResp = await fetch(`https://api.github.com/user/starred/${cleanRepo}`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Length': '0' },
+      signal: AbortSignal.timeout(10000),
+    })
+    if (starResp.status === 204 || starResp.ok) {
+      starredOnGitHub = true
+    }
+    else {
+      // Not fatal: the repository is real and the ingest is about to be recorded. It is reported in
+      // the response, so a caller can tell "did not star it" from "starred it".
+      console.warn(`GitHub refused to star ${cleanRepo}: ${starResp.status} ${starResp.statusText}`)
+    }
+  }
+  catch (e) {
+    console.warn('Could not star on GitHub:', e.message)
+  }
+
+  const repoItem = {
+    repo: cleanRepo,
+    name: cleanRepo.split('/')[1],
+    url: repoData.html_url || `https://github.com/${cleanRepo}`,
+    stars: repoData.stargazers_count || 0,
+    description: repoData.description || '',
+    language: repoData.language || '',
+    categories,
+    reason: reason || `Ingested via Stars Radar on ${new Date().toISOString().slice(0, 10)}`,
+    summary: repoData.description || '',
+    topics: repoData.topics || [],
+    created_at: repoData.created_at,
+    pushed_at: repoData.pushed_at,
+    ingested_at: new Date().toISOString(),
+  }
+
+  // The ingest is recorded by appending to the journal — one new object, never a replacement of
+  // a document another writer owns. There is no conflict to report any more: two simultaneous
+  // ingests simply produce two entries that fold into one view.
+  const view = await getHarvested(env)
+  let journalKey
+  try {
+    journalKey = await appendIngest(env, repoItem)
+  }
+  catch (e) {
+    return {
+      error: 'ingest_failed',
+      message: `Could not append ${cleanRepo} to the ingest journal: ${e.message || String(e)}. GitHub star ${starredOnGitHub ? 'succeeded' : 'did not succeed'}.`,
+      starred_on_github: starredOnGitHub,
+    }
+  }
+
+  // Fold the new entry into the cached view so this isolate sees its own write immediately,
+  // whether or not it was the isolate that served the previous requests.
+  seedHarvested(foldIngestEntries([...view, { ...repoItem, by: 'worker' }]))
+
+  return {
+    success: true,
+    repo: cleanRepo,
+    starred_on_github: starredOnGitHub,
+    staged_in_radar: true,
+    journal_key: journalKey,
+    badge: '⚡ Community Ingested',
+    details: repoItem,
+    message: `Recorded ${cleanRepo} in the ingest journal (${journalKey}). GitHub star ${starredOnGitHub ? 'succeeded' : 'did not succeed'}. This isolate can search the entry immediately in all/rankings scope; other isolates re-read the journal within ${JOURNAL_TTL_SECONDS}s. The scheduled build folds it into the asset index every 6 hours.`,
+  }
+}
