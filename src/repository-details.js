@@ -1,4 +1,4 @@
-import { buildRepositoryEvidence, EVIDENCE_TRUST } from './evidence.js'
+import { buildReadmeEvidence, buildRepositoryEvidence, EVIDENCE_TRUST } from './evidence.js'
 import { parseFrontmatter } from './frontmatter.js'
 import { BadRequestError } from './http.js'
 import { readmeBlobKey } from './object-keys.js'
@@ -61,18 +61,15 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
   let source = starred ? 'catalog' : ingest ? 'ingest_journal' : 'asset_index'
   let snapshotAt = starred ? catalog.generatedAt : ingest ? ingest.ingested_at : assetIndex.generatedAt
   let fetchedAt = record?.metadata_fetched_at || null
-  const noteSource = ingest && (ingest.reason || ingest.summary)
-    ? 'ingest_journal'
-    : (starred ? 'catalog' : ingest ? 'ingest_journal' : asset ? 'asset_index' : 'github')
-  const categorySource = starred
-    ? 'github_lists'
-    : (ingest?.categories?.length ? 'ingest_journal' : asset?.categories?.length ? 'asset_index' : null)
   let body = null
   let readmeSource = null
   let readmeStatus = null
   let readmePreservedFromGeneration = null
+  let readmeFetchedAt = null
+  let readmeRef = null
   if (include_readme) {
     const ref = readmes.repos?.[(record?.repo || name).toLowerCase()]
+    readmeRef = ref || null
     readmeStatus = ref?.status || null
     readmePreservedFromGeneration = ref?.preserved_from_generation || null
     const object = ref?.sha256 ? await env.R2.get(readmeBlobKey(ref.sha256)) : null
@@ -133,6 +130,7 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
     const response = await githubResponse(record.repo, '/readme', { ...headers, Accept: 'application/vnd.github.raw+json' }, fetcher)
     if (response.status !== 404 && !response.ok)
       throw new RepositoryRequestError(`Could not fetch README for ${record.repo}: GitHub returned HTTP ${response.status}`, response.status)
+    readmeFetchedAt = now().toISOString()
     if (response.ok) {
       body = await response.text()
       readmeSource = 'github'
@@ -145,6 +143,16 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
     }
   }
   const projected = project(record)
+  const noteSource = ingest && (ingest.reason || ingest.summary)
+    ? 'ingest_journal'
+    : (starred ? 'catalog' : source === 'readme_generation' ? 'readme_generation' : ingest ? 'ingest_journal' : asset ? 'asset_index' : 'github')
+  const categorySource = starred
+    ? 'github_lists'
+    : (ingest?.categories?.length
+        ? 'ingest_journal'
+        : asset?.categories?.length
+          ? 'asset_index'
+          : source === 'readme_generation' ? 'readme_generation' : null)
   const metadataFields = ['description', 'stars', 'language', 'license', 'pushed_at', 'created_at', 'archived', 'topics']
     .filter(field => projected[field] !== null && projected[field] !== undefined)
   const metadataEvidence = buildRepositoryEvidence({
@@ -189,11 +197,24 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
     fieldProvenance.categories = categoryEvidence.id
   }
 
+  if (include_readme && (body !== null || readmeStatus)) {
+    const readmeEvidence = buildReadmeEvidence({
+      kind: 'readme_document',
+      repo: record.repo,
+      ref: readmeRef,
+      generation: readmeSource === 'generation' ? readmes.generation : null,
+      readmeSha256: readmeRef?.sha256 || null,
+      fetchedAt: readmeFetchedAt,
+    })
+    evidenceChain.push(readmeEvidence)
+    fieldProvenance.readme = readmeEvidence.id
+    fieldProvenance.readme_status = readmeEvidence.id
+  }
+
   const result = {
     ...projected,
-    field_provenance: fieldProvenance,
-    evidence_chain: evidenceChain,
-    evidence: { source, fetched_at: fetchedAt || null, snapshot_at: snapshotAt || null, url: `https://github.com/${record.repo}` },
+    provenance: fieldProvenance,
+    evidence: evidenceChain,
   }
   if (include_readme) {
     result.readme_available = body !== null
