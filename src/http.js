@@ -152,7 +152,6 @@ export function optionalString(raw) {
   return trimmed === '' ? undefined : trimmed
 }
 
-
 /** Reads a string parameter with explicit length bounds, preserving empty-string semantics when allowed. */
 export function stringParam(raw, { parameter, fallback = '', minLength = 0, maxLength = Number.POSITIVE_INFINITY } = {}) {
   if (raw === null || raw === undefined)
