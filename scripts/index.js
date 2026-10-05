@@ -7,6 +7,7 @@ import {
   LOCAL_STARS_DIR,
   localReadmePath,
   PREVIOUS_ASSET_INDEX_FILE,
+  PREVIOUS_READMES_MANIFEST_FILE,
   README_SYNC_STATUS_FILE,
 } from '../src/object-keys.js'
 import { needsReadmeDownload } from './download-plan.js'
@@ -43,6 +44,16 @@ async function main() {
         // re-download all 900+ READMEs and, worse, publish a catalogue that has lost every
         // cached category and reason.
         throw new Error(`Could not read ${CATALOG_KEY}: ${e.message}. Fix or remove the file before syncing.`)
+      }
+    }
+
+    let previousReadmes = { repos: {} }
+    if (fs.existsSync(PREVIOUS_READMES_MANIFEST_FILE)) {
+      try {
+        previousReadmes = fs.readJsonSync(PREVIOUS_READMES_MANIFEST_FILE)
+      }
+      catch (e) {
+        throw new Error(`Could not read ${PREVIOUS_READMES_MANIFEST_FILE}: ${e.message}. Fix or remove the file before syncing.`)
       }
     }
 
@@ -93,8 +104,10 @@ async function main() {
     for (const repo of liveStarred) {
       const name = repo.full_name
       const cached = oldCatalog.repos?.[name]
+      const previousReadme = previousReadmes.repos?.[name.toLowerCase()] || null
       const targetFilePath = localReadmePath(name)
       const fileExists = fs.existsSync(targetFilePath)
+      const reusableReadmeState = fileExists || previousReadme?.status === 'absent'
 
       // Retain or initialize metadata (prioritizing live cloud lists over stale cache)
       const categories = liveMemberships[name] || ['everything-else']
@@ -118,14 +131,14 @@ async function main() {
         platforms: cached?.platforms || [],
         facets: cached?.facets || [],
         pushedAt: repo.pushed_at,
-        readmePushedAt: cached?.readmePushedAt || cached?.pushedAt || null,
+        readmePushedAt: cached?.readmePushedAt || previousReadme?.source_pushed_at || null,
         starredAt: repo.starred_at || cached?.starredAt,
       }
 
       updatedCatalogRepos[name] = repoInfo
 
       const needsDownload = needsReadmeDownload({
-        fileExists,
+        fileExists: reusableReadmeState,
         cachedEntry: cached,
         pushedAt: repo.pushed_at,
       })
@@ -133,10 +146,10 @@ async function main() {
       if (needsDownload) {
         toDownload.push(repoInfo)
       }
-      else if (fileExists) {
+      else if (reusableReadmeState) {
         readmeSync.repos[name.toLowerCase()] = {
           repo: name,
-          status: 'reused',
+          status: previousReadme?.status === 'absent' ? 'absent' : 'reused',
           upstream_pushed_at: repoInfo.pushedAt || null,
           source_pushed_at: repoInfo.readmePushedAt || null,
           preserved_from_generation: process.env.ACTIVE_GENERATION_ID || null,
@@ -154,10 +167,16 @@ async function main() {
     if (toDownload.length > 0) {
       const run = await mapLimit(toDownload, CONCURRENCY, async (repoInfo) => {
         const readme = await fetchReadme(TOKEN, repoInfo.repo)
-        const content = renderEnrichedMarkdown(repoInfo, readme || '')
-        const ownerDir = `${LOCAL_STARS_DIR}/${repoInfo.owner}`
-        fs.ensureDirSync(ownerDir)
-        fs.writeFileSync(`stars/${repoInfo.repo}.md`, content, 'utf-8')
+        const target = localReadmePath(repoInfo.repo)
+        if (readme === null) {
+          fs.removeSync(target)
+        }
+        else {
+          const content = renderEnrichedMarkdown(repoInfo, readme)
+          const ownerDir = `${LOCAL_STARS_DIR}/${repoInfo.owner}`
+          fs.ensureDirSync(ownerDir)
+          fs.writeFileSync(target, content, 'utf-8')
+        }
         repoInfo.readmePushedAt = repoInfo.pushedAt
         readmeSync.repos[repoInfo.repo.toLowerCase()] = {
           repo: repoInfo.repo,
