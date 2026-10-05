@@ -167,11 +167,11 @@ test('a missing manifest makes an R2 baseline unusable', async () => {
   assert.equal(fs.existsSync(localFiles().bin), false)
 })
 
-test('an empty current generation is a valid baseline', async () => {
+test('an empty binary is not accepted as a reusable R2 generation', async () => {
   clearLocalGeneration()
   stubR2(generationObjects([]))
-  assert.equal(await downloadVectorsFromR2(), true)
-  assert.deepEqual(readLocalGeneration(), { binBytes: 0, records: [] })
+  assert.equal(await downloadVectorsFromR2(), false)
+  assert.equal(fs.existsSync(localFiles().bin), false)
 })
 
 test('an unconfigured or partially configured R2 is skipped without issuing requests', async () => {
@@ -293,7 +293,7 @@ test('reordering repositories reorders record slots without recomputing unchange
   assert.deepEqual(readLocalGeneration().records.map(record => record.repo), ['acme/two', 'acme/one'])
 })
 
-test('a damaged vector is refreshed even when its text fingerprint still matches', async () => {
+test('a damaged binary invalidates the entire generation and rebuilds from source', async () => {
   clearLocalGeneration()
   const bucket = stubR2({})
   const inputs = [{ repo: 'acme/one', description: 'one' }]
@@ -303,7 +303,9 @@ test('a damaged vector is refreshed even when its text fingerprint still matches
   damaged[0] ^= 255
   fs.writeFileSync(localFiles().bin, damaged)
 
-  assert.equal((await buildRepositoryVectors(inputs)).updatedCount, 1)
+  const rebuilt = await buildRepositoryVectors(inputs)
+  assert.equal(rebuilt.addedCount, 1)
+  assert.equal(rebuilt.updatedCount, 0)
   assert.equal(bucket.embeddings.length, 2)
 })
 
