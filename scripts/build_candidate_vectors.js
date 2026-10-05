@@ -25,12 +25,13 @@ export async function buildCandidateVectors() {
   if (repositories.length === 0)
     throw new Error('Candidate vector gate needs at least one starred or curated repository.')
 
+  const starred = new Set(Object.keys(catalog.repos).map(repo => repo.toLowerCase()))
   const report = await buildRepositoryVectors(repositories)
   return {
     ...report,
     candidateRepositories: repositories.length,
-    starredRepositories: Object.keys(catalog.repos).length,
-    curatedRepositories: harvested.filter(repo => !catalog.repos[repo.repo?.toLowerCase?.()]).length,
+    starredRepositories: starred.size,
+    curatedRepositories: harvested.filter(repo => !starred.has(repo.repo.toLowerCase())).length,
   }
 }
 
