@@ -96,7 +96,7 @@ function ndcgAtK(returned, relevant, k) {
   return idcg === 0 ? 1 : dcg / idcg
 }
 
-function evaluateOne(returned, relevantList, forbiddenList, k) {
+export function evaluateOne(returned, relevantList, forbiddenList, k) {
   const relevant = new Set(relevantList.map(v => v.toLowerCase()))
   const forbidden = new Set((forbiddenList || []).map(v => v.toLowerCase()))
   const top = returned.slice(0, k).map(v => v.toLowerCase())
@@ -115,7 +115,7 @@ function average(values) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
 }
 
-function summarize(rows) {
+export function summarize(rows) {
   return {
     cases: rows.length,
     mean_recall_at_k: average(rows.map(row => row.metrics.recall_at_k)),
@@ -128,7 +128,7 @@ function summarize(rows) {
   }
 }
 
-function percentile(values, q) {
+export function percentile(values, q) {
   if (!values.length)
     return 0
   const sorted = [...values].sort((a, b) => a - b)
@@ -157,7 +157,7 @@ async function runMode(name, fixture, documents, { lexicalOnly, k }) {
   return { mode: name, summary: summarize(rows), cases: rows }
 }
 
-async function main() {
+export async function main() {
   const root = path.resolve(argValue('--root', process.cwd()))
   const fixturePath = path.resolve(argValue('--fixture', path.join(root, DEFAULT_FIXTURE)))
   const k = Number(argValue('--k', String(DEFAULT_K)))
@@ -200,7 +200,9 @@ async function main() {
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
 }
 
-main().catch((error) => {
-  console.error(error.message || String(error))
-  process.exitCode = 1
-})
+if (process.argv[1]?.endsWith('evaluate_retrieval_real.js')) {
+  main().catch((error) => {
+    console.error(error.message || String(error))
+    process.exitCode = 1
+  })
+}
