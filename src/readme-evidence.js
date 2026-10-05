@@ -10,7 +10,7 @@ export const README_VECTOR_MAX_CHUNKS = 12
 export const README_VECTOR_MIN_CHARS = 80
 export const README_VECTOR_IMPORTANT_MIN_CHARS = 24
 
-const IMPORTANT_HEADING = /\b(requirements?|compatibility|platforms?|providers?|integrations?|features?|install(?:ation)?|usage|api|license|support)\b|支持|平台|兼容|要求|依赖|集成|功能|安装|用法|许可证/i
+const IMPORTANT_HEADING = /\b(?:requirements?|compatibility|platforms?|providers?|integrations?|features?|install(?:ation)?|usage|api|license|support)\b|支持|平台|兼容|要求|依赖|集成|功能|安装|用法|许可证/i
 
 function cleanMarkdown(text) {
   return String(text || '')
