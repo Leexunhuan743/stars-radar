@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import process from 'node:process'
@@ -16,8 +17,8 @@ import {
   LOCAL_STARS_DIR,
   RANKINGS_KEY,
   readmeBlobKey,
-  READMES_MANIFEST_KEY,
   README_SUFFIX,
+  READMES_MANIFEST_KEY,
 } from '../src/object-keys.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
