@@ -70,7 +70,7 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
     if (object) {
       const parsed = parseFrontmatter(await object.text())
       body = parsed.body
-      readmeSource = 'archive'
+      readmeSource = 'generation'
       if (!record) {
         record = {
           ...parsed.metadata,
@@ -79,8 +79,8 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
           categories: parsed.metadata.categories ? JSON.parse(parsed.metadata.categories) : [],
           topics: parsed.metadata.topics ? JSON.parse(parsed.metadata.topics) : null,
         }
-        source = 'readme_archive'
-        snapshotAt = object.uploaded?.toISOString()
+        source = 'readme_generation'
+        snapshotAt = readmes.generation?.published_at || null
       }
     }
   }
