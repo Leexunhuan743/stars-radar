@@ -1,7 +1,7 @@
 import process from 'node:process'
 import fs from 'fs-extra'
-import { embeddingRepositories, foldJournalFiles } from '../src/ingest-journal.js'
-import { CATALOG_KEY, INGEST_JOURNAL_PREFIX, LOCAL_STARS_DIR, localReadmePath } from '../src/object-keys.js'
+import { embeddingRepositories, foldIngestEntries, foldJournalFiles } from '../src/ingest-journal.js'
+import { CATALOG_KEY, INGEST_JOURNAL_PREFIX, LOCAL_STARS_DIR, localReadmePath, PREVIOUS_ASSET_INDEX_FILE } from '../src/object-keys.js'
 import { needsReadmeDownload } from './download-plan.js'
 import { collectAllRankings } from './fetch_rankings.js'
 import { fetchUserLists, summarizeCategories } from './github-lists.js'
@@ -170,11 +170,23 @@ async function main() {
     // separate writes, so an interruption between them can leave a mismatched pair
     // on disk — the next run detects that and rebuilds rather than propagating it.)
     const journalFiles = fs.existsSync(INGEST_JOURNAL_PREFIX)
-      ? fs.readdirSync(INGEST_JOURNAL_PREFIX).filter(name => name.endsWith('.jsonl')).map(name => ({ key: name, text: fs.readFileSync(`${INGEST_JOURNAL_PREFIX}${name}`, 'utf-8') }))
+      ? fs.readdirSync(INGEST_JOURNAL_PREFIX).filter(name => name.endsWith('.jsonl')).map(name => ({
+          key: `${INGEST_JOURNAL_PREFIX}${name}`,
+          text: fs.readFileSync(`${INGEST_JOURNAL_PREFIX}${name}`, 'utf-8'),
+        }))
       : []
-    const { harvested, problems } = foldJournalFiles(journalFiles)
+    const { snapshot: journalSnapshot, problems } = foldJournalFiles(journalFiles)
     if (problems.length > 0)
       throw new Error(`Could not read the ingest journal for embedding: ${problems.join('; ')}`)
+
+    let retainedIngestEntries = []
+    if (fs.existsSync(PREVIOUS_ASSET_INDEX_FILE)) {
+      const previousIndex = fs.readJsonSync(PREVIOUS_ASSET_INDEX_FILE)
+      retainedIngestEntries = previousIndex.ingest_snapshot?.entries || []
+      if (!Array.isArray(retainedIngestEntries))
+        throw new Error(`${PREVIOUS_ASSET_INDEX_FILE} has an invalid ingest_snapshot.entries.`)
+    }
+    const harvested = foldIngestEntries([...retainedIngestEntries, ...journalSnapshot.entries])
     await buildRepositoryVectors(embeddingRepositories(updatedCatalogRepos, harvested))
 
     // catalog.json is written only once the vector stage has succeeded: failing after
