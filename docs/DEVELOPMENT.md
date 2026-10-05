@@ -92,17 +92,17 @@ Fine-grained token 对 Stars 读取要求 Starring read，点 Star 要求 Starri
 
 `.github/workflows/build.yaml` 每 6 小时运行，也支持手动触发。Fork 后需要主动启用 Actions 和定时工作流。一次运行依次：
 
-1. 读取 `active-generation.json`，从当前 `generations/<id>/` 恢复向量、资产状态和社区快照；README 与追加日志仍从各自长期前缀增量恢复。没有 active generation 是首次运行，认证、指针损坏或当前 generation 缺文件都会停止运行。
+1. 读取 `active-generation.json`，从当前 `generations/<id>/` 恢复向量、资产状态、社区快照与 `readmes.json`；再按引用恢复 `readmes/<sha256>.md` 内容寻址 README blobs。追加日志仍从 `state/` 增量恢复。没有 active generation 是首次运行，指针损坏或当前 generation 缺关键文件都会停止运行。
 2. 获取当前公开 Stars 和全部 Lists / 成员页，更新目录和 README。
 3. 为 Stars 和已确认收录构建向量，再抓取社区快照。
 4. 合并持久资产状态，生成热集索引和入库日志快照。
 5. 运行 lint、测试、向量一致性检查及 Worker 打包检查。
 6. 上传派生 generation，逐对象从 R2 回读并与本地 staged artifact 做 byte-for-byte 比较；全部一致后才切换 active pointer。
-7. 设置部署令牌时部署 Worker，否则仅更新 R2 数据。
+7. 数据 workflow 到此结束，不部署 Worker。Worker 由独立 `Deploy Worker` workflow 在主分支相关代码变化或手动触发时发布，并在发布后调用 `/health` 做 production smoke check。
 
 数据发布使用共享并发组串行执行。Checkout 使用只读工作流令牌，个人 `GH_TOKEN` 只用于业务 API 调用。Worker secrets 由部署者独立设置，不从 Actions 自动注入。
 
-derived JSON/vector 数据平面采用 generation 发布：`catalog.json`、`rankings.json`、`asset-index.json`、`asset-state.json` 与向量四件套先写入新的不可变 `generations/<id>/`；验证完成后，单独替换 `active-generation.json` 作为提交点。Worker 先缓存 active generation，再从同一 generation 读取所有 derived 文档；generation id 变化时对应缓存失效，因此不会把新 catalog 与旧 vectors 混读。最近三个 generation 保留用于快速回滚。README archive 仍是独立的增量 corpus，不属于这个原子提交边界。
+derived 数据平面采用 generation 发布：`catalog.json`、`rankings.json`、`asset-index.json`、`asset-state.json`、向量四件套与 `readmes.json` 先写入新的不可变 `generations/<id>/`；README 正文按 SHA-256 放在全局 `readmes/<sha256>.md`，generation 只保存引用。验证完成后，单独替换 `active-generation.json` 作为提交点。Worker 先缓存 active generation，再从同一 generation 读取所有 derived 文档与 README 引用，因此回滚 generation 时 README evidence 也同步回滚。最近三个 generation 保留；不再被任何保留 generation 引用的 README blobs 会安全回收。
 
 自定义 `SILICONFLOW_URL` 时，构建和 Worker 必须使用产生相同向量空间的接口，不能只切换查询端。上游价格与额度以服务商当前说明为准。
 
@@ -153,10 +153,11 @@ Bash / zsh 使用 `export WORKER_URL=...` 和 `export MCP_API_KEY=...`。
 | R2 对象                                   | 内容                                         | 写入者            |
 | ----------------------------------------- | -------------------------------------------- | ----------------- |
 | `catalog.json`                            | 当前公开 Stars、Lists 和元数据               | CI                |
-| `<owner>/<repo>.md`                       | README；本地路径为 `stars/<owner>/<repo>.md` | CI                |
+| `readmes/<sha256>.md`                    | 内容寻址 README blob；本地源仍为 `stars/<owner>/<repo>.md` | CI |
 | `rankings.json`                           | 社区榜单及各来源更新时间 / 失败状态          | CI                |
 | `asset-state.json`                        | 历史资产、首次发现、上榜次数等持久状态       | CI                |
 | `generations/<id>/asset-index.json`       | 热集检索索引与 ingest/probe snapshots         | CI                |
+| `generations/<id>/readmes.json`           | repo → README SHA-256/blob 引用与 generation 元信息 | CI |
 | `embeddings.bin`、`embeddings-index.json` | Float32 向量及结构化 records（repo metadata / README chunks） | CI                |
 | `embeddings-fingerprints.json`            | 文本 / 模型与向量内容指纹，用于复用          | CI                |
 | `embeddings-manifest.json`                | 模型、维度、数量及 index/bin 的 SHA-256      | CI                |
@@ -266,7 +267,7 @@ pnpm eval:retrieval:gate -- --fixture data/retrieval-benchmark.private.json --k 
 
 行为变更需补充结果测试。工具参数变化还需检查 schema snapshot；确实改变契约时，运行跨平台命令 `pnpm test:schema:update`，不要更新快照来掩盖意外变化。
 
-常规测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。`pnpm eval:retrieval` 仍使用合成标注及固定向量，只负责规则回归，不能作为真实模型质量或生产准确率声明。`pnpm eval:retrieval:real` 则直接读取本地真实 `catalog.json`、`asset-index.json`、`embeddings.bin` 与私有 relevance labels，并用真实 BGE-M3 query embedding 比较 lexical 与 hybrid，输出 Recall@K、Precision@K、MRR、NDCG@K、forbidden hits 以及 P50/P95 延迟。真实标注文件 `data/retrieval-benchmark.private.json` 已加入忽略规则，避免个人收藏与判断进入仓库。fixture 可为 lexical / hybrid 模式配置最低 Recall、Precision、MRR、NDCG、negative empty-success，以及最大 forbidden hits / P95；`pnpm eval:retrieval:gate` 任一阈值不达标即非零退出，因此可以接入部署者自己的私有 CI。公共仓库仍不会假装持有真实 relevance labels。
+常规测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。`pnpm eval:retrieval` 仍使用合成标注及固定向量，只负责规则回归，不能作为真实模型质量或生产准确率声明。`pnpm eval:retrieval:real` 则直接读取本地真实 `catalog.json`、`asset-index.json`、`embeddings.bin` 与私有 relevance labels，并用真实 BGE-M3 query embedding 比较 lexical 与 hybrid，输出 Recall@K、Precision@K、MRR、NDCG@K、forbidden hits 以及 P50/P95 延迟。真实标注文件 `data/retrieval-benchmark.private.json` 已加入忽略规则，避免个人收藏与判断进入仓库。fixture 可为 lexical / hybrid 模式配置最低 Recall、Precision、MRR、NDCG、negative empty-success，以及最大 forbidden hits / P95；`pnpm eval:retrieval:gate` 任一阈值不达标即非零退出。仓库自带 `Retrieval Quality` workflow：把私有 fixture 做 base64 后保存为 Actions secret `RETRIEVAL_BENCHMARK_B64`，workflow 会恢复当前 production generation 并执行真实 BGE-M3 gate；未配置该 secret 时明确跳过。
 
 发布前在自己的目标环境完成：
 
@@ -298,4 +299,4 @@ pnpm eval:retrieval:gate -- --fixture data/retrieval-benchmark.private.json --k 
 | 收录成功但 GitHub 没点 Star | 检查 `starred_on_github`、令牌写权限与限流                                 |
 | 资产或日志损坏              | 保留原始对象，修复失败记录或从完整备份恢复；构建停止覆盖持久状态           |
 
-R2 是运行数据的持久存储，代码仓库不能恢复个人备注和发现历史。derived data plane 默认保留最近三个不可变 generation，可通过切换 `active-generation.json` 快速回滚 derived 状态；这不是整桶备份，因为 README corpus 和最新尚未折叠的 `state/` tail 独立存在。重要部署仍应独立备份 R2。
+R2 是运行数据的持久存储，代码仓库不能恢复个人备注和发现历史。默认保留最近三个不可变 generation，使用 `pnpm data:rollback -- --list` 查看候选，使用 `pnpm data:rollback -- --to <generation-id>` 校验目标 manifest 与关键对象后切换 active pointer 并回读确认。README blobs 由 generation 引用并随保留代次做 GC；最新尚未折叠的 `state/` tail 仍独立存在，因此重要部署仍应独立备份 R2。
