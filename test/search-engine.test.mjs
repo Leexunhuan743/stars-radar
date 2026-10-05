@@ -5,13 +5,22 @@ import { searchDocuments } from '../src/search-engine.js'
 
 const INTENTS = { terminal: ['terminal', 'cli'], browser: ['browser'] }
 
+const repoRecord = repo => ({ id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' })
+const readmeRecord = (repo, heading, text) => ({
+  id: `readme:${repo.toLowerCase()}:fixture`,
+  repo,
+  kind: 'readme_chunk',
+  heading,
+  text,
+})
+
 function search(query, options = {}, documents = {}) {
   return searchDocuments({
     catalog: { repos: {} },
     rankings: {},
     assetIndex: { repos: {}, intent_inverted: {} },
     harvested: [],
-    vectors: { values: null, names: null },
+    vectors: { values: null, records: null },
     queryVector: null,
     intents: INTENTS,
     ...documents,
@@ -87,7 +96,7 @@ test('a vector for an unstarred repository cannot leak into starred-only search'
   queryVector[0] = 1
   const results = search('terminal', { scope: 'starred' }, {
     catalog: { repos: { 'me/saved': { description: 'a terminal' } } },
-    vectors: { values, names: ['me/saved', 'other/public'] },
+    vectors: { values, records: [repoRecord('me/saved'), repoRecord('other/public')] },
     queryVector,
   })
   assert.deepEqual(results.map(result => result.repo), ['me/saved'])
@@ -101,7 +110,7 @@ test('a vector and a journal keyword hit keep curated provenance and full metada
   queryVector[0] = 1
   const [result] = search('zephyr', {}, {
     harvested: [INGESTED],
-    vectors: { values, names: [INGESTED.repo] },
+    vectors: { values, records: [repoRecord(INGESTED.repo)] },
     queryVector,
   })
   assert.equal(result.source, 'curated')
@@ -140,7 +149,7 @@ test('semantic-only matches carry vector evidence without fabricated keyword mat
   queryVector[0] = 1
   const [result] = search('browser', { explain: true }, {
     catalog: { repos: { 'me/tool': { description: 'a utility' } } },
-    vectors: { values, names: ['me/tool'] },
+    vectors: { values, records: [repoRecord('me/tool')] },
     queryVector,
   })
   assert.deepEqual(result.explanation.channels, ['vector'])
@@ -158,7 +167,7 @@ test('GitHub name casing cannot duplicate a starred repo or change its source', 
     catalog: { repos: { 'Acme/NovelTool': { ...INGESTED, repo: 'Acme/NovelTool' } } },
     harvested: [{ ...INGESTED, repo: 'ACME/NOVELTOOL' }],
     rankings: { trending: { overall_daily: [{ repo: 'acme/noveltool', description: 'zephyr' }] } },
-    vectors: { values, names: ['ACME/NovelTool'] },
+    vectors: { values, records: [repoRecord('ACME/NovelTool')] },
     queryVector,
   })
   assert.equal(results.length, 1)
@@ -196,7 +205,7 @@ test('semantic-only ingested matches keep curated source without inventing liter
   queryVector[0] = 1
   const [result] = search('browser', { explain: true }, {
     harvested: [INGESTED],
-    vectors: { values, names: [INGESTED.repo] },
+    vectors: { values, records: [repoRecord(INGESTED.repo)] },
     queryVector,
   })
   assert.equal(result.source, 'curated')
@@ -229,11 +238,45 @@ test('a strong semantic vector can recover an ordinary feature absent from short
 
   const [result] = search('webdav', { scope: 'starred', explain: true }, {
     catalog: { repos: { 'me/storage': { repo: 'me/storage', description: 'self-hosted data service' } } },
-    vectors: { values, names: ['me/storage'] },
+    vectors: { values, records: [repoRecord('me/storage')] },
     queryVector,
   })
 
   assert.equal(result.repo, 'me/storage')
   assert.deepEqual(result.explanation.channels, ['vector'])
   assert.deepEqual(result.explanation.matched_subjects, [])
+})
+
+
+test('README chunk vectors can recall a feature absent from repository metadata and expose semantic evidence', () => {
+  const values = new Float32Array(DIMS * 2)
+  values[DIMS] = 1
+  const queryVector = new Float32Array(DIMS)
+  queryVector[0] = 1
+
+  const [result] = search('webdav', { scope: 'starred', explain: true }, {
+    catalog: {
+      repos: {
+        'me/storage': {
+          repo: 'me/storage',
+          description: 'self-hosted data service',
+        },
+      },
+    },
+    vectors: {
+      values,
+      records: [
+        repoRecord('me/storage'),
+        readmeRecord('me/storage', 'Integrations', 'Supports WebDAV synchronization and S3-compatible storage.'),
+      ],
+    },
+    queryVector,
+  })
+
+  assert.equal(result.repo, 'me/storage')
+  assert.equal(result.vector_similarity, 1)
+  assert.equal(result.explanation.semantic_evidence.repo_similarity, null)
+  assert.equal(result.explanation.semantic_evidence.readme_chunk.heading, 'Integrations')
+  assert.match(result.explanation.semantic_evidence.readme_chunk.snippet, /WebDAV/)
+  assert.equal(result.explanation.semantic_evidence.readme_chunk.similarity, 1)
 })
