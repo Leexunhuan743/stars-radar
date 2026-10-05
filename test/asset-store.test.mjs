@@ -415,3 +415,10 @@ test('a previous generation snapshot preserves compacted ingests after raw objec
     store.accumulateAssets()
   }
 })
+
+
+test('the hot index snapshots the raw probe keys folded by this generation', () => {
+  const snapshot = readIndex().probe_snapshot
+  assert.ok(Array.isArray(snapshot.keys))
+  assert.ok(snapshot.keys.every(key => key.startsWith('state/probe-captures/')))
+})
