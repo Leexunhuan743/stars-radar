@@ -221,7 +221,6 @@ test('an intent word absent from the inverted index yields nothing', () => {
   assert.deepEqual(resolve({ matchedGroups: ['unknown-group'] }), [])
 })
 
-
 test('archive ranking reflects match strength instead of assigning every candidate one flat score', () => {
   const hits = resolveArchiveCandidates({
     assetIndex: {
