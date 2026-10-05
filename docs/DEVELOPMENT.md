@@ -65,7 +65,8 @@ pnpm install --frozen-lockfile
 | `GH_TOKEN`                                 | 仅 Actions secret，在构建步骤映射为 `GITHUB_TOKEN`      |
 | `SILICONFLOW_KEY`                          | 数据构建和 Worker 查询向量                              |
 | `SILICONFLOW_URL`                          | 可选向量接口地址，默认 SiliconFlow embeddings 接口      |
-| `MCP_API_KEY`                              | Worker 与客户端 Bearer 认证，离线构建不需要             |
+| `MCP_API_KEY`                              | Worker 读取认证；未配置独立写密钥时保持旧版读写行为      |
+| `MCP_WRITE_API_KEY`                        | 可选独立写密钥；配置后 capture / star / ingest 只接受它  |
 | `R2_ACCOUNT_ID`、`R2_BUCKET`               | CI S3 上传及本地 R2 REST 操作的目标                     |
 | `R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` | Actions 的 S3 读写凭据                                  |
 | `CLOUDFLARE_API_TOKEN`                     | 可选 CI 部署；本地收割与向量恢复的 REST 操作也需要它    |
@@ -169,7 +170,7 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 ## 检索与证据
 
-向量模型固定为 `BAAI/bge-m3`，维度为 1024。输入来自仓库名称、分类、语言、备注、摘要、简介和 topics，不是整份 README。默认构建与查询都使用 SiliconFlow；查询向量接口失败时退回词法通道。
+向量模型固定为 `BAAI/bge-m3`，维度为 1024。当前输入 profile 为 `repo-metadata-readme-v2`：仓库名称、分类、语言、备注、摘要、简介、topics 与经过清理后的 README 证据共同组成 repo-level embedding；README 最多贡献 6000 个字符，整条 embedding 文本最多 8000 个字符。它仍然不是 chunk-level README 索引，因此当前只能把 README 作为仓库级语义证据，不能声称精确命中了某个章节。旧 manifest 缺少 profile 时仍可安全读取，并在状态接口中报告为 `repo-metadata-v1`，下一次成功数据构建会升级到 v2。默认构建与查询都使用 SiliconFlow；查询向量接口失败时退回词法通道。
 
 检索结合向量相似度、关键词、通用意图词表与具体主体匹配。明确的仓库名或技术主体约束候选；个人收藏有排序加权，综合结果也保留社区候选。`scope` 选择收藏 / 社区范围，`category` 选择用户分类，`source` 选择来源。
 
@@ -179,7 +180,7 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 ## MCP 工具
 
-Streamable HTTP 入口为 `/mcp`，认证为 `Authorization: Bearer <MCP_API_KEY>`。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
+Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。不配置 `MCP_WRITE_API_KEY` 时，`MCP_API_KEY` 保持向后兼容的读写权限；配置独立写密钥后，`MCP_API_KEY` 只能读取和检索，`MCP_WRITE_API_KEY` 可读且允许 `capture_github_discovery` 与 `star_and_ingest_repo`。REST 写接口使用相同规则，读 key 调用时返回 `403 write_forbidden`。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
 
 | 工具                    | 用途 / 常用参数                                                              |
 | ----------------------- | ---------------------------------------------------------------------------- |
@@ -247,11 +248,16 @@ pnpm lint
 pnpm test
 pnpm eval:retrieval
 pnpm exec wrangler deploy --dry-run --outdir dist
+
+# 使用自己的真实 Stars / 向量做离线检索质量评估（标注文件不会提交）
+cp test/fixtures/retrieval-benchmark.example.json data/retrieval-benchmark.private.json
+# 编辑 private fixture 后：
+pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 10
 ```
 
 行为变更需补充结果测试。工具参数变化还需检查 schema snapshot；确实改变契约时，运行跨平台命令 `pnpm test:schema:update`，不要更新快照来掩盖意外变化。
 
-测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。检索评估使用合成标注及固定向量，只验证回归行为，不能作为真实模型质量或生产准确率声明。
+常规测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。`pnpm eval:retrieval` 仍使用合成标注及固定向量，只负责规则回归，不能作为真实模型质量或生产准确率声明。`pnpm eval:retrieval:real` 则直接读取本地真实 `catalog.json`、`asset-index.json`、`embeddings.bin` 与私有 relevance labels，并用真实 BGE-M3 query embedding 比较 lexical 与 hybrid，输出 Recall@K、Precision@K、MRR、NDCG@K、forbidden hits 以及 P50/P95 延迟。真实标注文件 `data/retrieval-benchmark.private.json` 已加入忽略规则，避免个人收藏与判断进入仓库。
 
 发布前在自己的目标环境完成：
 
@@ -267,7 +273,8 @@ pnpm exec wrangler deploy --dry-run --outdir dist
 
 | 现象                        | 检查与处理                                                                 |
 | --------------------------- | -------------------------------------------------------------------------- |
-| `401 unauthorized`          | 检查 Bearer 请求头与 Worker 的 `MCP_API_KEY`                               |
+| `401 unauthorized`          | 检查 Bearer 请求头与 Worker 的读取 / 写入密钥                                 |
+| `403 write_forbidden`       | 已启用 `MCP_WRITE_API_KEY`；capture / star / ingest 必须使用写密钥           |
 | `server_misconfigured`      | 本地检查 `.dev.vars`，线上检查 Worker secrets                              |
 | 没有收藏                    | 检查 `GH_TOKEN` 是否属于你的账号，公开 Stars 是否为空                      |
 | 分类构建失败                | 检查 GraphQL 权限、限流和错误日志，修复后重跑                              |
