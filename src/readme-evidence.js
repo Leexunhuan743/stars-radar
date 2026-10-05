@@ -40,9 +40,23 @@ function chunkText(text, maxLength = README_EVIDENCE_MAX_CHUNK) {
   return chunks.filter(Boolean)
 }
 
+function upstreamReadmeBody(markdown) {
+  const { metadata, body } = parseFrontmatter(String(markdown || ''))
+  const repo = metadata.repo
+  if (!repo)
+    return body
+
+  const generatedPrefix = '# ' + repo
+  const generatedMarker = '> **分类 (Categories)**:'
+  if (!body.startsWith(generatedPrefix) || !body.slice(0, 1200).includes(generatedMarker))
+    return body
+
+  const separator = body.indexOf('\n---\n\n')
+  return separator >= 0 ? body.slice(separator + 6) : body
+}
+
 export function splitReadmeSections(markdown) {
-  const { body } = parseFrontmatter(String(markdown || ''))
-  const lines = body.split(/\r?\n/)
+  const lines = upstreamReadmeBody(markdown).split(/\r?\n/)
   const sections = []
   let heading = 'README'
   let bodyLines = []
