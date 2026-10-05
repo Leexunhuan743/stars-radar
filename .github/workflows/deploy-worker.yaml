@@ -1,0 +1,72 @@
+name: Deploy Worker
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'src/**'
+      - 'data/intents.json'
+      - 'wrangler.jsonc'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.node-version'
+      - '.github/workflows/deploy-worker.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stars-radar-worker-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: |
+            - recursive: true
+              args: [--frozen-lockfile, --strict-peer-dependencies]
+
+      - name: Require deployment configuration
+        run: |
+          test -n "${CLOUDFLARE_API_TOKEN}" || { echo "::error::CLOUDFLARE_API_TOKEN is required"; exit 1; }
+          test -n "${CLOUDFLARE_ACCOUNT_ID}" || { echo "::error::R2_ACCOUNT_ID is required"; exit 1; }
+          test -n "${WORKER_URL}" || { echo "::error::WORKER_URL is required for post-deploy verification"; exit 1; }
+          test -n "${MCP_API_KEY}" || { echo "::error::MCP_API_KEY is required for post-deploy verification"; exit 1; }
+
+      - name: Verify bundle
+        run: pnpm exec wrangler deploy --dry-run --outdir dist
+
+      - name: Deploy Worker
+        run: pnpm exec wrangler deploy
+
+      - name: Production smoke check
+        run: |
+          base="${WORKER_URL%/}"
+          curl --fail-with-body --silent --show-error             --retry 4 --retry-all-errors --retry-delay 2             -H "Authorization: Bearer ${MCP_API_KEY}"             "${base}/health" > "${RUNNER_TEMP}/health.json"
+          node --input-type=module - "${RUNNER_TEMP}/health.json" <<'NODE'
+          import fs from 'node:fs'
+          const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+          const health = payload.data || payload
+          if (health.version !== '2.0.0')
+            throw new Error(`Unexpected production version: ${health.version}`)
+          if (health.status !== 'ok')
+            throw new Error(`Production health is ${health.status}`)
+          if (!health.dataGeneration?.id)
+            throw new Error('Production has no active data generation.')
+          console.log(`Production healthy: v${health.version}, generation ${health.dataGeneration.id}`)
+          NODE
