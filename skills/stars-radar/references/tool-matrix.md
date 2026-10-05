@@ -1,6 +1,6 @@
 # Stars Radar MCP Tool Matrix & Schema Reference
 
-Complete reference for all 14 MCP tools provided by the `Stars Radar` MCP server (served by your own deployment, e.g. `https://stars.example.com`).
+Complete reference for all 15 MCP tools provided by the `Stars Radar` MCP server (served by your own deployment, e.g. `https://stars.example.com`).
 
 ---
 
@@ -10,14 +10,14 @@ Complete reference for all 14 MCP tools provided by the `Stars Radar` MCP server
 
 - **Description**: Returns the current Stars Radar workspace context: curated star count, vector DB capacity, available community intelligence layers, and search tool selection guidance. Call this first to understand what data the radar currently holds before deciding which search tool to use.
 - **Inputs**: None.
-- **Output**: Object with `workspace`, `version`, `total_starred`, `vector_db_capacity`, `vector_dimensions`, `vector_model`, `intent_domains`, `community_layers`, and `search_tool_hint`.
+- **Output**: Object with `workspace`, `version`, `total_starred`, `vector_db_capacity`, `vector_dimensions`, `vector_model`, `vector_input_profile`, `intent_domains`, `community_layers`, and `search_tool_hint`. `vector_input_profile=repo-metadata-readme-v2` means README evidence is included in repo-level embeddings; `repo-metadata-v1` is a safe legacy generation awaiting rebuild.
   > Zero capacity can mean an empty installation. An inconsistent generation is a visible document error, or a stale cached view; inspect `/health` and its data-plane status rather than treating every zero as a provider outage.
 
 ### `search_github_stars`
 
 - **Description**: Searches personal curated stars and ingested community repositories using 1024-dimensional `BAAI/bge-m3` vectors fused with an 18-domain public ontology via Reciprocal Rank Fusion (RRF, $k=60$).
 - **Inputs**:
-  - `query` (string, required): Natural language search terms, tech capabilities, or curator keywords.
+  - `query` (string, required, max 512 characters): Natural language search terms, tech capabilities, or curator keywords.
   - `explain` (boolean, default: `false`): Include actual matched terms, scoring channels, keyword weight and vector similarity. Semantic-only matches carry empty literal evidence; scores are ranking signals rather than probabilities.
   - `category` (string, optional): Exact taxonomy filter against your GitHub Lists categories (e.g. `agent-plugins`, `media-players`). Case-insensitive. Call `list_categories` for all valid slugs. This is the **deployer's own** classification and nothing else: a community board's label is never one of these.
   - `source` (enum, optional): Filter by where a hit came from, independent of `category` — `starred`, `curated`, `archive`, `community`, `ranking`, `trending`, `hellogithub`, `breakout`, `skill`, `skill_repo`. The value matches each result's `source` field, so use it to look only at board discoveries (`source=trending`) or only at the archive long tail (`source=archive`).
@@ -35,12 +35,18 @@ Combined results add a keyword bonus capped at 0.35 and a final ceiling of 0.98;
 use `min(1 - 1/(1 + weight/8), 0.95)`. Relevance is the primary sort key; RRF breaks ties,
 with a 1.5 starred boost. `min_score` defaults to 0.25 and changes the cutoff, not a guaranteed accuracy.
 
-`category` selects personal classifications; `source` selects provenance. The existing 40% non-starred
-quota still applies. `explain=true` reports matching evidence. Hyphens, underscores and spaces share
+`category` selects personal classifications; `source` selects provenance. The 40% non-starred
+diversity cap applies only to the default mixed view (`scope=all` without a source filter); explicit
+`scope=rankings` or `source=...` requests can fill the requested limit. `explain=true` reports matching evidence. Hyphens, underscores and spaces share
 one lexical form, and short words use boundaries.
 
+Repository vectors use input profile `repo-metadata-readme-v2`: bounded, cleaned README text is part
+of the repo-level BGE-M3 input alongside metadata. This is not chunk-level README retrieval and does
+not prove that a particular README section matched.
+
 Run `pnpm eval:retrieval` for the synthetic labeled regression corpus. Its deterministic vector
-fixtures test channel behavior; they do not measure real BGE-M3 or production precision/recall.
+fixtures test channel behavior; they do not measure real BGE-M3 or production precision/recall. Use
+`pnpm eval:retrieval:real` with a private labeled fixture for real-corpus lexical-vs-hybrid metrics.
 
 ### `get_repo_readme`
 
@@ -118,7 +124,7 @@ fixtures test channel behavior; they do not measure real BGE-M3 or production pr
 
 - **Description**: Real-time global GitHub repository explorer. Automatically filters forks and archived projects, cross-referencing returned items against personal stars.
 - **Inputs**:
-  - `query` (string, required): Search query or topic.
+  - `query` (string, required, max 512 characters): Search query or topic.
   - `language` (string, optional): Language filter.
   - `min_stars` (number, default: 15): Star threshold.
   - `sort` (enum: `stars` | `updated` | `forks`, default: `stars`).
@@ -143,7 +149,7 @@ fixtures test channel behavior; they do not measure real BGE-M3 or production pr
 
 - **Description**: Searches public repository code on GitHub. Extracts syntax snippets with language code fences and exact blob URLs.
 - **Inputs**:
-  - `query` (string, required): Code term or method name. Must contain at least one non-qualifier keyword.
+  - `query` (string, required, max 256 characters): Code term or method name. Must contain at least one non-qualifier keyword.
   - `repo` (string, optional): Target repository (`owner/repo`).
   - `language` (string, optional): Target language.
   - `extension` (string, optional): Target file extension without dot.
@@ -155,7 +161,7 @@ fixtures test channel behavior; they do not measure real BGE-M3 or production pr
 
 - **Description**: Searches technical documentation, framework changelogs, error discussions, and technical teardowns with multi-provider routing (Brave / Tavily / keyless DuckDuckGo fallback). Enforces timeout protection (8s for API providers, 6s for DuckDuckGo) to prevent Worker hanging.
 - **Inputs**:
-  - `query` (string, required): Technical query.
+  - `query` (string, required, max 512 characters): Technical query.
   - `domain` (string, optional): Target domain filter (e.g. `developers.cloudflare.com`).
   - `freshness` (enum: `day` | `week` | `month` | `year` | `all`, default: `all`).
   - `limit` (number, default: 5, max: 10).
@@ -182,3 +188,12 @@ pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 
 ```
 
 The report compares lexical and real BGE-M3 hybrid retrieval and includes Recall@K, Precision@K, MRR, NDCG@K, forbidden hits, and P50/P95 latency.
+
+
+## Authentication and write boundaries
+
+By default, a deployment with only `MCP_API_KEY` preserves the legacy single-key read/write model.
+If `MCP_WRITE_API_KEY` is configured, the read key can search and inspect data but cannot call
+`capture_github_discovery` or `star_and_ingest_repo`; those mutations require the write key.
+The write key can also read. REST write endpoints follow the same rule and return
+`403 write_forbidden` for a read credential.
