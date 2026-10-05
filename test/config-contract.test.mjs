@@ -19,7 +19,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 // Cloudflare bindings are declared in wrangler.jsonc and injected by the platform, so
 // they are not environment variables and must not appear in .env.example.
-const RUNTIME_BINDINGS = new Set(['R2'])
+const RUNTIME_BINDINGS = new Set(['EXPENSIVE_RATE_LIMITER', 'R2', 'WRITE_RATE_LIMITER'])
 
 // Consumed by the CI workflow through the `aws s3` CLI, not by any code in the repo.
 const CI_TOOLING_ONLY = new Set(['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'])
@@ -184,4 +184,19 @@ test('every variable documented in .env.example is actually consumed', () => {
     [],
     `these variables are documented but nothing reads them: ${inert.join(', ')}`,
   )
+})
+
+
+test('rate-limit bindings use independent namespaces and documented one-minute budgets', () => {
+  const wrangler = JSON.parse(fs.readFileSync(path.join(ROOT, 'wrangler.jsonc'), 'utf-8'))
+  const limits = new Map((wrangler.ratelimits || []).map(binding => [binding.name, binding]))
+
+  assert.deepEqual([...limits.keys()].sort(), ['EXPENSIVE_RATE_LIMITER', 'WRITE_RATE_LIMITER'])
+  assert.notEqual(
+    limits.get('EXPENSIVE_RATE_LIMITER').namespace_id,
+    limits.get('WRITE_RATE_LIMITER').namespace_id,
+    'read-side cost protection and write protection must not share one counter namespace',
+  )
+  assert.deepEqual(limits.get('EXPENSIVE_RATE_LIMITER').simple, { limit: 60, period: 60 })
+  assert.deepEqual(limits.get('WRITE_RATE_LIMITER').simple, { limit: 20, period: 60 })
 })
