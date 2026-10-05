@@ -67,8 +67,8 @@ pnpm install --frozen-lockfile
 | `SILICONFLOW_KEY`                          | 数据构建和 Worker 查询向量                              |
 | `SILICONFLOW_URL`                          | 可选向量接口地址，默认 SiliconFlow embeddings 接口      |
 | `MCP_API_KEY`                              | Worker 读取认证；未配置独立写密钥时保持旧版读写行为      |
-| `MCP_WRITE_API_KEY`                        | 可选独立写密钥；配置后 capture / star / ingest 只接受它  |
-| `MCP_TOOLSET`                              | 可选 MCP 工具暴露面：`all` / `research` / `core`；默认 `all` |
+| `MCP_WRITE_API_KEY`                        | 必填独立写密钥；capture / star / ingest 只接受它         |
+| `MCP_TOOLSET`                              | MCP 工具暴露面：`research`（默认）/ `core` / `all`       |
 | `R2_ACCOUNT_ID`、`R2_BUCKET`               | CI S3 上传及本地 R2 REST 操作的目标                     |
 | `R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` | Actions 的 S3 读写凭据                                  |
 | `CLOUDFLARE_API_TOKEN`                     | 可选 CI 部署；本地收割与向量恢复的 REST 操作也需要它    |
