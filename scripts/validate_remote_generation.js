@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import process from 'node:process'
-import { parseGenerationPointer, generationKey, validateGenerationId } from '../src/data-generation.js'
+import { ACTIVE_GENERATION_KEY, generationKey, parseGenerationPointer, validateGenerationId } from '../src/data-generation.js'
+import { validateVectorIndex, verifyVectorManifest } from '../src/embeddings.js'
 import {
   ASSET_INDEX_KEY,
   ASSET_STATE_KEY,
@@ -14,11 +15,21 @@ import {
   readmeBlobKey,
   READMES_MANIFEST_KEY,
 } from '../src/object-keys.js'
-import { validateVectorIndex, verifyVectorManifest } from '../src/embeddings.js'
 
 const GENERATION_MANIFEST_KEY = 'generation-manifest.json'
-const REQUIRED_FILES = [CATALOG_KEY, RANKINGS_KEY, ASSET_INDEX_KEY, ASSET_STATE_KEY, READMES_MANIFEST_KEY]
-const VECTOR_FILES = [EMBEDDINGS_BIN_KEY, EMBEDDINGS_INDEX_KEY, EMBEDDINGS_FINGERPRINTS_KEY, EMBEDDINGS_MANIFEST_KEY]
+const REQUIRED_FILES = [
+  CATALOG_KEY,
+  RANKINGS_KEY,
+  ASSET_INDEX_KEY,
+  ASSET_STATE_KEY,
+  READMES_MANIFEST_KEY,
+]
+const VECTOR_FILES = [
+  EMBEDDINGS_BIN_KEY,
+  EMBEDDINGS_INDEX_KEY,
+  EMBEDDINGS_FINGERPRINTS_KEY,
+  EMBEDDINGS_MANIFEST_KEY,
+]
 
 function required(name) {
   const value = process.env[name]
@@ -154,7 +165,7 @@ export async function validateRemoteGeneration(generationId, { expectedPointer =
 
 export async function validateActiveGeneration() {
   const target = remoteTarget()
-  const pointer = parseGenerationPointer(parseJson(readObject(target, 'active-generation.json'), 'active-generation.json'))
+  const pointer = parseGenerationPointer(parseJson(readObject(target, ACTIVE_GENERATION_KEY), ACTIVE_GENERATION_KEY))
   return validateRemoteGeneration(pointer.id, { expectedPointer: pointer })
 }
 
