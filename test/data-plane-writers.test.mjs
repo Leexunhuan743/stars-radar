@@ -123,8 +123,82 @@ test('the README sweep is guarded and immutable generation uploads are read back
   assert.match(build, /--exclude "generations\/\*"/)
   assert.match(build, /--exclude "active-generation\.json"/)
 
-  const readback = 'aws s3 cp "s3://${R2_BUCKET}/generations/${GENERATION_ID}/${rel}"'
-  const exactCompare = 'cmp -s ".generation-stage/${rel}" "${verify_dir}/${rel}"'
+  const dollar = '
+  assert.ok(build.includes(readback), 'every staged generation object must be read back from R2')
+  assert.ok(build.includes(exactCompare), 'every staged generation object must be compared byte-for-byte')
+  assert.ok(
+    build.indexOf(readback) < build.indexOf(exactCompare),
+    'the remote object must be downloaded before its exact-content comparison',
+  )
+  assert.ok(
+    build.indexOf('Verify immutable generation in R2') < build.indexOf('Activate verified data generation'),
+    'active-generation.json must move only after immutable object verification',
+  )
+
+  assert.match(
+    build,
+    /aws s3 sync "s3:\/\/\$\{R2_BUCKET\}\/" stars\/[\s\S]{0,200}--include "\*\/\*\.md"/,
+    'the README corpus must be restored from R2 before the incremental sync',
+  )
+  assert.ok(
+    build.indexOf('Download the README corpus from R2') < build.indexOf('Fetch starred repos and READMEs'),
+    'the corpus restore must happen before the sync that decides what to fetch',
+  )
+})
+
+test('every http answer goes through the envelope helper', () => {
+  // The envelope only helps if it is not optional: one endpoint answering with a bare body is the
+  // shape mismatch this replaced. OPTIONS carries no body by definition, so it is the only
+  // exception.
+  const worker = fs.readFileSync(path.join(ROOT, 'src', 'index.js'), 'utf-8')
+  const rawResponses = worker.match(/return new Response\([^\n]*/g) || []
+  assert.deepEqual(
+    rawResponses.map(line => line.trim()).filter(line => !line.includes('status: 204')),
+    [],
+    'every answer except the CORS preflight must be built by src/http.js',
+  )
+  assert.ok(
+    !/jsonResponse\(/.test(worker),
+    'routes must use okResponse/errorResponse; jsonResponse is the low-level builder behind them',
+  )
+})
+
+test('no workflow recursively deletes Worker-owned state prefixes', () => {
+  // Root corpus sweeps must exclude state, and compaction may delete only exact keys from the
+  // generated plan. Recursive deletion of a state prefix would race with Worker appends.
+  const workflows = fs.readdirSync(path.join(ROOT, '.github', 'workflows'))
+    .filter(name => name.endsWith('.yaml') || name.endsWith('.yml'))
+    .map(name => ({ name, text: fs.readFileSync(path.join(ROOT, '.github', 'workflows', name), 'utf-8') }))
+
+  const build = workflows.find(w => w.name === 'build.yaml')
+  assert.ok(build, 'build.yaml must exist for this check to mean anything')
+
+  // Specifically the sync whose destination is the bucket root: the other `s3 sync` calls only
+  // read state prefixes into the workspace.
+  const sync = build.text.match(/aws s3 sync stars\/ "s3:\/\/\$\{R2_BUCKET\}\/"[\s\S]*?cli-connect-timeout \d+/)
+  assert.ok(sync, 'the bucket-root sync is expected to exist')
+  assert.match(sync[0], /--exclude "state\/\*"/, 'the state prefix must be excluded from the corpus sync')
+
+  // `--delete` is passed through the guarded array rather than spelled out in the sync command,
+  // so the way to check that the sweep is still gated is to check where the flag is built.
+  // (`--delete` also appears in the comment above the guard, so match the assignment itself.)
+  const deleteFlag = build.text.match(/sweep=\(--delete\)/)
+  assert.ok(deleteFlag, 'the corpus sweep disappeared, or it is no longer passed through the guard; stale READMEs would accumulate forever')
+  assert.ok(
+    build.text.indexOf('local_readmes') < build.text.indexOf('sweep=(--delete)'),
+    'the corpus check must run before the sweep flag is built',
+  )
+
+  for (const { name, text } of workflows) {
+    const destructive = text.match(/aws s3 rm[^\n]*state\/[^\n]*/g) || []
+    assert.deepEqual(destructive, [], `${name} deletes objects under state/, which has no backup: ${destructive.join(', ')}`)
+  }
+})
+
+  const readback = 'aws s3 cp "s3://' + dollar + '{R2_BUCKET}/generations/'
+    + dollar + '{GENERATION_ID}/' + dollar + '{rel}"'
+  const exactCompare = 'cmp -s ".generation-stage/' + dollar + '{rel}" "'
+    + dollar + '{verify_dir}/' + dollar + '{rel}"'
   assert.ok(build.includes(readback), 'every staged generation object must be read back from R2')
   assert.ok(build.includes(exactCompare), 'every staged generation object must be compared byte-for-byte')
   assert.ok(
