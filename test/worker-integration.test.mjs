@@ -75,6 +75,12 @@ test('the actual Worker serves authenticated research routes and registers usabl
       write_requests: false,
       locality: 'cloudflare_location',
     })
+    assert.deepEqual(health.data.mcpToolset, {
+      name: 'research',
+      valid: true,
+      tool_count: 13,
+      write_tools_exposed: false,
+    })
     const compared = await (await worker.fetch('/api/compare?repos=fixture/one,fixture/two', { headers })).json()
     assert.deepEqual(compared.data.repositories.map(repo => repo.license), ['MIT', 'Apache-2.0'])
     assert.equal((await worker.fetch('/api/compare?repos=fixture/one,FIXTURE/ONE', { headers })).status, 400)
@@ -119,13 +125,11 @@ test('the actual Worker serves authenticated research routes and registers usabl
     client = new Client({ name: 'fixture-research-client', version: '1.0.0' })
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://${worker.address}:${worker.port}/mcp`), { requestInit: { headers } }))
     const tools = await client.listTools()
-    assert.equal(tools.tools.length, 15)
+    assert.equal(tools.tools.length, 13)
     assert.equal(tools.tools.find(tool => tool.name === 'compare_repositories').annotations.readOnlyHint, true)
     assert.equal(tools.tools.find(tool => tool.name === 'search_github_live').annotations.readOnlyHint, true)
-    assert.equal(tools.tools.find(tool => tool.name === 'capture_github_discovery').annotations.readOnlyHint, false)
-    const deniedWrite = await client.callTool({ name: 'capture_github_discovery', arguments: { repo: 'acme/tool', query: 'terminal' } })
-    assert.equal(deniedWrite.isError, true)
-    assert.equal(JSON.parse(deniedWrite.content[0].text).error, 'write_forbidden')
+    assert.equal(tools.tools.some(tool => tool.name === 'capture_github_discovery'), false)
+    assert.equal(tools.tools.some(tool => tool.name === 'star_and_ingest_repo'), false)
 
     const result = await client.callTool({ name: 'compare_repositories', arguments: { repos: ['fixture/one', 'fixture/two'] } })
     assert.notEqual(result.isError, true)
