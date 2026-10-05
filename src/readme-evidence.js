@@ -5,8 +5,12 @@ import { explainTextMatch, matchesSubjectGate, scoreText } from './scoring.js'
 export const README_EVIDENCE_MAX_RESULTS = 5
 export const README_EVIDENCE_MAX_CHUNK = 1200
 export const README_EVIDENCE_SNIPPET = 360
-export const README_VECTOR_MAX_CHUNKS = 6
+export const README_VECTOR_BASE_CHUNKS = 6
+export const README_VECTOR_MAX_CHUNKS = 12
 export const README_VECTOR_MIN_CHARS = 80
+export const README_VECTOR_IMPORTANT_MIN_CHARS = 24
+
+const IMPORTANT_HEADING = /\b(requirements?|compatibility|platforms?|providers?|integrations?|features?|install(?:ation)?|usage|api|license|support)\b|支持|平台|兼容|要求|依赖|集成|功能|安装|用法|许可证/i
 
 function cleanMarkdown(text) {
   return String(text || '')
@@ -60,13 +64,26 @@ function upstreamReadmeBody(markdown) {
 export function splitReadmeSections(markdown) {
   const lines = upstreamReadmeBody(markdown).split(/\r?\n/)
   const sections = []
+  const headingStack = []
   let heading = 'README'
+  let headingPath = ['README']
   let bodyLines = []
+  let sectionOrdinal = 0
 
   const flush = () => {
     const text = cleanMarkdown(bodyLines.join('\n'))
-    for (const chunk of chunkText(text))
-      sections.push({ heading, text: chunk })
+    const chunks = chunkText(text)
+    chunks.forEach((chunk, chunkOrdinal) => {
+      sections.push({
+        section_ordinal: sectionOrdinal,
+        section_chunk_ordinal: chunkOrdinal,
+        heading,
+        heading_path: headingPath,
+        text: chunk,
+      })
+    })
+    if (chunks.length > 0)
+      sectionOrdinal++
     bodyLines = []
   }
 
@@ -83,6 +100,9 @@ export function splitReadmeSections(markdown) {
       while (rawHeading.endsWith('#'))
         rawHeading = rawHeading.slice(0, -1).trimEnd()
       heading = cleanMarkdown(rawHeading) || 'README'
+      headingStack.length = Math.max(0, headingLevel - 1)
+      headingStack[headingLevel - 1] = heading
+      headingPath = headingStack.filter(Boolean)
       continue
     }
     bodyLines.push(line)
@@ -111,46 +131,85 @@ export function snippetAround(text, terms = [], maxLength = README_EVIDENCE_SNIP
   return prefix + text.slice(start, end).trim() + suffix
 }
 
-export function selectReadmeVectorChunks(markdown, { limit = README_VECTOR_MAX_CHUNKS } = {}) {
-  if (!markdown || limit <= 0)
+function readmeVectorCandidates(markdown) {
+  return splitReadmeSections(markdown)
+    .filter((section) => {
+      if (section.text.length >= README_VECTOR_MIN_CHARS)
+        return true
+      return section.text.length >= README_VECTOR_IMPORTANT_MIN_CHARS
+        && IMPORTANT_HEADING.test(section.heading_path.join(' '))
+    })
+}
+
+export function readmeVectorBudget(sections) {
+  const count = sections.length
+  if (count <= README_VECTOR_BASE_CHUNKS)
+    return count
+
+  const totalChars = sections.reduce((sum, section) => sum + section.text.length, 0)
+  if (count <= 8 && totalChars <= 9000)
+    return Math.min(count, 8)
+  if (count <= 12 && totalChars <= 18000)
+    return Math.min(count, 10)
+  return Math.min(count, README_VECTOR_MAX_CHUNKS)
+}
+
+function sectionInformationScore(section) {
+  const heading = section.heading_path.join(' ')
+  const headingBonus = IMPORTANT_HEADING.test(heading) ? 1500 : 0
+  const lengthScore = Math.min(section.text.length, README_EVIDENCE_MAX_CHUNK)
+  const tokens = section.text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+  const uniqueRatio = tokens.length > 0 ? new Set(tokens).size / tokens.length : 0
+  return headingBonus + lengthScore + Math.round(uniqueRatio * 300)
+}
+
+export function selectReadmeVectorChunks(markdown, { limit } = {}) {
+  if (!markdown)
     return []
 
-  const sections = splitReadmeSections(markdown)
-    .filter(section => section.text.length >= README_VECTOR_MIN_CHARS)
-    .map((section, index) => ({ ...section, index }))
+  const sections = readmeVectorCandidates(markdown)
+  const budget = limit === undefined
+    ? readmeVectorBudget(sections)
+    : Math.max(0, Math.min(Number(limit) || 0, README_VECTOR_MAX_CHUNKS, sections.length))
 
-  if (sections.length <= limit)
-    return sections.map(({ index, ...section }) => section)
+  if (budget <= 0)
+    return []
+  if (sections.length <= budget)
+    return sections
 
-  // Sample across the full README instead of taking only the introduction. This keeps the vector
-  // budget bounded while still giving late sections such as integrations, APIs and architecture a
-  // chance to participate in retrieval.
+  // Partition the README into deterministic source-order regions and choose the most informative
+  // section from each region. This preserves whole-document coverage while preferring capability,
+  // compatibility and requirement sections over boilerplate of similar position.
   const selected = []
   const used = new Set()
-  for (let slot = 0; slot < limit; slot++) {
-    const index = Math.round(slot * (sections.length - 1) / Math.max(1, limit - 1))
-    if (used.has(index))
+  for (let slot = 0; slot < budget; slot++) {
+    const start = Math.floor(slot * sections.length / budget)
+    const end = Math.max(start + 1, Math.floor((slot + 1) * sections.length / budget))
+    const candidates = sections.slice(start, end)
+      .map((section, offset) => ({ section, index: start + offset }))
+      .sort((a, b) => sectionInformationScore(b.section) - sectionInformationScore(a.section) || a.index - b.index)
+    const winner = candidates[0]
+    if (!winner || used.has(winner.index))
       continue
-    used.add(index)
-    selected.push(sections[index])
+    used.add(winner.index)
+    selected.push(winner)
   }
 
-  // Rounding can theoretically collapse two slots for very small inputs; fill any remaining budget
-  // with the longest unselected chunks because they usually carry the richest feature description.
-  if (selected.length < limit) {
-    for (const section of [...sections].sort((a, b) => b.text.length - a.text.length || a.index - b.index)) {
-      if (used.has(section.index))
-        continue
-      used.add(section.index)
-      selected.push(section)
-      if (selected.length >= limit)
+  if (selected.length < budget) {
+    const remaining = sections
+      .map((section, index) => ({ section, index }))
+      .filter(entry => !used.has(entry.index))
+      .sort((a, b) => sectionInformationScore(b.section) - sectionInformationScore(a.section) || a.index - b.index)
+    for (const entry of remaining) {
+      selected.push(entry)
+      if (selected.length >= budget)
         break
     }
   }
 
   return selected
     .sort((a, b) => a.index - b.index)
-    .map(({ index, ...section }) => section)
+    .map(entry => entry.section)
 }
 
 export function findReadmeEvidence(markdown, query, intents, { limit = 2 } = {}) {
@@ -160,10 +219,8 @@ export function findReadmeEvidence(markdown, query, intents, { limit = 2 } = {})
   const { queryTokens, matchedGroups, specificSubjects } = analyzeQuery(query, intents)
   const scoringQuery = { queryTokens, matchedGroups, specificSubjects, intents }
   const hits = []
-  let sectionOrdinal = 0
 
   for (const section of splitReadmeSections(markdown)) {
-    const ordinal = sectionOrdinal++
     const pool = `${section.heading} ${section.text}`.toLowerCase()
     if (!matchesSubjectGate(pool, specificSubjects))
       continue
@@ -179,8 +236,10 @@ export function findReadmeEvidence(markdown, query, intents, { limit = 2 } = {})
       ...evidence.matched_intents.flatMap(match => match.terms),
     ]
     hits.push({
-      section_ordinal: ordinal,
+      section_ordinal: section.section_ordinal,
+      section_chunk_ordinal: section.section_chunk_ordinal,
       heading: section.heading,
+      heading_path: section.heading_path,
       snippet: snippetAround(section.text, [...new Set(terms)]),
       keyword_weight: weight,
       matched_tokens: evidence.matched_tokens,
