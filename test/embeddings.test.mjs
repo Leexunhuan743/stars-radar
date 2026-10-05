@@ -15,7 +15,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { verifyVectorPair } from '../scripts/verify_vector_pair.js'
-import { BYTES_PER_VECTOR, describePairMismatch, DIMS, EMBEDDING_MODEL, expectedPairBytes, isEmbedding, vectorCountFromBytes } from '../src/embeddings.js'
+import { BYTES_PER_VECTOR, describePairMismatch, DIMS, EMBEDDING_INPUT_PROFILE, EMBEDDING_MODEL, expectedPairBytes, isEmbedding, LEGACY_EMBEDDING_INPUT_PROFILE, vectorCountFromBytes, vectorManifest, verifyVectorManifest } from '../src/embeddings.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -46,6 +46,7 @@ test('the declared dimension and the byte size of a vector agree', () => {
   assert.equal(DIMS, 1024, 'the model is bge-m3; a different dimension must be a deliberate change')
   assert.equal(BYTES_PER_VECTOR, DIMS * 4, 'Float32')
   assert.equal(EMBEDDING_MODEL, 'BAAI/bge-m3', 'the model name is published by /health')
+  assert.equal(EMBEDDING_INPUT_PROFILE, 'repo-metadata-readme-v2')
   assert.equal(expectedPairBytes(3), 3 * BYTES_PER_VECTOR)
   assert.equal(expectedPairBytes(0), 0, 'an empty index is consistent with an empty binary')
 })
@@ -194,4 +195,28 @@ test('the CI gate requires vectors for journal ingests even when the star catalo
     await assert.rejects(verifyVectorPair(root), /missing confirmed repositories: confirmed\/tool/)
   }
   finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+
+test('vector manifests report whether README evidence is present without rejecting safe legacy generations', async () => {
+  const names = ['a/b']
+  const index = Buffer.from(JSON.stringify(names))
+  const binary = Buffer.alloc(BYTES_PER_VECTOR)
+  const current = await vectorManifest(names, index, binary)
+
+  assert.equal(current.input_profile, EMBEDDING_INPUT_PROFILE)
+  assert.equal(await verifyVectorManifest(current, names, index, binary), EMBEDDING_INPUT_PROFILE)
+
+  const legacy = { ...current }
+  delete legacy.input_profile
+  assert.equal(
+    await verifyVectorManifest(legacy, names, index, binary),
+    LEGACY_EMBEDDING_INPUT_PROFILE,
+    'old manifests remain readable but are never mislabeled as README-aware',
+  )
+
+  await assert.rejects(
+    verifyVectorManifest({ ...current, input_profile: 'unknown-v9' }, names, index, binary),
+    /Unsupported vector input profile/,
+  )
 })
