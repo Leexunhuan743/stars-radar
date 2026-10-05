@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { bindResultReadmeEvidence, buildReadmeEvidence } from '../src/evidence.js'
 import {
   findReadmeEvidence,
   README_EVIDENCE_SNIPPET,
@@ -119,4 +120,46 @@ test('short high-value README sections survive the generic minimum-length filter
   const chunks = selectReadmeVectorChunks(markdown)
   assert.ok(chunks.some(chunk => chunk.heading === 'Requirements'))
   assert.ok(chunks.some(chunk => chunk.heading === 'Compatibility'))
+})
+
+
+test('README generation identity binds to every returned semantic result, not only the top five', () => {
+  const generation = {
+    id: '20261005T080000Z-ceaa138fd814-777',
+    commit: 'ceaa138fd814f70ff2a194cf050a789e7e77cf95',
+    published_at: '2026-10-05T08:00:00.000Z',
+  }
+  const manifest = { generation, repos: {} }
+  const results = Array.from({ length: 8 }, (_, index) => {
+    const repo = `acme/tool-${index}`
+    const sha = String(index + 1).padStart(64, '0')
+    manifest.repos[repo] = {
+      repo,
+      sha256: sha,
+      object_key: `readmes/${sha}.md`,
+      status: 'fresh',
+    }
+    return {
+      repo,
+      evidence: [buildReadmeEvidence({
+        kind: 'readme_chunk',
+        repo,
+        chunkId: `readme:${repo}:fixture`,
+        readmeSha256: sha,
+        heading: 'Features',
+        snippet: 'fixture',
+      })],
+    }
+  })
+
+  bindResultReadmeEvidence(results, manifest)
+
+  assert.equal(results.length, 8)
+  for (const result of results) {
+    const evidence = result.evidence[0]
+    assert.equal(evidence.generation.id, generation.id)
+    assert.equal(evidence.generation.commit, generation.commit)
+    assert.equal(evidence.source.snapshot_at, generation.published_at)
+    assert.equal(evidence.content.object_key, manifest.repos[result.repo].object_key)
+  }
 })
