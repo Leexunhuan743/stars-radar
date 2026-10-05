@@ -21,7 +21,8 @@ The project is in development and intended for personal deployments. It provides
 - Search your own stars by keywords, purpose or natural-language descriptions. Categories come from your GitHub Lists.
 - Explore GitHub Trending, recent repositories, HelloGitHub picks and Agent Skills boards, or search GitHub live.
 - Compare 2–5 repositories using metadata, personal notes, source labels and snapshot dates. Unknown fields remain unknown.
-- Read repository details, READMEs and code snippets. Request matching evidence for search results.
+- Search README sections semantically: each repository has a metadata vector plus independent BGE-M3 vectors for selected README chunks, so features documented only inside README sections can recall the repository directly.
+- Read repository details, READMEs and code snippets. With `explain=true`, inspect the semantic README chunk and separate literal README evidence behind a result.
 - Star a repository and record a reason. Metadata becomes available to lexical search first; semantic vectors arrive with the next successful data build.
 
 Search scores rank candidates; they are not quality ratings or correctness probabilities. Community sources can be unavailable or stale. Check source dates and repository evidence before making a decision.
