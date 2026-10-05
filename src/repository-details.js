@@ -1,3 +1,4 @@
+import { buildRepositoryEvidence, EVIDENCE_TRUST } from './evidence.js'
 import { parseFrontmatter } from './frontmatter.js'
 import { BadRequestError } from './http.js'
 import { readmeBlobKey } from './object-keys.js'
@@ -60,6 +61,12 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
   let source = starred ? 'catalog' : ingest ? 'ingest_journal' : 'asset_index'
   let snapshotAt = starred ? catalog.generatedAt : ingest ? ingest.ingested_at : assetIndex.generatedAt
   let fetchedAt = record?.metadata_fetched_at || null
+  const noteSource = ingest && (ingest.reason || ingest.summary)
+    ? 'ingest_journal'
+    : (starred ? 'catalog' : ingest ? 'ingest_journal' : asset ? 'asset_index' : 'github')
+  const categorySource = starred
+    ? 'github_lists'
+    : (ingest?.categories?.length ? 'ingest_journal' : asset?.categories?.length ? 'asset_index' : null)
   let body = null
   let readmeSource = null
   if (include_readme) {
@@ -127,8 +134,55 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
       readmeSource = 'github'
     }
   }
+  const projected = project(record)
+  const metadataFields = ['description', 'stars', 'language', 'license', 'pushed_at', 'created_at', 'archived', 'topics']
+    .filter(field => projected[field] !== null && projected[field] !== undefined)
+  const metadataEvidence = buildRepositoryEvidence({
+    kind: 'repository_metadata',
+    repo: record.repo,
+    source,
+    fetchedAt,
+    snapshotAt,
+    generation: source === 'readme_generation' ? readmes.generation : null,
+    fields: metadataFields,
+  })
+  const evidenceChain = [metadataEvidence]
+  const fieldProvenance = Object.fromEntries(metadataFields.map(field => [field, metadataEvidence.id]))
+
+  const personalFields = ['reason', 'summary'].filter(field => projected[field] !== null && projected[field] !== undefined)
+  if (personalFields.length > 0) {
+    const personalEvidence = buildRepositoryEvidence({
+      kind: 'personal_note',
+      repo: record.repo,
+      source: noteSource,
+      trust: EVIDENCE_TRUST.USER_TRUSTED,
+      snapshotAt: noteSource === 'ingest_journal' ? ingest?.ingested_at || null : snapshotAt,
+      generation: source === 'readme_generation' ? readmes.generation : null,
+      fields: personalFields,
+    })
+    evidenceChain.push(personalEvidence)
+    for (const field of personalFields)
+      fieldProvenance[field] = personalEvidence.id
+  }
+
+  if (projected.categories.length > 0) {
+    const categoryEvidence = buildRepositoryEvidence({
+      kind: 'user_taxonomy',
+      repo: record.repo,
+      source: categorySource || source,
+      trust: EVIDENCE_TRUST.USER_TRUSTED,
+      snapshotAt,
+      generation: source === 'readme_generation' ? readmes.generation : null,
+      fields: ['categories'],
+    })
+    evidenceChain.push(categoryEvidence)
+    fieldProvenance.categories = categoryEvidence.id
+  }
+
   const result = {
-    ...project(record),
+    ...projected,
+    field_provenance: fieldProvenance,
+    evidence_chain: evidenceChain,
     evidence: { source, fetched_at: fetchedAt || null, snapshot_at: snapshotAt || null, url: `https://github.com/${record.repo}` },
   }
   if (include_readme) {
