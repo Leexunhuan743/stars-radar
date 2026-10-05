@@ -58,7 +58,7 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
 
 1. **查私藏与已入库精选（Level 1 闭集高信任锚点）**：
    - 当用户寻找**自己收藏过的工具、明确需要私房解决方案、或查询已知领域精选**时：调用 `search_github_stars`；
-   - 系统利用 1024 维 BGE-M3 单一权威向量与通用意图本体检索；当前 `repo-metadata-readme-v2` 会把经过清理和限长的 README 证据纳入 repo-level embedding。它不是 README chunk 检索，因此不能把纯语义命中描述成精确章节证据；
+   - 系统利用 1024 维 BGE-M3 单一权威向量与通用意图本体检索；`repo-metadata-readme-chunks-v3` 为每个仓库建立一个 metadata vector，并为 README 选出的章节 chunk 建立独立向量。功能只出现在 README 时也能由 chunk 直接召回；若 `explain=true` 返回 `semantic_evidence.readme_chunk`，可以把对应 heading/snippet 作为语义证据，但 cosine similarity 仍然只是排序信号，不是事实概率；
    - **警惕边界**：私藏库只覆盖本实例已同步的收藏与收录。若用户明确问“全网新出的”、“最近火的”或私藏库中极可能未收录的冷门概念（如“代码结构 可视化”），**切勿仅在私藏库中强行挑选，必须主动进入 Level 3 探网**。
 
 2. **查看社区情报榜单（Level 2 常态化雷达）**：
