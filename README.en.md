@@ -74,6 +74,8 @@ pnpm deploy
 
 Use a random read key for `MCP_API_KEY` and your personal GitHub token for `GITHUB_TOKEN`. Optionally configure a different `MCP_WRITE_API_KEY`; when present, the read key can search and read but cannot capture discoveries or star/ingest repositories. Without it, the legacy single-key read/write behavior remains. Wrangler prints the deployed URL.
 
+`wrangler.jsonc` also declares two Cloudflare Rate Limiting bindings: expensive search/probe work defaults to 60 calls per minute and write operations to 20 calls per minute, keyed by the authenticated credential at the current Cloudflare location. These are protective budgets, not exact accounting. If the example `namespace_id` values are already used in your Cloudflare account, replace both with unused positive integers before deployment.
+
 To deploy automatically after a data update, also set the Actions secret `CLOUDFLARE_API_TOKEN` with Worker deployment permission for the account. Without it, the workflow only publishes R2 data. Configuration details are listed in [.env.example](.env.example) and the [developer guide](docs/DEVELOPMENT.md).
 
 ## Connect an AI assistant
