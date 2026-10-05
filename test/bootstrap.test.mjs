@@ -81,7 +81,7 @@ for (const starred of [[], [{ full_name: 'fixture/tool', name: 'tool', owner: { 
         keys.some(key => /^generations\/[\w.-]+\/generation-manifest\.json$/.test(key)),
         'local seed must include the generation manifest used to inspect a staged publication',
       )
-      assert.equal(keys.includes('fixture/tool.md'), starred.length > 0)
+      assert.equal(keys.some(key => /^readmes\/[0-9a-f]{64}\.md$/.test(key)), starred.length > 0)
       fs.unlinkSync(path.join(setup.directory, 'asset-index.json'))
       await assert.rejects(seedLocalR2({ put: async () => assert.fail('no partial seed allowed') }, setup.directory), /Generation is missing required documents: asset-index\.json/)
     }
