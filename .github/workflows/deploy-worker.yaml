@@ -26,6 +26,10 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       WORKER_URL: ${{ vars.WORKER_URL }}
       MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
     steps:
@@ -45,8 +49,28 @@ jobs:
         run: |
           test -n "${CLOUDFLARE_API_TOKEN}" || { echo "::error::CLOUDFLARE_API_TOKEN is required"; exit 1; }
           test -n "${CLOUDFLARE_ACCOUNT_ID}" || { echo "::error::R2_ACCOUNT_ID is required"; exit 1; }
+          test -n "${R2_BUCKET}" || { echo "::error::R2_BUCKET is required"; exit 1; }
+          test -n "${AWS_ACCESS_KEY_ID}" || { echo "::error::R2_ACCESS_KEY_ID is required"; exit 1; }
+          test -n "${AWS_SECRET_ACCESS_KEY}" || { echo "::error::R2_SECRET_ACCESS_KEY is required"; exit 1; }
           test -n "${WORKER_URL}" || { echo "::error::WORKER_URL is required for post-deploy verification"; exit 1; }
           test -n "${MCP_API_KEY}" || { echo "::error::MCP_API_KEY is required for post-deploy verification"; exit 1; }
+
+      - name: Require an active immutable data generation before deploy
+        run: |
+          aws configure set default.region auto
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp "s3://${R2_BUCKET}/active-generation.json" "${RUNNER_TEMP}/active-generation.json" \
+            --endpoint-url "${endpoint}" --only-show-errors
+          generation=$(node --input-type=module - "${RUNNER_TEMP}/active-generation.json" <<'NODE'
+          import fs from 'node:fs'
+          import { parseGenerationPointer } from './src/data-generation.js'
+          console.log(parseGenerationPointer(JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))).id)
+          NODE
+          )
+          aws s3api head-object --bucket "${R2_BUCKET}" \
+            --key "generations/${generation}/generation-manifest.json" \
+            --endpoint-url "${endpoint}" >/dev/null
+          echo "Active data generation ready: ${generation}"
 
       - name: Verify bundle
         run: pnpm exec wrangler deploy --dry-run --outdir dist
