@@ -20,8 +20,9 @@ function compile({
   targetSource,
   minScore = 0,
   limit = 20,
+  applyCommunityDiversityCap = false,
 } = {}) {
-  return compileResults({ rrfMap, repos, communityMap, targetCategory, targetSource, minScore, limit })
+  return compileResults({ rrfMap, repos, communityMap, targetCategory, targetSource, minScore, limit, applyCommunityDiversityCap })
 }
 
 // A vector-channel entry: source 'starred' is the default fuseRankings stamps on every
@@ -353,7 +354,7 @@ test('starred results are never dropped by the community cap', () => {
   rrfMap.set('me/late-starred-b', vectorEntry({ rrf: 0.002, kwWeight: 4 }))
 
   const repos = { 'me/late-starred-a': {}, 'me/late-starred-b': {} }
-  const results = compile({ rrfMap, repos, limit: 10 })
+  const results = compile({ rrfMap, repos, limit: 10, applyCommunityDiversityCap: true })
 
   // ceil(10 * 0.4) = 4 non-starred admitted, in ranked order, then both starred hits —
   // which rank last here and would otherwise be truncated away.
@@ -375,10 +376,23 @@ test('non-starred results are truncated to ceil(limit * 0.4) without reordering'
     ['n/three', vectorEntry({ rrf: 0.3, source: 'ranking', kwWeight: 10 })],
   ])
 
-  const results = compile({ rrfMap, repos: { 's/starred': {} }, limit: 5 })
+  const results = compile({ rrfMap, repos: { 's/starred': {} }, limit: 5, applyCommunityDiversityCap: true })
 
   // ceil(5 * 0.4) = 2 non-starred kept, and the starred hit is prepended in its own
   // ranked position rather than moved.
   assert.deepEqual(results.map(r => r.repo), ['s/starred', 'n/one', 'n/two'])
   assert.equal(results.filter(r => r.source !== 'starred').length, 2)
+})
+
+
+test('community diversity cap is opt-in so explicit result sets can fill the requested limit', () => {
+  const rrfMap = new Map()
+  for (let i = 1; i <= 5; i++)
+    rrfMap.set(`n/community-${i}`, vectorEntry({ rrf: i / 100, source: 'trending', kwWeight: 20 }))
+
+  const uncapped = compile({ rrfMap, limit: 5 })
+  const capped = compile({ rrfMap, limit: 5, applyCommunityDiversityCap: true })
+
+  assert.equal(uncapped.length, 5, 'an explicit community view may fill the requested limit')
+  assert.equal(capped.length, 2, 'the default mixed view still applies ceil(limit*0.4)')
 })
