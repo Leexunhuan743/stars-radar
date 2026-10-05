@@ -21,7 +21,13 @@ function fixture({ starred = [], graphqlFailure = false, readmeFailure = false }
       if (url.includes('/user/starred')) return Response.json(starred);
       if (url.endsWith('/graphql')) return Response.json(${graphqlFailure ? '{ errors: [{ message: "denied" }] }' : '{ data: { viewer: { lists: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }'});
       if (url.endsWith('/readme')) return new Response(${readmeFailure ? '"denied", { status: 403 }' : '"# Fixture README", { headers: { "content-type": "text/plain" } }'});
-      if (url.includes('/embeddings')) return Response.json({ data: [{ index: 0, embedding: [1, ...Array(1023).fill(0)] }] });
+      if (url.includes('/embeddings')) {
+        const body = JSON.parse(arguments[1]?.body || '{}');
+        const inputs = Array.isArray(body.input) ? body.input : [body.input];
+        return Response.json({
+          data: inputs.map((_, index) => ({ index, embedding: [1, ...Array(1023).fill(0)] })),
+        });
+      }
       return new Response('Fixture denies external network access', { status: 403 });
     };
   `)
