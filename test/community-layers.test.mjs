@@ -10,8 +10,8 @@ import assert from 'node:assert/strict'
 //     filters on, so those values answered a filter about the deployer's taxonomy with a source's
 //     label. The decision (2026-09-15) is that a source's provenance travels in `source` and the
 //     badge, and never in `categories`.
-//   * **the order of the layers decides who offers a repository first**, because a key that is
-//     already scored is skipped. Reordering the table is therefore a behaviour change, not a tidy-up.
+//   * **the order of the layers decides the primary presentation source**, while duplicate
+//     observations accumulate in sourceChannels instead of being discarded.
 import { test } from 'node:test'
 import { collectCommunityHits, COMMUNITY_LAYERS } from '../src/community-layers.js'
 
@@ -73,9 +73,8 @@ test('a skill is keyed apart from a repository, and carries installs as its star
   assert.equal(skill.item.description, '浏览器助手', 'the Chinese description is preferred when present')
 })
 
-test('the first layer to offer a repository keeps it', () => {
-  // Order is behaviour: the loop skips a key that is already scored, so a repository on both the
-  // trending board and the breakout board is published once, under the earlier layer.
+test('the first layer stays primary while later layers are retained as corroborating evidence', () => {
+  // Order still decides the primary presentation, but a second independent board must not vanish.
   const doc = rankings()
   doc.breakoutWeekly.push({ repo: 'acme/trending-tool', url: 'https://github.com/acme/trending-tool', stars: 10, description: 'a browser tool' })
 
@@ -83,8 +82,9 @@ test('the first layer to offer a repository keeps it', () => {
   collectCommunityHits({ rankings: doc, query: query({ queryTokens: ['browser'] }), keywordScores })
 
   const hit = keywordScores.get('acme/trending-tool')
-  assert.equal(hit.source, 'trending', 'the earlier layer wins')
-  assert.equal([...keywordScores.keys()].filter(k => k === 'acme/trending-tool').length, 1, 'offered once')
+  assert.equal(hit.source, 'trending', 'the earlier layer remains the primary source')
+  assert.deepEqual(hit.sourceChannels, ['trending', 'breakout'])
+  assert.equal([...keywordScores.keys()].filter(k => k === 'acme/trending-tool').length, 1, 'one result carries both observations')
 })
 
 test('a named subject still gates every layer', () => {
