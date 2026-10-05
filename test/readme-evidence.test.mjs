@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  README_EVIDENCE_SNIPPET,
   findReadmeEvidence,
+  README_EVIDENCE_SNIPPET,
   splitReadmeSections,
 } from '../src/readme-evidence.js'
 
@@ -52,7 +52,7 @@ test('semantic similarity alone never fabricates a README snippet', () => {
 })
 
 test('README snippets stay bounded even when the matching section is very long', () => {
-  const markdown = '# Features\n' + 'prefix '.repeat(100) + 'WebDAV synchronization ' + 'suffix '.repeat(100)
+  const markdown = `# Features\n${'prefix '.repeat(100)}WebDAV synchronization ${'suffix '.repeat(100)}`
   const [hit] = findReadmeEvidence(markdown, 'webdav', {})
   assert.ok(hit.snippet.length <= README_EVIDENCE_SNIPPET + 2, 'ellipsis may add at most two characters')
   assert.match(hit.snippet, /WebDAV/)
@@ -63,7 +63,6 @@ test('missing README or disabled limits produce no evidence', () => {
   assert.deepEqual(findReadmeEvidence('# Features\nWebDAV', '', INTENTS), [])
   assert.deepEqual(findReadmeEvidence('# Features\nWebDAV', 'webdav', INTENTS, { limit: 0 }), [])
 })
-
 
 test('generated Stars Radar archive metadata never masquerades as upstream README evidence', () => {
   const archived = [
