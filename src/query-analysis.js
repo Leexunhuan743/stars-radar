@@ -73,5 +73,9 @@ export function analyzeQuery(query, intents) {
     return true
   })
 
-  return { queryTokens, matchedGroups, specificSubjects }
+  const hardSubjects = specificSubjects.filter(subject =>
+    NAMED_SUBJECTS.has(subject) || /^[\w.-]+\/[\w.-]+$/.test(subject),
+  )
+
+  return { queryTokens, matchedGroups, specificSubjects, hardSubjects }
 }
