@@ -109,13 +109,29 @@ test('a failed Lists read cannot prune an existing corpus or replace the catalog
   }
 })
 
-test('README download failure cannot publish a successful new catalogue', () => {
-  const setup = fixture({ starred: [{ full_name: 'fixture/tool', name: 'tool', owner: { login: 'fixture' }, stargazers_count: 1 }], readmeFailure: true })
+test('README download failure degrades the evidence plane without blocking repository metadata', () => {
+  const setup = fixture({
+    starred: [{
+      full_name: 'fixture/tool',
+      name: 'tool',
+      owner: { login: 'fixture' },
+      stargazers_count: 1,
+      pushed_at: '2026-10-01T00:00:00Z',
+    }],
+    readmeFailure: true,
+  })
   try {
     const result = setup.run('index.js')
-    assert.notEqual(result.status, 0)
-    assert.match(result.stderr, /refusing to publish a partial corpus/)
-    assert.equal(fs.existsSync(path.join(setup.directory, 'catalog.json')), false)
+    assert.equal(result.status, 0, result.stderr)
+    const catalogue = JSON.parse(fs.readFileSync(path.join(setup.directory, 'catalog.json'), 'utf8'))
+    assert.equal(catalogue.totalRepos, 1)
+    assert.equal(catalogue.repos['fixture/tool'].pushedAt, '2026-10-01T00:00:00Z')
+    assert.equal(catalogue.repos['fixture/tool'].readmePushedAt, null)
+    assert.equal(fs.existsSync(path.join(setup.directory, 'stars', 'fixture', 'tool.md')), false)
+    const status = JSON.parse(fs.readFileSync(path.join(setup.directory, '.readme-sync-status.json'), 'utf8'))
+    assert.equal(status.repos['fixture/tool'].status, 'unavailable')
+    assert.equal(status.repos['fixture/tool'].upstream_pushed_at, '2026-10-01T00:00:00Z')
+    assert.equal(status.repos['fixture/tool'].source_pushed_at, null)
   }
   finally {
     setup.clean()
