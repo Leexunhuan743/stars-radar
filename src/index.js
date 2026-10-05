@@ -211,10 +211,10 @@ async function handleRequest(req, env, ctx) {
     const authHeader = req.headers.get('Authorization')
     const apiKey = authHeader?.replace(/^bearer\s+/i, '').trim()
 
-    if (!env.MCP_API_KEY || !env.MCP_WRITE_API_KEY) {
+    if (!env.MCP_API_KEY || !env.MCP_WRITE_API_KEY || env.MCP_API_KEY === env.MCP_WRITE_API_KEY) {
       return errorResponse(
         'server_misconfigured',
-        'MCP_API_KEY and MCP_WRITE_API_KEY are both required. Configure separate read and write credentials before starting the Worker.',
+        'MCP_API_KEY and MCP_WRITE_API_KEY are both required and must be different values.',
         500,
       )
     }
