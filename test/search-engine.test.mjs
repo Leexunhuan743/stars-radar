@@ -8,13 +8,15 @@ const INTENTS = { terminal: ['terminal', 'cli'], browser: ['browser'] }
 function repoRecord(repo) {
   return { id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' }
 }
-const readmeRecord = (repo, heading, text) => ({
-  id: `readme:${repo.toLowerCase()}:fixture`,
-  repo,
-  kind: 'readme_chunk',
-  heading,
-  text,
-})
+function readmeRecord(repo, heading, text) {
+  return {
+    id: `readme:${repo.toLowerCase()}:fixture`,
+    repo,
+    kind: 'readme_chunk',
+    heading,
+    text,
+  }
+}
 
 function search(query, options = {}, documents = {}) {
   return searchDocuments({
