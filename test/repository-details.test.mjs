@@ -30,7 +30,13 @@ test('compact metadata does not read a README or use the network for known repos
   assert.equal(result.pushed_at, '2026-09-30T00:00:00Z')
   assert.equal(result.reason, 'works offline')
   assert.equal('readme' in result, false)
-  assert.deepEqual(result.evidence, { source: 'catalog', fetched_at: null, snapshot_at: '2026-10-01T00:00:00Z', url: 'https://github.com/Acme/Tool' })
+  assert.equal(result.evidence[0].kind, 'repository_metadata')
+  assert.equal(result.evidence[0].source.kind, 'catalog')
+  assert.equal(result.evidence[0].source.snapshot_at, '2026-10-01T00:00:00Z')
+  assert.equal(result.provenance.stars, result.evidence[0].id)
+  const note = result.evidence.find(item => item.kind === 'personal_note')
+  assert.equal(note.source.kind, 'catalog')
+  assert.equal(result.provenance.reason, note.id)
 })
 
 test('comparison has identical fields, keeps input order and labels unknown facts', async () => {
@@ -39,7 +45,7 @@ test('comparison has identical fields, keeps input order and labels unknown fact
   assert.deepEqual(Object.keys(result.repositories[0]), Object.keys(result.repositories[1]))
   assert.equal(result.repositories[0].license, 'MIT')
   assert.equal(result.repositories[1].license, null)
-  assert.equal(result.repositories[0].evidence.source, 'asset_index')
+  assert.equal(result.repositories[0].evidence[0].source.kind, 'asset_index')
   assert.equal('score' in result.repositories[0], false)
 })
 
@@ -47,7 +53,10 @@ test('ingested metadata outranks the accumulated community copy', async () => {
   const documents = { ...DOCUMENTS, harvested: [{ repo: 'Other/Tool', reason: 'selected for research', ingested_at: '2026-10-03T00:00:00Z' }] }
   const result = await getRepositoryDetails(NO_README, documents, 'other/tool', { ...NO_FETCH, include_readme: false })
   assert.equal(result.reason, 'selected for research')
-  assert.equal(result.evidence.source, 'ingest_journal')
+  assert.equal(result.evidence[0].source.kind, 'ingest_journal')
+  const note = result.evidence.find(item => item.kind === 'personal_note')
+  assert.equal(note.source.kind, 'ingest_journal')
+  assert.equal(result.provenance.reason, note.id)
 })
 
 test('missing compact metadata is fetched from GitHub with provenance but without README calls', async () => {
@@ -63,8 +72,8 @@ test('missing compact metadata is fetched from GitHub with provenance but withou
   assert.deepEqual(calls, ['https://api.github.com/repos/fresh/project'])
   assert.equal(result.archived, false)
   assert.equal(result.license, null)
-  assert.equal(result.evidence.source, 'github')
-  assert.equal(result.evidence.fetched_at, '2026-10-03T00:00:00.000Z')
+  assert.equal(result.evidence[0].source.kind, 'github')
+  assert.equal(result.evidence[0].source.fetched_at, '2026-10-03T00:00:00.000Z')
 })
 
 test('archived README is wrapped and capped while metadata comes from the catalogue', async () => {
@@ -75,6 +84,10 @@ test('archived README is wrapped and capped while metadata comes from the catalo
   const result = await getRepositoryDetails(env, DOCUMENTS, 'acme/tool', NO_FETCH)
   assert.equal(result.truncated, true)
   assert.equal(result.readme_source, 'generation')
+  const readmeEvidence = result.evidence.find(item => item.kind === 'readme_document')
+  assert.ok(readmeEvidence)
+  assert.equal(readmeEvidence.content.readme_sha256, README_SHA)
+  assert.equal(result.provenance.readme, readmeEvidence.id)
   assert.ok(result.readme.startsWith('<untrusted_content'))
   assert.ok(result.readme.endsWith('</untrusted_content>'))
 })
@@ -113,7 +126,7 @@ test('refresh compares current GitHub facts without losing personal reasons', as
   assert.equal(result.repositories[0].stars, 200)
   assert.equal(result.repositories[0].license, 'Apache-2.0')
   assert.equal(result.repositories[0].reason, 'works offline')
-  assert.equal(result.repositories[0].evidence.source, 'github')
+  assert.equal(result.repositories[0].evidence[0].source.kind, 'github')
 })
 
 test('frontmatter metadata survives when only a README archive knows the repository', async () => {
@@ -134,8 +147,11 @@ test('frontmatter metadata survives when only a README archive knows the reposit
   assert.equal(result.stars, 42)
   assert.equal(result.reason, 'useful offline')
   assert.deepEqual(result.categories, ['research'])
-  assert.equal(result.evidence.source, 'readme_generation')
-  assert.equal(result.evidence.fetched_at, null)
+  assert.equal(result.evidence[0].source.kind, 'readme_generation')
+  assert.equal(result.evidence[0].source.fetched_at, null)
+  const note = result.evidence.find(item => item.kind === 'personal_note')
+  assert.equal(note.source.kind, 'readme_generation')
+  assert.equal(result.provenance.reason, note.id)
 })
 
 test('repository lookup errors distinguish missing projects, rate limits and transport failures', async () => {
