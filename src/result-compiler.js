@@ -59,7 +59,7 @@ export function compileResults({
     // Where a hit came from is a different axis from how the deployer filed it, so it is a separate
     // filter over the same results: `category` selects the deployer's lists, `source` selects the
     // channel (a trending board, HelloGitHub, the archive, the user's own stars).
-    if (targetSource && source !== targetSource)
+    if (targetSource && source !== targetSource && !sourceChannels.includes(targetSource))
       continue
 
     if (targetCategory) {
