@@ -75,7 +75,7 @@ export function deriveBenchmark(catalog, { maxExact = 24, maxNotes = 24 } = {}) 
     .map(entries => entries[0])
   for (const { record, note } of stableSample(uniqueNotes, maxNotes)) {
     const classes = ['personal_note']
-    if (/[^\x00-\x7F]/.test(note))
+    if ([...note].some(char => char.codePointAt(0) > 127))
       classes.push('multilingual')
     cases.push({
       id: `note-${record.repo.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
