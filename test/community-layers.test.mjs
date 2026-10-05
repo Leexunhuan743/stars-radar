@@ -115,7 +115,6 @@ test('the source\u2019s own classification still counts as scoring text', () => 
   assert.equal('categories' in hit.item, false)
 })
 
-
 test('the strongest corroborating source supplies the scoring evidence without changing primary provenance', () => {
   const doc = rankings()
   doc.trending.overall_daily = [{
