@@ -17,10 +17,17 @@ test('real-benchmark metrics compute recall, precision, reciprocal rank and ndcg
   assert.deepEqual(metrics.forbidden_hits, [])
 })
 
-test('empty-relevance cases require an honestly empty result set', () => {
-  assert.equal(evaluateOne([], [], [], 5).recall_at_k, 1)
-  assert.equal(evaluateOne([], [], [], 5).precision_at_k, 1)
-  assert.equal(evaluateOne(['noise/repo'], [], [], 5).recall_at_k, 0)
+test('negative cases are measured as empty-result success, not mixed into ranking metrics', () => {
+  const empty = evaluateOne([], [], [], 5)
+  assert.equal(empty.has_relevant, false)
+  assert.equal(empty.recall_at_k, null)
+  assert.equal(empty.precision_at_k, null)
+  assert.equal(empty.reciprocal_rank, null)
+  assert.equal(empty.ndcg_at_k, null)
+  assert.equal(empty.empty_success, true)
+
+  const noisy = evaluateOne(['noise/repo'], [], [], 5)
+  assert.equal(noisy.empty_success, false)
 })
 
 test('forbidden hits and latency percentiles remain visible in the summary', () => {
@@ -28,6 +35,7 @@ test('forbidden hits and latency percentiles remain visible in the summary', () 
     {
       latency_ms: 10,
       metrics: {
+        has_relevant: true,
         recall_at_k: 1,
         precision_at_k: 0.5,
         reciprocal_rank: 1,
@@ -38,6 +46,7 @@ test('forbidden hits and latency percentiles remain visible in the summary', () 
     {
       latency_ms: 30,
       metrics: {
+        has_relevant: true,
         recall_at_k: 0.5,
         precision_at_k: 0.25,
         reciprocal_rank: 0.5,
@@ -48,6 +57,7 @@ test('forbidden hits and latency percentiles remain visible in the summary', () 
     {
       latency_ms: 20,
       metrics: {
+        has_relevant: true,
         recall_at_k: 0,
         precision_at_k: 0,
         reciprocal_rank: 0,
@@ -62,9 +72,28 @@ test('forbidden hits and latency percentiles remain visible in the summary', () 
 
   const summary = summarize(rows)
   assert.equal(summary.cases, 3)
+  assert.equal(summary.positive_cases, 3)
+  assert.equal(summary.negative_cases, 0)
+  assert.equal(summary.negative_empty_success_rate, null)
   assert.equal(summary.forbidden_hits, 2)
   assert.equal(summary.p50_latency_ms, 20)
   assert.equal(summary.p95_latency_ms, 30)
   assert.equal(summary.mean_recall_at_k, 0.5)
   assert.equal(summary.mrr, 0.5)
+})
+
+
+test('Precision@K uses K as the denominator and negative success has its own aggregate', () => {
+  const positive = evaluateOne(['a/relevant'], ['a/relevant'], [], 10)
+  assert.equal(positive.precision_at_k, 0.1)
+
+  const report = summarize([
+    { latency_ms: 1, metrics: positive },
+    { latency_ms: 1, metrics: evaluateOne([], [], [], 10) },
+    { latency_ms: 1, metrics: evaluateOne(['noise/repo'], [], [], 10) },
+  ])
+  assert.equal(report.positive_cases, 1)
+  assert.equal(report.negative_cases, 2)
+  assert.equal(report.mean_precision_at_k, 0.1)
+  assert.equal(report.negative_empty_success_rate, 0.5)
 })
