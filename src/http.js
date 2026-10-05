@@ -151,3 +151,18 @@ export function optionalString(raw) {
   const trimmed = raw.trim()
   return trimmed === '' ? undefined : trimmed
 }
+
+
+/** Reads a string parameter with explicit length bounds, preserving empty-string semantics when allowed. */
+export function stringParam(raw, { parameter, fallback = '', minLength = 0, maxLength = Number.POSITIVE_INFINITY } = {}) {
+  if (raw === null || raw === undefined)
+    return fallback
+  const value = String(raw).trim()
+  if (value.length < minLength || value.length > maxLength) {
+    const range = Number.isFinite(maxLength)
+      ? `a string between ${minLength} and ${maxLength} characters`
+      : `a string at least ${minLength} characters long`
+    throw new BadRequestError(parameter, value.slice(0, 80), range)
+  }
+  return value
+}
