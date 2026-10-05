@@ -9,7 +9,7 @@
 // Only `env.R2` is touched here, so this module is importable and testable under plain Node.
 
 import { createDocumentCache, DOCUMENT_STATUS } from './document-cache.js'
-import { describePairMismatch, verifyVectorManifest } from './embeddings.js'
+import { describePairMismatch, validateVectorIndex, verifyVectorManifest } from './embeddings.js'
 import { foldIngestEntries, foldJournalFiles } from './ingest-journal.js'
 import {
   ASSET_INDEX_KEY,
@@ -104,7 +104,7 @@ function buildCaches() {
     }),
     vectors: createDocumentCache({
       name: 'embeddings',
-      empty: () => ({ vectors: null, names: null }),
+      empty: () => ({ vectors: null, records: null }),
       // The pair is one logical document: an index that disagrees with the binary cannot be
       // loaded, and reporting that as "no vectors yet" is what used to disable semantic search
       // without a trace in /health.
@@ -119,9 +119,10 @@ function buildCaches() {
         if (!indexObject || !binObject)
           throw new Error('Vector generation is incomplete: the index or binary object is missing.')
         const indexText = await indexObject.text()
-        const names = JSON.parse(indexText)
+        const records = JSON.parse(indexText)
+        validateVectorIndex(records)
         const buffer = await binObject.arrayBuffer()
-        const problem = describePairMismatch({ names, bytes: buffer.byteLength })
+        const problem = describePairMismatch({ records, bytes: buffer.byteLength })
         if (problem) {
           throw new Error(
             `${EMBEDDINGS_BIN_KEY} / ${EMBEDDINGS_INDEX_KEY} invariant violated: ${problem} `
@@ -130,8 +131,8 @@ function buildCaches() {
         }
         if (!manifestObject)
           throw new Error('Vector manifest is missing. Run the CI data build before serving this vector generation.')
-        const inputProfile = await verifyVectorManifest(await manifestObject.json(), names, new TextEncoder().encode(indexText), buffer)
-        return { vectors: new Float32Array(buffer), names, inputProfile }
+        const inputProfile = await verifyVectorManifest(await manifestObject.json(), records, new TextEncoder().encode(indexText), buffer)
+        return { vectors: new Float32Array(buffer), records, inputProfile }
       },
     }),
     ingestJournal: createDocumentCache({
