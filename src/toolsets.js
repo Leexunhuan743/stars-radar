@@ -12,15 +12,9 @@ const CORE_TOOLS = [
   'get_radar_status',
 ]
 
-const RESEARCH_TOOLS = [
-  ...CORE_TOOLS,
-  'get_trending_repos',
-  'search_github_live',
-  'search_github_code',
-  'search_web_tech',
-  'get_top_skills',
-  'get_hellogithub_picks',
-]
+const RESEARCH_TOOLS = Object.entries(TOOL_DEFINITIONS)
+  .filter(([, definition]) => definition.readOnly !== false)
+  .map(([name]) => name)
 
 const TOOLSETS = {
   core: CORE_TOOLS,
@@ -50,7 +44,7 @@ export function toolsetStatus(value) {
       name: resolved.name,
       valid: true,
       tool_count: resolved.tools.size,
-      write_tools_exposed: resolved.tools.has('capture_github_discovery') || resolved.tools.has('star_and_ingest_repo'),
+      write_tools_exposed: [...resolved.tools].some(name => TOOL_DEFINITIONS[name]?.readOnly === false),
     }
   }
   catch {
@@ -77,6 +71,10 @@ export function validateToolsetCoverage() {
   for (const tool of known) {
     if (!TOOLSETS.all.includes(tool))
       problems.push(`all omits declared tool ${tool}`)
+    if (TOOL_DEFINITIONS[tool]?.readOnly !== false && !TOOLSETS.research.includes(tool))
+      problems.push(`research omits read-only tool ${tool}`)
+    if (TOOL_DEFINITIONS[tool]?.readOnly === false && TOOLSETS.research.includes(tool))
+      problems.push(`research exposes write tool ${tool}`)
   }
 
   return problems
