@@ -87,7 +87,6 @@ jobs:
         if: steps.config.outputs.enabled == 'true'
         run: pnpm eval:retrieval:gate -- --output retrieval-quality-report.json
 
-
       - name: Summarize retrieval quality
         if: steps.config.outputs.enabled == 'true' && always()
         run: |
