@@ -10,7 +10,7 @@ Complete reference for all 15 MCP tools provided by the `Stars Radar` MCP server
 
 - **Description**: Returns the current Stars Radar workspace context: curated star count, vector DB capacity, available community intelligence layers, and search tool selection guidance. Call this first to understand what data the radar currently holds before deciding which search tool to use.
 - **Inputs**: None.
-- **Output**: Object with `workspace`, `version`, `total_starred`, `vector_db_capacity`, `repo_vector_count`, `readme_chunk_vector_count`, `vector_dimensions`, `vector_model`, `vector_input_profile`, `intent_domains`, `community_layers`, and `search_tool_hint`. `vector_input_profile=repo-metadata-readme-chunks-v3` means the index contains structured repository metadata vectors plus independent README section chunk vectors. Missing or different profiles are rejected and must be rebuilt.
+- **Output**: Object with `workspace`, `version`, `data_generation`, `total_starred`, `vector_db_capacity`, `repo_vector_count`, `readme_chunk_vector_count`, `vector_dimensions`, `vector_model`, `vector_input_profile`, `intent_domains`, `community_layers`, and `search_tool_hint`. `vector_input_profile=repo-metadata-readme-chunks-v3` means the index contains structured repository metadata vectors plus independent README section chunk vectors. Missing or different profiles are rejected and must be rebuilt.
   > Zero capacity can mean an empty installation. An inconsistent generation is a visible document error, or a stale cached view; inspect `/health` and its data-plane status rather than treating every zero as a provider outage.
 
 ### `search_github_stars`
@@ -183,6 +183,9 @@ For real quality measurement, copy `test/fixtures/retrieval-benchmark.example.js
 
 ```sh
 pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 10
+
+# Enforce private fixture thresholds and return non-zero on regression
+pnpm eval:retrieval:gate -- --fixture data/retrieval-benchmark.private.json --k 10
 ```
 
 The report compares lexical and real BGE-M3 hybrid retrieval and includes Recall@K, Precision@K, MRR, NDCG@K, forbidden hits, and P50/P95 latency.
