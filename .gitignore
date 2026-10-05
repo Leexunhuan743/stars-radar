@@ -172,6 +172,8 @@ asset-meta.json
 previous-asset-index.json
 .data-compaction-plan.json
 active-generation.json
+.generation-stage/
+generation-manifest.json
 
 # Audit artifacts and patch files
 .audits/
