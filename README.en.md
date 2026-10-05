@@ -65,18 +65,18 @@ Set Worker secrets separately from Actions secrets:
 
 ```sh
 pnpm exec wrangler secret put MCP_API_KEY
-# Optional but recommended: use a different key for mutations
+# Required: mutations use a separate key
 pnpm exec wrangler secret put MCP_WRITE_API_KEY
 pnpm exec wrangler secret put GITHUB_TOKEN
 pnpm exec wrangler secret put SILICONFLOW_KEY
 pnpm deploy
 ```
 
-Use a random read key for `MCP_API_KEY` and your personal GitHub token for `GITHUB_TOKEN`. Optionally configure a different `MCP_WRITE_API_KEY`; when present, the read key can search and read but cannot capture discoveries or star/ingest repositories. Without it, the legacy single-key read/write behavior remains. Wrangler prints the deployed URL.
+Both `MCP_API_KEY` and `MCP_WRITE_API_KEY` are required and must be different random values. The read key can search/read only; the write key may also capture discoveries and star/ingest repositories. Use your personal GitHub token for `GITHUB_TOKEN`. Wrangler prints the deployed URL.
 
 `wrangler.jsonc` also declares two Cloudflare Rate Limiting bindings: expensive search/probe work defaults to 60 calls per minute and write operations to 20 calls per minute, keyed by the authenticated credential at the current Cloudflare location. These are protective budgets, not exact accounting. If the example `namespace_id` values are already used in your Cloudflare account, replace both with unused positive integers before deployment.
 
-You can also set `MCP_TOOLSET` to reduce the **MCP-visible tool surface**: `all` (default/backward compatible, 15 tools), `research` (13 read-only research tools; capture and star/ingest are hidden), or `core` (7 personal-library retrieval/comparison/status tools; open-world GitHub/Web probes are hidden). This only changes MCP discovery/calling; REST routes remain available. Invalid values fail MCP initialization rather than silently widening access.
+`MCP_TOOLSET` controls the **MCP-visible tool surface**. The default is `research`, which exposes all read-only research tools but hides capture and star/ingest. `core` keeps only personal-library retrieval/comparison/status tools. Write tools are exposed only when `all` is selected explicitly. REST routes are unchanged; invalid values fail MCP initialization.
 
 To deploy automatically after a data update, also set the Actions secret `CLOUDFLARE_API_TOKEN` with Worker deployment permission for the account. Without it, the workflow only publishes R2 data. Configuration details are listed in [.env.example](.env.example) and the [developer guide](docs/DEVELOPMENT.md).
 
@@ -108,7 +108,7 @@ Replace the placeholders. Client formats vary. The service uses Bearer-key authe
 
 ## Command-line client
 
-The client uses only the Python standard library. Set `WORKER_URL` and `MCP_API_KEY` in your shell; it does not load `.env` automatically. If the deployment uses a separate write key, set `MCP_WRITE_API_KEY` before commands that persist or star repositories.
+The client uses only the Python standard library. Set `WORKER_URL` and `MCP_API_KEY` in your shell; it does not load `.env` automatically. Set `MCP_WRITE_API_KEY` before `--capture` or `--star` commands.
 
 PowerShell:
 
