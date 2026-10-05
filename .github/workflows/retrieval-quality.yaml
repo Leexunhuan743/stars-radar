@@ -39,6 +39,7 @@ jobs:
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      TRUSTED_QUALITY_EVENT: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -52,7 +53,12 @@ jobs:
             - recursive: true
               args: [--frozen-lockfile, --strict-peer-dependencies]
 
+      - name: Run non-secret fork retrieval regression
+        if: env.TRUSTED_QUALITY_EVENT != 'true'
+        run: pnpm eval:retrieval
+
       - name: Require strict candidate quality configuration
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
         run: |
           test -n "${SILICONFLOW_KEY}" || { echo "::error::SILICONFLOW_KEY is required"; exit 1; }
           test -n "${R2_ACCOUNT_ID}" || { echo "::error::R2_ACCOUNT_ID is required"; exit 1; }
@@ -61,9 +67,11 @@ jobs:
           test -n "${AWS_SECRET_ACCESS_KEY}" || { echo "::error::R2_SECRET_ACCESS_KEY is required"; exit 1; }
 
       - name: Validate active production generation
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
         run: node scripts/validate_remote_generation.js --active
 
       - name: Restore production corpus and vector baseline
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
         run: |
           aws configure set default.region auto
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -105,36 +113,42 @@ jobs:
           ' _ < <(awk -F '\t' '{printf "%s%c%s%c",$1,0,$2,0}' "${RUNNER_TEMP}/readmes.tsv")
 
       - name: Rebuild candidate vectors with PR code
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
         run: |
           node scripts/build_candidate_vectors.js
           node scripts/verify_vector_pair.js
 
       - name: Derive production regression benchmark
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
         run: node scripts/build_retrieval_benchmark_from_corpus.js --output data/retrieval-benchmark.derived.json
 
       - name: Enforce production-derived regression smoke gate
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
         run: |
           pnpm eval:retrieval:gate -- \
             --fixture data/retrieval-benchmark.derived.json \
             --output retrieval-regression-derived-report.json
 
       - name: Require private human-labeled closure benchmark
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
         run: |
           test -n "${RETRIEVAL_BENCHMARK_B64}" || { echo "::error::RETRIEVAL_BENCHMARK_B64 is required for Retrieval Quality Closure"; exit 1; }
 
       - name: Materialize private human-labeled benchmark
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
         run: |
           printf '%s' "${RETRIEVAL_BENCHMARK_B64}" | base64 --decode > data/retrieval-benchmark.private.json
           node scripts/validate_private_benchmark.js data/retrieval-benchmark.private.json
 
       - name: Enforce private candidate retrieval quality gate
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
         run: |
           pnpm eval:retrieval:gate -- \
             --fixture data/retrieval-benchmark.private.json \
             --output retrieval-quality-private-report.json
 
       - name: Summarize retrieval gates
-        if: always()
+        if: always() && env.TRUSTED_QUALITY_EVENT == 'true'
         run: |
           node --input-type=module - <<'NODE' >> "${GITHUB_STEP_SUMMARY}"
           import fs from 'node:fs'
@@ -164,3 +178,13 @@ jobs:
             console.log(report.quality_gate?.passed ? `✅ ${label} passed.` : `❌ ${label} failed.`)
           }
           NODE
+
+      - name: Summarize fork retrieval regression
+        if: always() && env.TRUSTED_QUALITY_EVENT != 'true'
+        run: |
+          {
+            echo '### Retrieval Gate'
+            echo
+            echo 'Fork pull request: repository secrets are intentionally unavailable.'
+            echo 'The non-secret synthetic retrieval regression ran; secret-backed candidate/private quality gates are reserved for trusted events.'
+          } >> "${GITHUB_STEP_SUMMARY}"
