@@ -173,11 +173,6 @@ function enrichCategoriesWithTopRepos(catalog) {
   })
 }
 
-// The archive bucket also holds the JSON state objects, and `R2.list` applies its limit to
-// every object rather than to the READMEs. Listing therefore has to page past them, with a
-// cap so a bucket that never yields a README cannot spin forever.
-const MAX_LIST_PAGES = 20
-
 export default {
   fetch: async (req, env, ctx) => {
     try {
@@ -929,9 +924,7 @@ async function handleRequest(req, env, ctx) {
       { description: TOOL_DEFINITIONS.list_starred_repos.description, inputSchema: TOOL_DEFINITIONS.list_starred_repos.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.list_starred_repos.readOnly } },
       async ({ limit = 20, cursor }) => {
         try {
-          // Pagination lives in the tested module: `R2.list` limits every object, not the
-          // READMEs, so a single page can be all JSON state and look like an empty library.
-          const result = await listReadmePage(env.R2, { limit, cursor }, MAX_LIST_PAGES)
+          const result = await listReadmePage(await getReadmeManifest(env), { limit, cursor })
 
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
