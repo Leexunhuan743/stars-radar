@@ -78,7 +78,6 @@ test('the pipeline fold reports which object carried an unreadable line', () => 
   assert.match(problems[0], /two\.jsonl/)
 })
 
-
 test('embedding inputs never promote legacy ingest description copies to personal summary', () => {
   const [curated] = embeddingRepositories({}, [{
     repo: 'Acme/Tool',
