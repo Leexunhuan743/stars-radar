@@ -76,6 +76,8 @@ Use a random read key for `MCP_API_KEY` and your personal GitHub token for `GITH
 
 `wrangler.jsonc` also declares two Cloudflare Rate Limiting bindings: expensive search/probe work defaults to 60 calls per minute and write operations to 20 calls per minute, keyed by the authenticated credential at the current Cloudflare location. These are protective budgets, not exact accounting. If the example `namespace_id` values are already used in your Cloudflare account, replace both with unused positive integers before deployment.
 
+You can also set `MCP_TOOLSET` to reduce the **MCP-visible tool surface**: `all` (default/backward compatible, 15 tools), `research` (13 read-only research tools; capture and star/ingest are hidden), or `core` (7 personal-library retrieval/comparison/status tools; open-world GitHub/Web probes are hidden). This only changes MCP discovery/calling; REST routes remain available. Invalid values fail MCP initialization rather than silently widening access.
+
 To deploy automatically after a data update, also set the Actions secret `CLOUDFLARE_API_TOKEN` with Worker deployment permission for the account. Without it, the workflow only publishes R2 data. Configuration details are listed in [.env.example](.env.example) and the [developer guide](docs/DEVELOPMENT.md).
 
 ## Connect an AI assistant
