@@ -94,14 +94,28 @@ export function prepareDataGeneration({
         if (!file.isFile() || !file.name.endsWith(README_SUFFIX))
           continue
         const source = path.join(starsRoot, owner.name, file.name)
+        const repo = `${owner.name}/${file.name.slice(0, -README_SUFFIX.length)}`
+        const sync = syncRepos[repo.toLowerCase()] || {}
+        if (sync.status === 'absent') {
+          readmes.repos[repo.toLowerCase()] = {
+            repo,
+            sha256: null,
+            object_key: null,
+            status: 'absent',
+            fetched_at: sync.fetched_at || null,
+            upstream_pushed_at: sync.upstream_pushed_at || null,
+            source_pushed_at: sync.source_pushed_at || null,
+            preserved_from_generation: sync.preserved_from_generation || null,
+          }
+          continue
+        }
+
         const bytes = fs.readFileSync(source)
         const sha256 = digest(bytes)
-        const repo = `${owner.name}/${file.name.slice(0, -README_SUFFIX.length)}`
         const blobKey = readmeBlobKey(sha256)
         const blobTarget = path.resolve(readmeStage, path.basename(blobKey))
         if (!fs.existsSync(blobTarget))
           fs.writeFileSync(blobTarget, bytes)
-        const sync = syncRepos[repo.toLowerCase()] || {}
         readmes.repos[repo.toLowerCase()] = {
           repo,
           sha256,
@@ -116,17 +130,16 @@ export function prepareDataGeneration({
     }
   }
 
-  // A newly starred repository may have valid metadata even when GitHub temporarily refuses its
-  // README. Preserve that fact in the manifest instead of dropping the repository from the evidence
-  // plane or blocking the whole immutable generation.
+  // README absence and temporary unavailability are evidence states, not content blobs. Preserve
+  // them in the generation manifest even though there is intentionally no README object to hash.
   for (const [key, sync] of Object.entries(syncRepos)) {
-    if (readmes.repos[key] || sync?.status !== 'unavailable')
+    if (readmes.repos[key] || !['absent', 'unavailable'].includes(sync?.status))
       continue
     readmes.repos[key] = {
       repo: sync.repo || key,
       sha256: null,
       object_key: null,
-      status: 'unavailable',
+      status: sync.status,
       fetched_at: null,
       upstream_pushed_at: sync.upstream_pushed_at || null,
       source_pushed_at: sync.source_pushed_at || null,
@@ -147,6 +160,7 @@ export function prepareDataGeneration({
     generation: pointer,
     files,
     readme_blobs: Object.values(readmes.repos).filter(ref => ref.sha256).length,
+    readme_absent: Object.values(readmes.repos).filter(ref => ref.status === 'absent').length,
     readme_unavailable: Object.values(readmes.repos).filter(ref => ref.status === 'unavailable').length,
   }
   fs.writeJsonSync(path.resolve(stage, GENERATION_MANIFEST_KEY), manifest, { spaces: 2 })
