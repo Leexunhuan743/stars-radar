@@ -1025,7 +1025,7 @@ async function researchDocuments(env) {
 async function attachReadmeEvidence(env, results, query) {
   const candidates = results
     .slice(0, README_EVIDENCE_MAX_RESULTS)
-    .filter(result => result?.explanation && /^[\\w.-]+\\/[\\w.-]+$/.test(result.repo || ''))
+    .filter(result => result?.explanation && /^[\w.-]+\/[\w.-]+$/.test(result.repo || ''))
   const manifest = await getReadmeManifest(env)
 
   await Promise.all(candidates.map(async (result) => {
