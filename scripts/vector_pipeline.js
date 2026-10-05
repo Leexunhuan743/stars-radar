@@ -10,7 +10,6 @@ import {
   DIMS,
   EMBEDDING_INPUT_PROFILE,
   EMBEDDING_MODEL,
-  expectedPairBytes,
   isEmbedding,
   validateVectorIndex,
   vectorManifest,
