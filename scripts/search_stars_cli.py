@@ -27,6 +27,7 @@ WORKER_URL = os.environ.get("WORKER_URL")
 # NEVER hardcode a fallback key here. The worker is protected by MCP_API_KEY;
 # read it from the environment so the key never lands in source control or logs.
 API_KEY = os.environ.get("MCP_API_KEY")
+WRITE_API_KEY = os.environ.get("MCP_WRITE_API_KEY") or API_KEY
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def require_api_config():
@@ -94,7 +95,7 @@ def post_json(endpoint, body):
     url = f"{WORKER_URL}{endpoint}"
     headers = {
         **HEADERS,
-        "Authorization": f"Bearer {API_KEY}",
+        "Authorization": f"Bearer {WRITE_API_KEY}",
         "Content-Type": "application/json",
     }
     req = urllib.request.Request(
