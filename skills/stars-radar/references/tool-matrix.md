@@ -126,8 +126,17 @@ fixtures test channel behavior; they do not measure real BGE-M3 or production pr
   - `since` (string, optional): Start date (`YYYY-MM-DD`, `7d`, `30d`, or `YYYY-MM-DD..YYYY-MM-DD`).
   - `until` (string, optional): End date (`YYYY-MM-DD`).
   - `limit` (number, default: 10, max: 30).
-  - `persist` (boolean, optional, default: `false`): When `true`, capture qualifying discoveries (stars≥50, non-empty description, top-3 by stars) into R2 `state/probe-captures/` for the next asset-store merge. Only metadata is captured, and a discovery never enters the vector index automatically.
-- **Output**: Array of repositories badged with `⭐ Starred`, `⚡ Community Ingested`, or `🌐 Global Discovery`. With `persist=true`, qualifying discoveries are staged for the next asset-store merge.
+- **Mutability**: read-only. Searching never writes discovery state.
+- **Output**: Repositories badged with `⭐ Starred`, `⚡ Community Ingested`, or `🌐 Global Discovery`, plus `community_sources` when several independent community feeds observed the same repository.
+
+### `capture_github_discovery`
+- **Description**: Explicitly records one user-selected live discovery for later cross-query promotion.
+- **Mutability**: write.
+- **Inputs**:
+  - `repo`: owner/repo or GitHub repository URL.
+  - `query`: the originating search query (1–512 characters).
+- **Safety contract**: the Worker re-fetches repository metadata from GitHub and applies the capture threshold itself. Client-supplied stars/description are never trusted.
+- **Output**: `captured=1` plus the R2 capture key, or `captured=0` with a skip reason when the repository does not satisfy the capture rule.
 
 ### `search_github_code`
 
@@ -160,3 +169,16 @@ fixtures test channel behavior; they do not measure real BGE-M3 or production pr
   - `reason` (string, optional): Curator reason note.
   - `categories` (array of strings, optional, default: `[]`): Personal tags supplied by the user; no category is assigned automatically.
 - **Output**: Confirmation with `starred_on_github: true`, `staged_in_radar: true`, and `badge: "⚡ Community Ingested"`.
+
+
+## Retrieval quality evaluation
+
+`pnpm eval:retrieval` is a deterministic regression suite; it proves ranking rules but not production search quality.
+
+For real quality measurement, copy `test/fixtures/retrieval-benchmark.example.json` to the ignored `data/retrieval-benchmark.private.json`, label real queries against the deployer's own corpus, then run:
+
+```sh
+pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 10
+```
+
+The report compares lexical and real BGE-M3 hybrid retrieval and includes Recall@K, Precision@K, MRR, NDCG@K, forbidden hits, and P50/P95 latency.
