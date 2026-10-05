@@ -27,7 +27,7 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import fs from 'fs-extra'
 import { ASSET_ROW_FIELDS, HOT_TIERS, hotSetRow, mergeAssetRow } from '../src/asset-row.js'
-import { foldJournalFiles } from '../src/ingest-journal.js'
+import { foldIngestEntries, foldJournalFiles } from '../src/ingest-journal.js'
 import {
   ASSET_INDEX_KEY,
   ASSET_STATE_KEY,
@@ -48,6 +48,7 @@ const PROJECT_ROOT = process.env.ASSET_STORE_ROOT
 const STATE_PATH = path.resolve(PROJECT_ROOT, ASSET_STATE_KEY)
 const INDEX_PATH = path.resolve(PROJECT_ROOT, ASSET_INDEX_KEY)
 const META_PATH = path.resolve(PROJECT_ROOT, 'asset-meta.json')
+const PREVIOUS_INDEX_PATH = path.resolve(PROJECT_ROOT, 'previous-asset-index.json')
 
 // 意图词表是 Worker 与管线共用的数据，因此放在 data/ 下：管线按路径读它，读的必须是"数据"
 // 而不是"Worker 的源码目录"——后者是分层倒置，也让管线在只拷脚本的环境里跑不起来。
@@ -231,18 +232,43 @@ function loadRankings(assetMap) {
 // rankings.json 每轮被 CI 整体替换, 把"不能丢的东西"放进去等于让多个写者互相覆盖 —— 这正是
 // 入库条目被抹掉的原因。日志由 CI 下载到本地目录后在这里 fold; 与 Worker 侧共用
 // src/ingest-journal.js, 所以两边看到的集合必然一致。
-function loadIngestJournal(assetMap) {
-  const journalDir = path.resolve(PROJECT_ROOT, INGEST_JOURNAL_PREFIX)
-  if (!fs.existsSync(journalDir))
+function previousIngestSnapshot() {
+  if (!fs.existsSync(PREVIOUS_INDEX_PATH))
     return { keys: [], entries: [] }
 
-  const files = fs.readdirSync(journalDir)
-    .filter(name => name.endsWith('.jsonl'))
-    .map(name => ({ key: `${INGEST_JOURNAL_PREFIX}${name}`, text: fs.readFileSync(path.join(journalDir, name), 'utf-8') }))
+  const index = fs.readJsonSync(PREVIOUS_INDEX_PATH)
+  const snapshot = index.ingest_snapshot || { keys: [], entries: [] }
+  if (!Array.isArray(snapshot.keys) || !Array.isArray(snapshot.entries))
+    throw new Error('previous-asset-index.json has an invalid ingest_snapshot.')
+  return snapshot
+}
 
-  const { harvested, problems, snapshot } = foldJournalFiles(files)
+function loadIngestJournal(assetMap) {
+  const previous = previousIngestSnapshot()
+  const previousKeys = new Set(previous.keys)
+  const journalDir = path.resolve(PROJECT_ROOT, INGEST_JOURNAL_PREFIX)
+  const files = fs.existsSync(journalDir)
+    ? fs.readdirSync(journalDir)
+        .filter(name => name.endsWith('.jsonl'))
+        .map(name => ({
+          key: `${INGEST_JOURNAL_PREFIX}${name}`,
+          text: fs.readFileSync(path.join(journalDir, name), 'utf-8'),
+        }))
+    : []
+
+  // Previous entries are already folded and authoritative. Only parse raw objects that were not
+  // represented by the previous active generation; replaying every historical object defeats
+  // compaction and makes one malformed old file able to poison all future builds.
+  const tailFiles = files.filter(file => !previousKeys.has(file.key))
+  const { snapshot: tail, problems } = foldJournalFiles(tailFiles)
   if (problems.length > 0)
-    throw new Error(`Could not read ingest journal: ${problems.join('; ')}`)
+    throw new Error(`Could not read ingest journal tail: ${problems.join('; ')}`)
+
+  const entries = foldIngestEntries(
+    [...previous.entries, ...tail.entries],
+    { includeKeys: true },
+  )
+  const harvested = foldIngestEntries(entries)
 
   const upsert = createUpsert(assetMap)
   for (const h of harvested) {
@@ -259,7 +285,13 @@ function loadIngestJournal(assetMap) {
       pushed_at: h.pushed_at,
     })
   }
-  return snapshot
+
+  // keys only tracks raw objects that still exist in R2/local staging. Entries are the durable
+  // compacted truth and remain after those objects are safely deleted one generation later.
+  return {
+    keys: files.map(file => file.key).sort(),
+    entries,
+  }
 }
 
 // 从探针 JSONL 捕获 discovered (仅元数据, 需跨查询确认晋升)
