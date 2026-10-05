@@ -23,14 +23,19 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-const repoRecord = repo => ({ id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' })
-const chunkRecord = (repo, id = 'fixture') => ({
-  id: `readme:${repo.toLowerCase()}:${id}`,
-  repo,
-  kind: 'readme_chunk',
-  heading: 'Features',
-  text: 'README feature evidence',
-})
+function repoRecord(repo) {
+  return { id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' }
+}
+
+function chunkRecord(repo, id = 'fixture') {
+  return {
+    id: `readme:${repo.toLowerCase()}:${id}`,
+    repo,
+    kind: 'readme_chunk',
+    heading: 'Features',
+    text: 'README feature evidence',
+  }
+}
 
 function scratch(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `stars-radar-${name}-`))
