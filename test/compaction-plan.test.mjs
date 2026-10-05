@@ -74,3 +74,28 @@ test('compaction refuses a probe snapshot key outside its owned prefix', () => {
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+
+test('compaction can use the oldest retained generation as its recovery horizon', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-compaction-'))
+  try {
+    const horizon = path.join(root, 'retained-horizon.json')
+    fs.writeFileSync(horizon, JSON.stringify({
+      ingest_snapshot: {
+        keys: ['state/ingest-journal/safe-at-horizon.jsonl'],
+        entries: [],
+      },
+      probe_snapshot: {
+        keys: ['state/probe-captures/safe-at-horizon.jsonl'],
+        entries: [],
+      },
+    }))
+
+    const plan = buildCompactionPlan(root, horizon)
+    assert.deepEqual(plan.ingest_keys, ['state/ingest-journal/safe-at-horizon.jsonl'])
+    assert.deepEqual(plan.probe_keys, ['state/probe-captures/safe-at-horizon.jsonl'])
+  }
+  finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
