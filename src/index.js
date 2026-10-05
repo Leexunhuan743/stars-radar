@@ -31,7 +31,9 @@ import {
 } from './http.js'
 import { foldIngestEntries } from './ingest-journal.js'
 import { captureGithubDiscovery, searchGithubCode, searchGithubLive, searchWebTech } from './live-probes.js'
+import { readmeKey } from './object-keys.js'
 import { ProbeRequestError, probeToolFailure } from './probe-errors.js'
+import { README_EVIDENCE_MAX_RESULTS, findReadmeEvidence } from './readme-evidence.js'
 import { staleSources } from './rankings-document.js'
 import { compareRepositories, getRepositoryDetails, RepositoryRequestError } from './repository-details.js'
 import { RESULT_SOURCES } from './result-compiler.js'
@@ -864,6 +866,34 @@ async function researchDocuments(env) {
   return { catalog, assetIndex, harvested }
 }
 
+async function attachReadmeEvidence(env, results, query) {
+  const candidates = results
+    .slice(0, README_EVIDENCE_MAX_RESULTS)
+    .filter(result => result?.explanation && /^[\w.-]+\/[\w.-]+$/.test(result.repo || ''))
+
+  await Promise.all(candidates.map(async (result) => {
+    const evidence = {
+      source: 'cached_readme',
+      status: 'missing',
+      snippets: [],
+    }
+    try {
+      const object = await env.R2.get(readmeKey(result.repo))
+      if (object) {
+        evidence.status = 'ok'
+        evidence.snippets = findReadmeEvidence(await object.text(), query, defaultIntents)
+      }
+    }
+    catch (error) {
+      evidence.status = 'unavailable'
+      console.warn(`[README evidence] Could not read ${result.repo}: ${error.message || String(error)}`)
+    }
+    result.explanation.readme_evidence = evidence
+  }))
+
+  return results
+}
+
 async function performHybridSearch(env, query, options = {}) {
   const [catalog, rankings, assetIndex, harvested] = await Promise.all([
     getCatalog(env),
@@ -879,7 +909,8 @@ async function performHybridSearch(env, query, options = {}) {
     if (vectors.values && vectors.names?.length > 0)
       queryVector = await getQueryEmbedding(query, env)
   }
-  return searchDocuments({ catalog, rankings, assetIndex, harvested, vectors, queryVector, intents: defaultIntents }, query, options)
+  const results = searchDocuments({ catalog, rankings, assetIndex, harvested, vectors, queryVector, intents: defaultIntents }, query, options)
+  return options.explain ? attachReadmeEvidence(env, results, query) : results
 }
 
 async function starAndIngestRepo(env, { repo, reason, categories = DEFAULT_INGEST_CATEGORIES } = {}) {
