@@ -6,6 +6,7 @@
 // primary sort key inverted, relevance_score zeroed, and the `_rrf` tie-breaker removed.
 // The Worker imports this via src/index.js; test/result-compiler.test.mjs imports it
 // directly, so there is one source of truth rather than a drifting replica.
+import { buildReadmeEvidence } from './evidence.js'
 import { applyCommunityCap, relevanceScore } from './relevance.js'
 
 /**
@@ -73,6 +74,18 @@ export function compileResults({
     if (relevance < minScore)
       continue
 
+    const factualEvidence = []
+    if (explain && stats.vectorEvidence?.readme_chunk) {
+      factualEvidence.push(buildReadmeEvidence({
+        kind: 'readme_chunk',
+        repo: info.repo || repoName,
+        chunkId: stats.vectorEvidence.readme_chunk.chunk_id,
+        heading: stats.vectorEvidence.readme_chunk.heading,
+        snippet: stats.vectorEvidence.readme_chunk.snippet,
+        similarity: stats.vectorEvidence.readme_chunk.similarity,
+      }))
+    }
+
     results.push({
       repo: repoName.startsWith('skill:') ? repoName : (info.repo || repoName),
       url: info.url || `https://github.com/${repoName}`,
@@ -88,6 +101,7 @@ export function compileResults({
       ...(sourceChannels.length > 0 ? { source_channels: sourceChannels } : {}),
       ...(explain
         ? {
+            evidence: factualEvidence,
             explanation: {
               channels: [
                 ...(stats.vScore > 0 ? ['vector'] : []),
@@ -104,6 +118,7 @@ export function compileResults({
                         : null,
                       readme_chunk: stats.vectorEvidence.readme_chunk
                         ? {
+                            chunk_id: stats.vectorEvidence.readme_chunk.chunk_id,
                             heading: stats.vectorEvidence.readme_chunk.heading,
                             snippet: stats.vectorEvidence.readme_chunk.snippet,
                             similarity: Number(stats.vectorEvidence.readme_chunk.similarity.toFixed(4)),
