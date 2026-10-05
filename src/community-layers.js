@@ -15,8 +15,9 @@
 // instance) still counts as scoring text — it describes the repository — but is never published as
 // a category.
 //
-// The order of this list is load-bearing: the first layer to offer a repository wins, because the
-// loop skips a key that is already scored.
+// The order still decides the primary presentation source, but duplicate observations are retained
+// in `sourceChannels`. Multiple boards observing the same repository are evidence, not duplicate
+// results; ranking is deliberately NOT boosted here until a real retrieval benchmark justifies it.
 
 import { explainTextMatch, matchesSubjectGate, scoreText } from './scoring.js'
 
@@ -100,11 +101,16 @@ export const COMMUNITY_LAYERS = [
  * @param {{ rankings: object, query: object, keywordScores: Map<string, object> }} params `query` is
  *   the shape {@link scoreText} takes.
  */
+const COMMUNITY_SOURCE_NAMES = new Set(COMMUNITY_LAYERS.map(layer => layer.source))
+
 export function collectCommunityHits({ rankings, query, keywordScores }) {
   for (const layer of COMMUNITY_LAYERS) {
     for (const entry of layer.entries(rankings)) {
       const key = layer.key(entry).toLowerCase()
-      if (keywordScores.has(key))
+      const existing = keywordScores.get(key)
+      // Personal / curated evidence is authoritative and keeps its own scoring record. Community
+      // layers may still be represented later through the shared community index.
+      if (existing && !COMMUNITY_SOURCE_NAMES.has(existing.source))
         continue
 
       const text = layer.text(entry).toLowerCase()
@@ -113,9 +119,15 @@ export function collectCommunityHits({ rankings, query, keywordScores }) {
 
       const score = scoreText(text, query)
       if (score > 0) {
+        if (existing) {
+          existing.weight = Math.max(existing.weight, score)
+          existing.sourceChannels = [...new Set([...(existing.sourceChannels || [existing.source]), layer.source])]
+          continue
+        }
         keywordScores.set(key, {
           weight: score,
           source: layer.source,
+          sourceChannels: [layer.source],
           badge: layer.badge(entry),
           item: layer.project(entry),
           evidence: query.explain ? explainTextMatch(text, query) : undefined,
