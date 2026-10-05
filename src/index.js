@@ -29,7 +29,7 @@ import {
   readJsonBody,
 } from './http.js'
 import { foldIngestEntries } from './ingest-journal.js'
-import { searchGithubCode, searchGithubLive, searchWebTech } from './live-probes.js'
+import { captureGithubDiscovery, searchGithubCode, searchGithubLive, searchWebTech } from './live-probes.js'
 import { ProbeRequestError, probeToolFailure } from './probe-errors.js'
 import { staleSources } from './rankings-document.js'
 import { compareRepositories, getRepositoryDetails, RepositoryRequestError } from './repository-details.js'
@@ -311,7 +311,6 @@ async function handleRequest(req, env, ctx) {
       const since = optionalString(url.searchParams.get('since'))
       const until = optionalString(url.searchParams.get('until'))
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 10, min: 1, max: 30 })
-      const persist = booleanParam(url.searchParams.get('persist'))
       let result
       try {
         result = await searchGithubLive(env, {
@@ -322,7 +321,6 @@ async function handleRequest(req, env, ctx) {
           since,
           until,
           limit,
-          persist,
         })
       }
       catch (e) {
@@ -333,6 +331,20 @@ async function handleRequest(req, env, ctx) {
         return errorResponse('invalid_date_range', e.message, 400)
       }
       return okResponse(result, { pretty: true })
+    }
+
+    if (url.pathname === '/api/capture' && req.method === 'POST') {
+      try {
+        const body = z.object(TOOL_DEFINITIONS.capture_github_discovery.inputSchema).parse(await readJsonBody(req, { limit: INGEST_BODY_LIMIT }))
+        return okResponse(await captureGithubDiscovery(env, body), { pretty: true })
+      }
+      catch (e) {
+        if (e instanceof PayloadTooLargeError)
+          return errorResponse('payload_too_large', e.message, 413)
+        if (e instanceof ProbeRequestError)
+          return errorResponse(e.code, e.message, e.status, { retryAfterSeconds: e.retryAfterSeconds })
+        return errorResponse('invalid_request', e.message, 400)
+      }
     }
 
     if (url.pathname === '/api/code') {
@@ -397,10 +409,11 @@ async function handleRequest(req, env, ctx) {
           'Stars Radar is an open-source intelligence and GitHub stars retrieval cockpit.',
           'Choose a tool by the task:',
           '  1. search_github_stars: Curated high-trust anchor (your personal stars + ingested tools). Use when looking for the user\'s own saved tools or vetted solutions.',
-          '  2. search_github_live: Open-world GitHub explorer. Use when looking for newly born, trending, or unstarred tools across GitHub.',
-          '  3. search_github_code: Public repository code and API usage snippets.',
-          '  4. search_web_tech: Technical documentation, blogs, and forums beyond GitHub.',
-          '  5. star_and_ingest_repo: Graduate discoveries from search_github_live into permanent curated stars (only upon user confirmation).',
+          '  2. search_github_live: Read-only open-world GitHub explorer for newly born, trending, or unstarred tools.',
+          '  3. capture_github_discovery: Persist one selected live discovery for later cross-query promotion; this is a write and requires explicit user intent.',
+          '  4. search_github_code: Public repository code and API usage snippets.',
+          '  5. search_web_tech: Technical documentation, blogs, and forums beyond GitHub.',
+          '  6. star_and_ingest_repo: Graduate a discovery into permanent curated stars (only upon user confirmation).',
           'Context management: prefer limit=5..10 and minimal fields to protect the context window.',
         ].join('\n'),
       },
@@ -498,9 +511,9 @@ async function handleRequest(req, env, ctx) {
     server.registerTool(
       TOOL_DEFINITIONS.search_github_live.name,
       { description: TOOL_DEFINITIONS.search_github_live.description, inputSchema: TOOL_DEFINITIONS.search_github_live.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_live.readOnly } },
-      async ({ query, language, min_stars = 15, sort = 'stars', order = 'desc', since, until, limit = 10, persist = false }) => {
+      async ({ query, language, min_stars = 15, sort = 'stars', order = 'desc', since, until, limit = 10 }) => {
         try {
-          const result = await searchGithubLive(env, { query, language, minStars: min_stars, sort, order, since, until, limit, persist })
+          const result = await searchGithubLive(env, { query, language, minStars: min_stars, sort, order, since, until, limit })
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           }
@@ -512,6 +525,21 @@ async function handleRequest(req, env, ctx) {
             isError: true,
             content: [{ type: 'text', text: `Live GitHub search failed: ${err.message || String(err)}` }],
           }
+        }
+      },
+    )
+    server.registerTool(
+      TOOL_DEFINITIONS.capture_github_discovery.name,
+      { description: TOOL_DEFINITIONS.capture_github_discovery.description, inputSchema: TOOL_DEFINITIONS.capture_github_discovery.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.capture_github_discovery.readOnly } },
+      async ({ repo, query }) => {
+        try {
+          const result = await captureGithubDiscovery(env, { repo, query })
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+        }
+        catch (err) {
+          if (err instanceof ProbeRequestError)
+            return probeToolFailure(err)
+          return { isError: true, content: [{ type: 'text', text: `Discovery capture failed: ${err.message || String(err)}` }] }
         }
       },
     )
