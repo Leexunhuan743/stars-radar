@@ -111,6 +111,7 @@ async function main() {
         platforms: cached?.platforms || [],
         facets: cached?.facets || [],
         pushedAt: repo.pushed_at,
+        readmePushedAt: cached?.readmePushedAt || cached?.pushedAt || null,
         starredAt: repo.starred_at || cached?.starredAt,
       }
 
@@ -129,6 +130,8 @@ async function main() {
         readmeSync.repos[name.toLowerCase()] = {
           repo: name,
           status: 'reused',
+          upstream_pushed_at: repoInfo.pushedAt || null,
+          source_pushed_at: repoInfo.readmePushedAt || null,
           preserved_from_generation: process.env.ACTIVE_GENERATION_ID || null,
         }
       }
@@ -149,10 +152,13 @@ async function main() {
         const ownerDir = `${LOCAL_STARS_DIR}/${repoInfo.owner}`
         fs.ensureDirSync(ownerDir)
         fs.writeFileSync(`stars/${repoInfo.repo}.md`, content, 'utf-8')
+        repoInfo.readmePushedAt = repoInfo.pushedAt
         readmeSync.repos[repoInfo.repo.toLowerCase()] = {
           repo: repoInfo.repo,
           status: readme === null ? 'absent' : 'fresh',
           fetched_at: new Date().toISOString(),
+          upstream_pushed_at: repoInfo.pushedAt || null,
+          source_pushed_at: repoInfo.readmePushedAt || null,
           preserved_from_generation: null,
         }
       })
@@ -164,6 +170,8 @@ async function main() {
           readmeSync.repos[failure.item.repo.toLowerCase()] = {
             repo: failure.item.repo,
             status: staleAvailable ? 'stale' : 'unavailable',
+            upstream_pushed_at: failure.item.pushedAt || null,
+            source_pushed_at: failure.item.readmePushedAt || null,
             preserved_from_generation: staleAvailable ? (process.env.ACTIVE_GENERATION_ID || null) : null,
             error: failure.error?.message || String(failure.error),
           }
