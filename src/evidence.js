@@ -49,6 +49,8 @@ export function buildReadmeEvidence({
   readmeSha256,
   contentSha256,
   ordinal,
+  chunkOrdinal,
+  headingPath,
   fetchedAt,
 } = {}) {
   const identity = chunkId || ref?.sha256 || readmeSha256 || fetchedAt || `live:${heading || 'README'}`
@@ -73,8 +75,10 @@ export function buildReadmeEvidence({
       preserved_from_generation: ref?.preserved_from_generation || null,
       content_sha256: contentSha256 || null,
       ordinal: Number.isInteger(ordinal) ? ordinal : null,
+      chunk_ordinal: Number.isInteger(chunkOrdinal) ? chunkOrdinal : null,
       chunk_id: chunkId || null,
       heading: heading || 'README',
+      heading_path: Array.isArray(headingPath) ? headingPath : null,
       snippet: snippet || '',
     },
     match: {
