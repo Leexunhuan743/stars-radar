@@ -134,6 +134,12 @@ export function validateVectorIndex(records) {
       throw new Error(`README vector record ${record.id} has invalid content_sha256.`)
     if (record.ordinal !== undefined && (!Number.isInteger(record.ordinal) || record.ordinal < 0))
       throw new Error(`README vector record ${record.id} has invalid ordinal.`)
+    if (record.chunk_ordinal !== undefined && (!Number.isInteger(record.chunk_ordinal) || record.chunk_ordinal < 0))
+      throw new Error(`README vector record ${record.id} has invalid chunk_ordinal.`)
+    if (record.heading_path !== undefined
+      && (!Array.isArray(record.heading_path) || record.heading_path.some(part => typeof part !== 'string' || !part.trim()))) {
+      throw new Error(`README vector record ${record.id} has invalid heading_path.`)
+    }
   }
 
   for (const repo of chunkRepos) {
