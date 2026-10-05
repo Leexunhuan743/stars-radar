@@ -41,6 +41,7 @@ import { RESULT_SOURCES } from './result-compiler.js'
 import { retryUntilAcceptable } from './retry.js'
 import { searchDocuments } from './search-engine.js'
 import { DEFAULT_INGEST_CATEGORIES, INPUT_LIMITS, TOOL_DEFINITIONS } from './tool-schemas.js'
+import { resolveToolset, ToolsetConfigError, toolsetStatus } from './toolsets.js'
 
 const SILICONFLOW_URL = 'https://api.siliconflow.cn/v1/embeddings'
 
@@ -306,6 +307,7 @@ async function handleRequest(req, env, ctx) {
         harvestedIngests: harvested.length,
         dataPlane: dataPlane.statuses,
         rateLimits: rateLimitStatus(env),
+        mcpToolset: toolsetStatus(env.MCP_TOOLSET),
         // Which community layers are actually from the latest run, and how old the oldest one is.
         // `updatedAt` alone cannot answer that: it moves on every run whether or not a layer
         // refreshed, which is how stale data came to look fresh.
@@ -501,27 +503,55 @@ async function handleRequest(req, env, ctx) {
       }
     }
 
-    // Initialize MCP Server with global tool-selection instructions
-    // NOTE: instructions must live in the SECOND argument (ServerOptions), not
-    // in serverInfo — the SDK only reads options.instructions into
-    // InitializeResult (server/index.js: `_instructions = options?.instructions`).
+    // Initialize MCP Server with a deployer-selected capability profile. REST stays available;
+    // MCP_TOOLSET only changes what an MCP client can discover/call through listTools.
+    let activeToolset
+    try {
+      activeToolset = resolveToolset(env.MCP_TOOLSET)
+    }
+    catch (error) {
+      if (error instanceof ToolsetConfigError)
+        return errorResponse('server_misconfigured', error.message, 500)
+      throw error
+    }
+
+    const instructionLines = [
+      'Stars Radar is an open-source intelligence and GitHub stars retrieval cockpit.',
+      `Active MCP toolset: ${activeToolset.name} (${activeToolset.tools.size} tools).`,
+      'Core workflow:',
+      '  - search_github_stars: curated personal/ingested semantic retrieval.',
+      '  - get_repo_readme: repository metadata and README evidence.',
+      '  - compare_repositories: compact evidence comparison for 2–5 candidates.',
+      '  - list_categories / get_category_repos / list_starred_repos: browse the personal archive.',
+    ]
+    if (activeToolset.tools.has('search_github_live')) {
+      instructionLines.push(
+        'Open-world research:',
+        '  - search_github_live: read-only GitHub repository discovery.',
+        '  - search_github_code: concrete public code/API usage.',
+        '  - search_web_tech: broader technical web research.',
+        '  - get_trending_repos / get_top_skills / get_hellogithub_picks: cached community intelligence.',
+      )
+    }
+    if (activeToolset.tools.has('capture_github_discovery')) {
+      instructionLines.push(
+        'Explicit mutations (only on clear user intent):',
+        '  - capture_github_discovery: persist one selected discovery observation.',
+        '  - star_and_ingest_repo: star and graduate a repository into curated assets.',
+      )
+    }
+    instructionLines.push('Context management: prefer limit=5..10 and minimal fields to protect the context window.')
+
+    // NOTE: instructions must live in the SECOND argument (ServerOptions), not serverInfo.
     const server = new McpServer(
       { name: 'Stars Radar MCP', version: '1.0.0' },
-      {
-        instructions: [
-          'Stars Radar is an open-source intelligence and GitHub stars retrieval cockpit.',
-          'Choose a tool by the task:',
-          '  1. search_github_stars: Curated high-trust anchor (your personal stars + ingested tools). Use when looking for the user\'s own saved tools or vetted solutions.',
-          '  2. search_github_live: Read-only open-world GitHub explorer for newly born, trending, or unstarred tools.',
-          '  3. capture_github_discovery: Persist one selected live discovery for later cross-query promotion; this is a write and requires explicit user intent.',
-          '  4. search_github_code: Public repository code and API usage snippets.',
-          '  5. search_web_tech: Technical documentation, blogs, and forums beyond GitHub.',
-          '  6. star_and_ingest_repo: Graduate a discovery into permanent curated stars (only upon user confirmation).',
-          'Context management: prefer limit=5..10 and minimal fields to protect the context window.',
-        ].join('\n'),
-      },
+      { instructions: instructionLines.join('\n') },
     )
-    server.registerTool(
+    const registerTool = (name, config, handler) => {
+      if (activeToolset.tools.has(name))
+        server['registerTool'](name, config, handler)
+    }
+    registerTool(
       TOOL_DEFINITIONS.search_github_stars.name,
       { description: TOOL_DEFINITIONS.search_github_stars.description, inputSchema: TOOL_DEFINITIONS.search_github_stars.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_stars.readOnly } },
       async ({ query, category, source, scope = 'all', limit = 5, min_score = 0.25, explain = false }) => {
@@ -544,7 +574,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_repo_readme.name,
       { description: TOOL_DEFINITIONS.get_repo_readme.description, inputSchema: TOOL_DEFINITIONS.get_repo_readme.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_repo_readme.readOnly } },
       async ({ repo, include_readme = true, refresh = false }) => {
@@ -563,7 +593,7 @@ async function handleRequest(req, env, ctx) {
       },
     )
 
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.compare_repositories.name,
       { description: TOOL_DEFINITIONS.compare_repositories.description, inputSchema: TOOL_DEFINITIONS.compare_repositories.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.compare_repositories.readOnly } },
       async ({ repos, refresh = false }) => {
@@ -581,7 +611,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_trending_repos.name,
       { description: TOOL_DEFINITIONS.get_trending_repos.description, inputSchema: TOOL_DEFINITIONS.get_trending_repos.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_trending_repos.readOnly } },
       async ({ category = 'overall_daily', limit = 10 }) => {
@@ -626,7 +656,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.search_github_live.name,
       { description: TOOL_DEFINITIONS.search_github_live.description, inputSchema: TOOL_DEFINITIONS.search_github_live.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_live.readOnly } },
       async ({ query, language, min_stars = 15, sort = 'stars', order = 'desc', since, until, limit = 10 }) => {
@@ -649,7 +679,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.capture_github_discovery.name,
       { description: TOOL_DEFINITIONS.capture_github_discovery.description, inputSchema: TOOL_DEFINITIONS.capture_github_discovery.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.capture_github_discovery.readOnly } },
       async ({ repo, query }) => {
@@ -669,7 +699,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.search_github_code.name,
       { description: TOOL_DEFINITIONS.search_github_code.description, inputSchema: TOOL_DEFINITIONS.search_github_code.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_code.readOnly } },
       async ({ query, repo, language, extension, path: filePath, limit = 5 }) => {
@@ -692,7 +722,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.search_web_tech.name,
       { description: TOOL_DEFINITIONS.search_web_tech.description, inputSchema: TOOL_DEFINITIONS.search_web_tech.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_web_tech.readOnly } },
       async ({ query, domain, freshness = 'all', limit = 5 }) => {
@@ -715,7 +745,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.star_and_ingest_repo.name,
       { description: TOOL_DEFINITIONS.star_and_ingest_repo.description, inputSchema: TOOL_DEFINITIONS.star_and_ingest_repo.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.star_and_ingest_repo.readOnly } },
       async ({ repo, reason, categories = DEFAULT_INGEST_CATEGORIES }) => {
@@ -738,7 +768,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_top_skills.name,
       { description: TOOL_DEFINITIONS.get_top_skills.description, inputSchema: TOOL_DEFINITIONS.get_top_skills.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_top_skills.readOnly } },
       async ({ type = 'all', limit = 20 }) => {
@@ -787,7 +817,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_hellogithub_picks.name,
       { description: TOOL_DEFINITIONS.get_hellogithub_picks.description, inputSchema: TOOL_DEFINITIONS.get_hellogithub_picks.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_hellogithub_picks.readOnly } },
       async ({ category, limit = 10 }) => {
@@ -818,7 +848,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.list_categories.name,
       { description: TOOL_DEFINITIONS.list_categories.description, inputSchema: TOOL_DEFINITIONS.list_categories.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.list_categories.readOnly } },
       async () => {
@@ -843,7 +873,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_category_repos.name,
       { description: TOOL_DEFINITIONS.get_category_repos.description, inputSchema: TOOL_DEFINITIONS.get_category_repos.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_category_repos.readOnly } },
       async ({ category, limit = 25 }) => {
@@ -889,7 +919,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.list_starred_repos.name,
       { description: TOOL_DEFINITIONS.list_starred_repos.description, inputSchema: TOOL_DEFINITIONS.list_starred_repos.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.list_starred_repos.readOnly } },
       async ({ limit = 20, cursor }) => {
@@ -910,7 +940,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_radar_status.name,
       { description: TOOL_DEFINITIONS.get_radar_status.description, inputSchema: TOOL_DEFINITIONS.get_radar_status.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_radar_status.readOnly } },
       async () => {
@@ -934,6 +964,11 @@ async function handleRequest(req, env, ctx) {
                 vector_model: EMBEDDING_MODEL,
                 vector_input_profile: vectors.inputProfile || null,
                 rate_limits: rateLimitStatus(env),
+                mcp_toolset: {
+                  name: activeToolset.name,
+                  tool_count: activeToolset.tools.size,
+                  write_tools_exposed: activeToolset.tools.has('capture_github_discovery'),
+                },
                 intent_domains: Object.keys(defaultIntents || {}).length,
                 community_layers: {
                   trending_categories: Object.keys(rankings.trending || {}).length,
