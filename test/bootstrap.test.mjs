@@ -7,8 +7,8 @@ import process from 'node:process'
 import { test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { seedLocalR2 } from '../scripts/seed-local-r2.js'
-import { ACTIVE_GENERATION_KEY } from '../src/data-generation.js'
 import { verifyVectorPair } from '../scripts/verify_vector_pair.js'
+import { ACTIVE_GENERATION_KEY } from '../src/data-generation.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
