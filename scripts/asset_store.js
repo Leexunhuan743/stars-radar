@@ -62,7 +62,7 @@ function previousProbeSnapshot() {
     return { keys: [] }
   const snapshot = fs.readJsonSync(PREVIOUS_INDEX_PATH).probe_snapshot || { keys: [] }
   if (!Array.isArray(snapshot.keys))
-    throw new Error('previous-asset-index.json has an invalid probe_snapshot.')
+    throw new Error(`${PREVIOUS_ASSET_INDEX_FILE} has an invalid probe_snapshot.`)
   return snapshot
 }
 
