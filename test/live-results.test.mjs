@@ -84,3 +84,16 @@ test('an empty result set is an empty list', () => {
   assert.deepEqual(enrichLiveResults([]), [])
   assert.deepEqual(enrichLiveResults(undefined), [])
 })
+
+
+test('live results expose every community source that observed the repository', () => {
+  const communityIndex = buildCommunityIndex({
+    rankings: {
+      breakoutWeekly: [{ repo: 'acme/tool', stars: 50 }],
+      helloGitHub: [{ repo: 'acme/tool', description_zh: 'pick' }],
+      trending: { overall_daily: [{ repo: 'acme/tool', stars: 100 }] },
+    },
+  })
+  const [result] = enrichLiveResults([item('acme/tool')], { communityIndex })
+  assert.deepEqual(result.community_sources, ['breakout', 'hellogithub', 'trending'])
+})
