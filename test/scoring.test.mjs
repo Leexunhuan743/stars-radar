@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 // this used to go wrong: a subject that only earns a bonus instead of gating, and an intent
 // synonym being weighed like a token the user actually typed.
 import { test } from 'node:test'
-import { INTENT_WEIGHT, matchesSubjectGate, scoreText, SUBJECT_WEIGHT, TOKEN_WEIGHT } from '../src/scoring.js'
+import { INTENT_REPEAT_BONUS, INTENT_WEIGHT, matchesSubjectGate, scoreText, SUBJECT_WEIGHT, TOKEN_WEIGHT } from '../src/scoring.js'
 
 const INTENTS = { browser: ['browser', 'chrome', 'firefox'], terminal: ['shell', 'tui'] }
 
@@ -44,8 +44,16 @@ test('a group synonym weighs less than a token the user typed', () => {
   assert.ok(expanded < typed, `an expanded synonym (${expanded}) must weigh less than a typed token (${typed})`)
 })
 
-test('every word of every matched group is counted, not just the first', () => {
-  assert.equal(scoreText('chrome firefox', query({ matchedGroups: new Set(['browser']) })), 2 * INTENT_WEIGHT)
+test('intent synonym repetition saturates instead of linearly multiplying evidence', () => {
+  assert.equal(
+    scoreText('chrome firefox', query({ matchedGroups: new Set(['browser']) })),
+    INTENT_WEIGHT + INTENT_REPEAT_BONUS,
+  )
+  assert.equal(
+    scoreText('browser chrome firefox', query({ matchedGroups: new Set(['browser']) })),
+    INTENT_WEIGHT + (2 * INTENT_REPEAT_BONUS),
+    'three synonyms hit the repeat cap instead of contributing three full intent weights',
+  )
 })
 
 test('an unknown group contributes nothing instead of throwing', () => {
