@@ -299,7 +299,9 @@ async function handleRequest(req, env, ctx) {
         vectorDimensions: DIMS,
         totalStarred: catalog.totalRepos || Object.keys(catalog.repos || {}).length,
         totalAssets: assetIndex.totalRepos || Object.keys(assetIndex.repos || {}).length,
-        vectorCount: vectors.names?.length || 0,
+        vectorCount: vectors.records?.length || 0,
+        repoVectorCount: vectors.records?.filter(record => record.kind === 'repo').length || 0,
+        readmeChunkVectorCount: vectors.records?.filter(record => record.kind === 'readme_chunk').length || 0,
         harvestedIngests: harvested.length,
         dataPlane: dataPlane.statuses,
         rateLimits: rateLimitStatus(env),
@@ -947,7 +949,7 @@ async function handleRequest(req, env, ctx) {
             getVectors(env),
             getHarvested(env),
           ])
-          const vectorNames = vectors?.names || []
+          const vectorRecords = vectors?.records || []
           return {
             content: [{
               type: 'text',
@@ -955,7 +957,9 @@ async function handleRequest(req, env, ctx) {
                 workspace: 'Stars Radar',
                 version: '1.0.0',
                 total_starred: Object.keys(catalog.repos || {}).length,
-                vector_db_capacity: vectorNames.length,
+                vector_db_capacity: vectorRecords.length,
+                repo_vector_count: vectorRecords.filter(record => record.kind === 'repo').length,
+                readme_chunk_vector_count: vectorRecords.filter(record => record.kind === 'readme_chunk').length,
                 vector_dimensions: DIMS,
                 vector_model: EMBEDDING_MODEL,
                 vector_input_profile: vectors.inputProfile || null,
@@ -1039,12 +1043,12 @@ async function performHybridSearch(env, query, options = {}) {
     getAssetIndex(env),
     getHarvested(env),
   ])
-  let vectors = { values: null, names: null }
+  let vectors = { values: null, records: null }
   let queryVector = null
   if (options.scope !== 'rankings') {
     const loaded = await getVectors(env)
-    vectors = { values: loaded.vectors, names: loaded.names }
-    if (vectors.values && vectors.names?.length > 0)
+    vectors = { values: loaded.vectors, records: loaded.records }
+    if (vectors.values && vectors.records?.length > 0)
       queryVector = await getQueryEmbedding(query, env)
   }
   const results = searchDocuments({ catalog, rankings, assetIndex, harvested, vectors, queryVector, intents: defaultIntents }, query, options)
