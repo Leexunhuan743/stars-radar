@@ -191,7 +191,6 @@ test('every variable documented in .env.example is actually consumed', () => {
     `these variables are documented but nothing reads them: ${inert.join(', ')}`,
   )
 })
-
 test('rate-limit bindings use independent namespaces and documented one-minute budgets', () => {
   const wrangler = JSON.parse(fs.readFileSync(path.join(ROOT, 'wrangler.jsonc'), 'utf-8'))
   const limits = new Map((wrangler.ratelimits || []).map(binding => [binding.name, binding]))
