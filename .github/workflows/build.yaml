@@ -20,11 +20,7 @@ jobs:
     concurrency:
       group: stars-radar-data-publish
       cancel-in-progress: false
-    # Job-level env so the deploy step's `if:` can actually see the token: a step's
-    # own `env:` block is not available while its `if:` is evaluated, which made the
-    # deploy step unreachable no matter how the secret was configured.
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
     steps:
@@ -209,28 +205,35 @@ jobs:
             exit 1
           fi
 
-      - name: Download the README corpus from R2
+      - name: Restore active generation README corpus
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
+          rm -rf stars
+          mkdir -p stars
+          if [ -z "${ACTIVE_GENERATION_ID}" ]; then
+            echo "Fresh data plane: no README corpus to restore."
+            exit 0
+          fi
           aws configure set default.region auto
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          mkdir -p stars
-          # The corpus is the previous run's output and lives on R2 as `<owner>/<repo>.md` at the
-          # bucket root (the local `stars/` is a staging directory this job uploads from and
-          # `--delete`s back to). Restoring it is what makes the sync incremental: with an empty
-          # stars/ every repository looks new, so all 932 READMEs were re-fetched from GitHub on
-          # every run — ~932 API calls and ~17 MB for files that had not changed.
-          #
-          # Only the corpus is restored. The JSON documents have their own step, and `state/**`
-          # belongs to the Worker.
-          aws s3 sync "s3://${R2_BUCKET}/" stars/ \
-            --endpoint-url "${endpoint}" \
-            --exclude "*" --include "*/*.md"
-          echo "Restored $(find stars -name '*.md' | wc -l) README(s) from R2 for the incremental sync."
+          aws s3 cp "s3://${R2_BUCKET}/generations/${ACTIVE_GENERATION_ID}/readmes.json"             "${RUNNER_TEMP}/readmes.json" --endpoint-url "${endpoint}"
+          node --input-type=module - "${RUNNER_TEMP}/readmes.json" > "${RUNNER_TEMP}/readmes.tsv" <<'NODE'
+          import fs from 'node:fs'
+          const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+          for (const ref of Object.values(manifest.repos || {}))
+            process.stdout.write(`${ref.object_key}\tstars/${ref.repo}.md\n`)
+          NODE
+          export endpoint R2_BUCKET
+          xargs -0 -r -P 16 -n 2 bash -c '
+            key="$1"; local_path="$2"
+            mkdir -p "$(dirname "$local_path")"
+            aws s3 cp "s3://${R2_BUCKET}/${key}" "$local_path" --endpoint-url "${endpoint}" --only-show-errors
+          ' _ < <(awk -F '\t' '{printf "%s%c%s%c",$1,0,$2,0}' "${RUNNER_TEMP}/readmes.tsv")
+          echo "Restored $(find stars -name '*.md' | wc -l) README(s) from active generation ${ACTIVE_GENERATION_ID}."
 
       - name: Fetch starred repos and READMEs (incremental)
         run: pnpm build:stars
@@ -265,38 +268,17 @@ jobs:
           echo "GENERATION_ID=${generation_id}" >> "${GITHUB_ENV}"
           GENERATION_ID="${generation_id}" GITHUB_SHA="${GITHUB_SHA}" node scripts/prepare_data_generation.js
 
-      - name: Publish README corpus
+      - name: Publish content-addressed README blobs
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_MAX_ATTEMPTS: '5'
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           aws configure set default.region auto
-          aws configure set s3.max_concurrent_requests 32
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          local_readmes=$(find stars -name '*.md' 2>/dev/null | wc -l)
-          catalogued=$(node -e 'const fs=require("fs");try{console.log(Object.keys(JSON.parse(fs.readFileSync("catalog.json","utf-8")).repos||{}).length)}catch{console.log(0)}')
-          echo "Local READMEs: ${local_readmes}; repositories in catalog.json: ${catalogued}"
-          if [ "${local_readmes}" -eq 0 ] && [ "${catalogued}" -gt 0 ]; then
-            echo "::error::catalog.json lists ${catalogued} repositories but stars/ holds no READMEs."
-            exit 1
-          fi
-          sweep=()
-          if [ "${local_readmes}" -gt 0 ]; then
-            sweep=(--delete)
-          fi
-          aws s3 sync stars/ "s3://${R2_BUCKET}/" \
-            --endpoint-url "${endpoint}" \
-            --exclude "generations/*" \
-            --exclude "active-generation.json" \
-            --exclude "embeddings*" \
-            --exclude "*.json" \
-            --exclude "state/*" \
-            "${sweep[@]}" \
-            --cli-read-timeout 60 \
-            --cli-connect-timeout 20
+          aws s3 sync .readme-content-stage/ "s3://${R2_BUCKET}/readmes/"             --endpoint-url "${endpoint}" --only-show-errors
+          echo "Published $(find .readme-content-stage -name '*.md' | wc -l) content-addressed README blob(s)."
 
       - name: Upload immutable data generation
         env:
@@ -353,12 +335,6 @@ jobs:
           aws s3 cp "s3://${R2_BUCKET}/active-generation.json" "${RUNNER_TEMP}/active-generation.json" --endpoint-url "${endpoint}"
           cmp active-generation.json "${RUNNER_TEMP}/active-generation.json"
           echo "✓ activated generation ${GENERATION_ID}"
-
-      - name: Deploy Cloudflare Worker (skipped unless CLOUDFLARE_API_TOKEN is set)
-        if: env.CLOUDFLARE_API_TOKEN != ''
-        run: pnpm exec wrangler deploy
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
 
       - name: Compact consumed append-only state
         env:
