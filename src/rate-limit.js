@@ -8,7 +8,7 @@ export class PlatformRateLimitError extends Error {
 /**
  * Consume one token from an optional Cloudflare Rate Limiting binding.
  *
- * Absence is explicit "disabled" for local development / legacy deployments. Once a binding is
+ * Absence is explicit "disabled" for isolated local tests/development. Once a binding is
  * configured, errors fail closed: an unavailable limiter must not silently turn into unlimited
  * calls to paid embeddings or mutation endpoints.
  */
