@@ -27,6 +27,7 @@ const CI_TOOLING_ONLY = new Set(['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'])
 // Test-harness overrides that redirect a script's data root at a throwaway directory.
 // Deliberately not deployment knobs, so they stay out of .env.example.
 const TEST_ONLY = new Set(['ASSET_STORE_ROOT', 'VECTOR_STORE_ROOT'])
+const WORKFLOW_RUNTIME_ONLY = new Set(['GENERATION_ID', 'GITHUB_SHA'])
 
 function readDeclared() {
   const text = fs.readFileSync(path.join(ROOT, '.env.example'), 'utf-8')
@@ -172,7 +173,11 @@ test('the fail-closed variables are still present', () => {
 
 test('every environment variable the code reads is documented in .env.example', () => {
   const undocumented = [...consumed].filter(
-    name => !declared.has(name) && !RUNTIME_BINDINGS.has(name) && !CI_TOOLING_ONLY.has(name) && !TEST_ONLY.has(name),
+    name => !declared.has(name)
+      && !RUNTIME_BINDINGS.has(name)
+      && !CI_TOOLING_ONLY.has(name)
+      && !TEST_ONLY.has(name)
+      && !WORKFLOW_RUNTIME_ONLY.has(name),
   )
   assert.deepEqual(
     undocumented,
