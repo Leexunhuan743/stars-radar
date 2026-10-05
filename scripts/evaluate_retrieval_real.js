@@ -151,6 +151,62 @@ export function summarize(rows) {
   }
 }
 
+const THRESHOLD_RULES = {
+  min_mean_recall_at_k: { metric: 'mean_recall_at_k', direction: 'min' },
+  min_mean_precision_at_k: { metric: 'mean_precision_at_k', direction: 'min' },
+  min_mrr: { metric: 'mrr', direction: 'min' },
+  min_mean_ndcg_at_k: { metric: 'mean_ndcg_at_k', direction: 'min' },
+  min_negative_empty_success_rate: { metric: 'negative_empty_success_rate', direction: 'min' },
+  max_forbidden_hits: { metric: 'forbidden_hits', direction: 'max' },
+  max_p95_latency_ms: { metric: 'p95_latency_ms', direction: 'max' },
+}
+
+export function evaluateThresholds(reports, thresholds) {
+  if (!thresholds || typeof thresholds !== 'object' || Array.isArray(thresholds))
+    return { passed: false, failures: ['thresholds must be an object keyed by evaluation mode'] }
+
+  const failures = []
+  let checked = 0
+  for (const report of reports) {
+    const expected = thresholds[report.mode]
+    if (!expected)
+      continue
+    if (typeof expected !== 'object' || Array.isArray(expected)) {
+      failures.push(`${report.mode}: thresholds must be an object`)
+      continue
+    }
+
+    for (const [name, limit] of Object.entries(expected)) {
+      const rule = THRESHOLD_RULES[name]
+      if (!rule) {
+        failures.push(`${report.mode}: unknown threshold ${name}`)
+        continue
+      }
+      if (!Number.isFinite(limit)) {
+        failures.push(`${report.mode}: ${name} must be numeric`)
+        continue
+      }
+      const actual = report.summary[rule.metric]
+      checked++
+      if (!Number.isFinite(actual)) {
+        failures.push(`${report.mode}: ${rule.metric} is unavailable but ${name}=${limit} is required`)
+        continue
+      }
+      const passed = rule.direction === 'min' ? actual >= limit : actual <= limit
+      if (!passed)
+        failures.push(`${report.mode}: ${rule.metric}=${actual} violates ${name}=${limit}`)
+    }
+  }
+
+  return {
+    passed: failures.length === 0 && checked > 0,
+    checked,
+    failures: checked === 0 && failures.length === 0
+      ? ['no thresholds matched the evaluation modes that ran']
+      : failures,
+  }
+}
+
 export function percentile(values, q) {
   if (!values.length)
     return 0
@@ -186,6 +242,8 @@ export async function main() {
   const fixturePath = path.resolve(argValue('--fixture', path.join(root, DEFAULT_FIXTURE)))
   const k = Number(argValue('--k', String(DEFAULT_K)))
   const lexicalOnly = hasFlag('--lexical-only')
+  const enforceThresholds = hasFlag('--enforce-thresholds')
+  const outputPath = argValue('--output', null)
 
   if (!Number.isInteger(k) || k < 1 || k > 50)
     throw new Error('--k must be an integer from 1 to 50.')
@@ -208,6 +266,10 @@ export async function main() {
   if (!lexicalOnly)
     reports.push(await runMode('hybrid_bge_m3', fixture, documents, { lexicalOnly: false, k }))
 
+  const qualityGate = fixture.thresholds ? evaluateThresholds(reports, fixture.thresholds) : null
+  if (enforceThresholds && !qualityGate)
+    throw new Error('Quality gate requested but the benchmark fixture has no thresholds object.')
+
   const report = {
     dataset: fixture.dataset || path.basename(fixturePath),
     generated_at: new Date().toISOString(),
@@ -222,8 +284,18 @@ export async function main() {
       harvested: harvested.length,
     },
     reports,
+    quality_gate: qualityGate,
   }
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
+
+  const serialized = `${JSON.stringify(report, null, 2)}\n`
+  if (outputPath)
+    fs.writeFileSync(path.resolve(outputPath), serialized)
+  process.stdout.write(serialized)
+
+  if (enforceThresholds && !qualityGate.passed) {
+    console.error(`Retrieval quality gate failed: ${qualityGate.failures.join('; ')}`)
+    process.exitCode = 2
+  }
 }
 
 if (process.argv[1]?.endsWith('evaluate_retrieval_real.js')) {
