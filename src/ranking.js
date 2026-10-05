@@ -48,6 +48,7 @@ export function fuseRankings({
       badge: meta.badge || '⭐ Starred',
       tier: meta.tier,
       extraItem: meta.item,
+      sourceChannels: meta.sourceChannels,
     }
     // Private stars keep their visibility without displacing relevance: the boost
     // only breaks ties, because relevance_score is the primary sort key.
@@ -60,6 +61,7 @@ export function fuseRankings({
     cur.extraItem = meta.item
     cur.evidence = meta.evidence
     cur.channel = meta.channel || 'keyword'
+    cur.sourceChannels = meta.sourceChannels || cur.sourceChannels
     rrfMap.set(repo, cur)
   })
 
