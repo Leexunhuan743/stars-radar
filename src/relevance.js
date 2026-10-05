@@ -35,11 +35,17 @@ export function relevanceScore({ vScore = 0, kwWeight = 0, facetCoverage } = {})
   // requirements should beat repeating synonyms from one intent domain. Single-facet
   // queries keep the previous score exactly, so identity and narrow recall semantics do
   // not drift just because the structured query representation exists.
-  let facetBonus = 0
-  if (facetCoverage?.total >= 2 && facetCoverage.matched >= 2)
-    facetBonus = Math.min((facetCoverage.matched / facetCoverage.total) * 0.12, 0.12)
+  if (facetCoverage?.total >= 2) {
+    const ratio = Math.max(0, Math.min(facetCoverage.matched / facetCoverage.total, 1))
+    // Coverage changes the final relevance, not candidate generation. A partial match remains
+    // discoverable, but a repository satisfying one of four requested facets cannot outrank an
+    // otherwise similar repository satisfying all four merely because one intent had many synonyms.
+    const coverageFactor = 0.85 + (ratio * 0.15)
+    const coverageBonus = facetCoverage.matched >= 2 ? ratio * 0.12 : 0
+    base = (base * coverageFactor) + coverageBonus
+  }
 
-  return Number(Math.min(base + facetBonus, 0.99).toFixed(3))
+  return Number(Math.min(base, 0.99).toFixed(3))
 }
 
 // Community cap: at most ceil(limit*0.4) community/archive results per query.
