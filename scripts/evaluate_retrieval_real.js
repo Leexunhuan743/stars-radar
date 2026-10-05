@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import process from 'node:process'
-import { DIMS, EMBEDDING_MODEL, isEmbedding, validateVectorIndex } from '../src/embeddings.js'
+import { DIMS, EMBEDDING_MODEL, isEmbedding, validateVectorIndex, vectorNorms } from '../src/embeddings.js'
 import { foldJournalFiles } from '../src/ingest-journal.js'
 import {
   ASSET_INDEX_KEY,
@@ -63,7 +63,8 @@ function loadVectors(root) {
   if (bytes.byteLength !== records.length * DIMS * 4)
     throw new Error(`Vector pair mismatch: ${records.length} records but ${bytes.byteLength} bytes.`)
   const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-  return { records, values: new Float32Array(copy) }
+  const values = new Float32Array(copy)
+  return { records, values, norms: vectorNorms(values, records.length) }
 }
 
 async function embedQuery(query) {
@@ -199,11 +200,11 @@ export async function main() {
   const rankings = readJson(path.join(root, LOCAL_RANKINGS_DIR, RANKINGS_KEY), {})
   const assetIndex = readJson(path.join(root, ASSET_INDEX_KEY), { repos: {}, intent_inverted: {} })
   const harvested = loadHarvested(root)
-  const vectors = lexicalOnly ? { values: null, records: null } : loadVectors(root)
+  const vectors = lexicalOnly ? { values: null, norms: null, records: null } : loadVectors(root)
   const documents = { catalog, rankings, assetIndex, harvested, vectors, intents: defaultIntents }
 
   const reports = []
-  reports.push(await runMode('lexical', fixture, { ...documents, vectors: { values: null, records: null } }, { lexicalOnly: true, k }))
+  reports.push(await runMode('lexical', fixture, { ...documents, vectors: { values: null, norms: null, records: null } }, { lexicalOnly: true, k }))
   if (!lexicalOnly)
     reports.push(await runMode('hybrid_bge_m3', fixture, documents, { lexicalOnly: false, k }))
 
