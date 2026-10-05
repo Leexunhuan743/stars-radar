@@ -122,7 +122,6 @@ test('short high-value README sections survive the generic minimum-length filter
   assert.ok(chunks.some(chunk => chunk.heading === 'Compatibility'))
 })
 
-
 test('README generation identity binds to every returned semantic result, not only the top five', () => {
   const generation = {
     id: '20261005T080000Z-ceaa138fd814-777',
