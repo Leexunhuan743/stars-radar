@@ -9,11 +9,11 @@ import {
   validateToolsetCoverage,
 } from '../src/toolsets.js'
 
-test('toolsets are nested capability profiles and all remains the backward-compatible default', () => {
+test('toolsets are nested capability profiles and research is the safe default', () => {
   const core = resolveToolset('core')
-  const research = resolveToolset('research')
-  const all = resolveToolset()
-  assert.equal(DEFAULT_TOOLSET, 'all')
+  const research = resolveToolset()
+  const all = resolveToolset('all')
+  assert.equal(DEFAULT_TOOLSET, 'research')
   assert.equal(core.tools.size, 7)
   assert.equal(research.tools.size, 13)
   assert.equal(all.tools.size, Object.keys(TOOL_DEFINITIONS).length)
