@@ -97,7 +97,6 @@ test('Precision@K uses K as the denominator and negative success has its own agg
   assert.equal(report.negative_empty_success_rate, 0.5)
 })
 
-
 test('benchmark summaries stay visible per labeled query class', () => {
   const rows = [
     { classes: ['readme_only', 'multilingual'], latency_ms: 5, metrics: evaluateOne(['a/relevant'], ['a/relevant'], [], 5) },
