@@ -2,11 +2,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import { performance } from 'node:perf_hooks'
-import defaultIntents from '../data/intents.json' with { type: 'json' }
 import { DIMS, EMBEDDING_MODEL, isEmbedding } from '../src/embeddings.js'
 import { foldJournalFiles } from '../src/ingest-journal.js'
 import { INGEST_JOURNAL_PREFIX } from '../src/object-keys.js'
 import { searchDocuments } from '../src/search-engine.js'
+
+const defaultIntents = JSON.parse(fs.readFileSync(new URL('../data/intents.json', import.meta.url), 'utf-8'))
 
 const DEFAULT_FIXTURE = 'data/retrieval-benchmark.private.json'
 const DEFAULT_K = 10
@@ -52,8 +53,8 @@ function loadVectors(root) {
   const bytes = fs.readFileSync(binPath)
   if (bytes.byteLength !== names.length * DIMS * 4)
     throw new Error(`Vector pair mismatch: ${names.length} names but ${bytes.byteLength} bytes.`)
-  const view = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
-  return { names, values: new Float32Array(view) }
+  const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+  return { names, values: new Float32Array(copy) }
 }
 
 async function embedQuery(query) {
@@ -142,7 +143,7 @@ async function runMode(name, fixture, documents, { lexicalOnly, k }) {
     const results = searchDocuments(
       { ...documents, queryVector },
       scenario.query,
-      { limit: Math.max(k, scenario.options?.limit || 0), explain: false, ...(scenario.options || {}) },
+      { ...(scenario.options || {}), limit: Math.max(k, scenario.options?.limit || 0), explain: false },
     )
     const returned = results.map(result => result.repo)
     rows.push({
