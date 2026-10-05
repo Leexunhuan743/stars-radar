@@ -128,6 +128,12 @@ export function validateVectorIndex(records) {
       throw new Error(`README vector record ${record.id} is missing heading.`)
     if (typeof record.text !== 'string' || !record.text.trim())
       throw new Error(`README vector record ${record.id} is missing text.`)
+    if (record.readme_sha256 !== undefined && !/^[0-9a-f]{64}$/.test(record.readme_sha256))
+      throw new Error(`README vector record ${record.id} has invalid readme_sha256.`)
+    if (record.content_sha256 !== undefined && !/^[0-9a-f]{64}$/.test(record.content_sha256))
+      throw new Error(`README vector record ${record.id} has invalid content_sha256.`)
+    if (record.ordinal !== undefined && (!Number.isInteger(record.ordinal) || record.ordinal < 0))
+      throw new Error(`README vector record ${record.id} has invalid ordinal.`)
   }
 
   for (const repo of chunkRepos) {
