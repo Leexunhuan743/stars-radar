@@ -208,7 +208,7 @@ Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。`MCP_API_KEY` 与 `MCP
 
 收录结果分别报告 `starred_on_github` 与 `staged_in_radar`。GitHub 拒绝点 Star 时，真实仓库仍可能收录到 Radar，需要检查两个状态。服务没有取消收录或修改 GitHub Lists 的接口。
 
-网页搜索尝试 Brave、Tavily 与无密钥页面来源。无密钥来源受页面变更和访问挑战影响，并非保证可用；`freshness_applied` 表明日期过滤是否实际生效。GitHub 限流或不完整结果会在返回值中说明，不应解释成“没有项目”。
+网页搜索只使用显式配置的 Brave / Tavily API。未配置任何 provider，或所有已配置 provider 均失败时返回 `503 search_unavailable`；不再解析第三方搜索 HTML 页面。`freshness_applied` 表明日期过滤是否实际生效。GitHub 限流或不完整结果会在返回值中说明，不应解释成“没有项目”。
 
 ## REST 接口
 
