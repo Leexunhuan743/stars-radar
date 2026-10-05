@@ -176,10 +176,11 @@ export function selectReadmeVectorChunks(markdown, { limit } = {}) {
     return []
   if (sections.length <= budget)
     return sections
-  if (budget === 1)
+  if (budget === 1) {
     return [sections.reduce((best, section) => (
       sectionInformationScore(section) > sectionInformationScore(best) ? section : best
     ))]
+  }
 
   // Always preserve both document boundaries. The interior budget is then distributed across
   // source-order regions, choosing the most informative section in each region. This guarantees
