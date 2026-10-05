@@ -20,6 +20,12 @@ test('compaction deletes only previous snapshotted ingests and probes actually d
         ],
         entries: [],
       },
+      probe_snapshot: {
+        keys: [
+          'state/probe-captures/old-probe.jsonl',
+          'state/probe-captures/old-probe.jsonl',
+        ],
+      },
     }))
 
     const plan = buildCompactionPlan(root)
@@ -29,12 +35,12 @@ test('compaction deletes only previous snapshotted ingests and probes actually d
         'state/ingest-journal/old-a.jsonl',
         'state/ingest-journal/old-b.jsonl',
       ],
-      probe_keys: ['state/probe-captures/probe-a.jsonl'],
+      probe_keys: ['state/probe-captures/old-probe.jsonl'],
     })
     assert.equal(
-      [...plan.ingest_keys, ...plan.probe_keys].includes('state/probe-captures/arrived-after-download.jsonl'),
+      plan.probe_keys.includes('state/probe-captures/probe-a.jsonl'),
       false,
-      'a capture written after the build downloaded its local snapshot is never part of the deletion plan',
+      'a probe downloaded in the current build is not deleted until a later generation proves it was folded',
     )
   }
   finally {
@@ -49,6 +55,21 @@ test('compaction refuses a snapshot key outside its owned prefix', () => {
       ingest_snapshot: { keys: ['catalog.json'], entries: [] },
     }))
     assert.throws(() => buildCompactionPlan(root), /outside the ingest journal prefix/)
+  }
+  finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+
+test('compaction refuses a probe snapshot key outside its owned prefix', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-compaction-'))
+  try {
+    fs.writeFileSync(path.join(root, 'previous-asset-index.json'), JSON.stringify({
+      ingest_snapshot: { keys: [], entries: [] },
+      probe_snapshot: { keys: ['state/ingest-journal/not-a-probe.jsonl'] },
+    }))
+    assert.throws(() => buildCompactionPlan(root), /outside the probe capture prefix/)
   }
   finally {
     fs.rmSync(root, { recursive: true, force: true })
