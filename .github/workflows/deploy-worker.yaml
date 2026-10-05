@@ -55,6 +55,20 @@ jobs:
           test -n "${WORKER_URL}" || { echo "::error::WORKER_URL is required for post-deploy verification"; exit 1; }
           test -n "${MCP_API_KEY}" || { echo "::error::MCP_API_KEY is required for post-deploy verification"; exit 1; }
 
+      - name: Require production Worker auth secrets before deploy
+        run: |
+          pnpm exec wrangler secret list --format json > "${RUNNER_TEMP}/worker-bindings.json"
+          node --input-type=module - "${RUNNER_TEMP}/worker-bindings.json" <<'NODE'
+          import fs from 'node:fs'
+          const secrets = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+          const names = new Set((Array.isArray(secrets) ? secrets : []).map(secret => secret?.name).filter(Boolean))
+          const required = ['MCP_API_KEY', 'MCP_WRITE_API_KEY']
+          const missing = required.filter(name => !names.has(name))
+          if (missing.length > 0)
+            throw new Error(`Production Worker is missing required secret binding(s): ${missing.join(', ')}`)
+          console.log(`Production Worker auth secrets present: ${required.join(', ')}`)
+          NODE
+
       - name: Validate active v3 data generation before deploy
         run: node scripts/validate_remote_generation.js --active
 
