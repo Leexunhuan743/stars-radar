@@ -12,6 +12,15 @@
 export const SUBJECT_WEIGHT = 40
 export const TOKEN_WEIGHT = 8
 export const INTENT_WEIGHT = 5
+export const INTENT_REPEAT_BONUS = 1
+export const INTENT_REPEAT_CAP = 2
+
+export function intentMatchScore(words, matches) {
+  const count = (words || []).filter(matches).length
+  if (count === 0)
+    return 0
+  return INTENT_WEIGHT + Math.min(count - 1, INTENT_REPEAT_CAP) * INTENT_REPEAT_BONUS
+}
 
 export function termMatcher(text) {
   const normalize = value => value.toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ')
@@ -52,12 +61,8 @@ export function scoreText(text, { specificSubjects, queryTokens, matchedGroups, 
     if (matches(token))
       score += TOKEN_WEIGHT
   }
-  for (const group of matchedGroups) {
-    for (const word of intents[group] || []) {
-      if (matches(word))
-        score += INTENT_WEIGHT
-    }
-  }
+  for (const group of matchedGroups)
+    score += intentMatchScore(intents[group] || [], matches)
 
   return score
 }
