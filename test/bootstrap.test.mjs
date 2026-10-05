@@ -83,7 +83,7 @@ for (const starred of [[], [{ full_name: 'fixture/tool', name: 'tool', owner: { 
       )
       assert.equal(keys.includes('fixture/tool.md'), starred.length > 0)
       fs.unlinkSync(path.join(setup.directory, 'asset-index.json'))
-      await assert.rejects(seedLocalR2({ put: async () => assert.fail('no partial seed allowed') }, setup.directory), /ENOENT/)
+      await assert.rejects(seedLocalR2({ put: async () => assert.fail('no partial seed allowed') }, setup.directory), /Generation is missing required documents: asset-index\.json/)
     }
     finally {
       setup.clean()
