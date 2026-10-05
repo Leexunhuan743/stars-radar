@@ -2,7 +2,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import fs from 'fs-extra'
-import { INGEST_JOURNAL_PREFIX, PROBE_CAPTURE_PREFIX } from '../src/object-keys.js'
+import { INGEST_JOURNAL_PREFIX, PREVIOUS_ASSET_INDEX_FILE, PROBE_CAPTURE_PREFIX } from '../src/object-keys.js'
 
 const ROOT = process.env.ASSET_STORE_ROOT
   ? path.resolve(process.env.ASSET_STORE_ROOT)
@@ -20,12 +20,12 @@ function exactPrefixKeys(directory, prefix) {
 }
 
 export function buildCompactionPlan(root = ROOT) {
-  const previousIndexPath = path.resolve(root, 'previous-asset-index.json')
+  const previousIndexPath = path.resolve(root, PREVIOUS_ASSET_INDEX_FILE)
   let ingestKeys = []
   if (fs.existsSync(previousIndexPath)) {
     const snapshot = fs.readJsonSync(previousIndexPath).ingest_snapshot || { keys: [] }
     if (!Array.isArray(snapshot.keys))
-      throw new Error('previous-asset-index.json has an invalid ingest_snapshot.keys.')
+      throw new Error(`${PREVIOUS_ASSET_INDEX_FILE} has an invalid ingest_snapshot.keys.`)
     ingestKeys = [...new Set(snapshot.keys)].sort()
   }
 
