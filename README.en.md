@@ -58,7 +58,7 @@ Add these Repository secrets in your fork's **Settings → Secrets and variables
 
 The S3 credentials need read/write access to that bucket. The workflow maps `GH_TOKEN` to `GITHUB_TOKEN`; GitHub's automatic workflow token is not your personal star-sync token.
 
-Enable workflows in **Actions** and manually run **Update Repos Info**. The first run builds your catalogue, README archive and retrieval index. Subsequent runs are scheduled every six hours. Catalogue, rankings, asset state/index and vectors are uploaded as one immutable derived-data generation and activated only after the whole generation verifies, so a failed build never exposes a half-published derived data plane. The three newest derived generations are retained for quick rollback.
+Enable workflows in **Actions** and manually run **Update Repos Info**. The first run builds your catalogue, README corpus and retrieval index. Subsequent runs are scheduled every six hours. Catalogue, rankings, asset state/index, vectors and the README reference manifest are published as one immutable generation. README bodies are content-addressed at `readmes/<sha256>.md`. The active pointer moves only after the generation and referenced blobs publish successfully. The three newest generations are retained; use `pnpm data:rollback -- --list` and `pnpm data:rollback -- --to <generation-id>` for validated rollback.
 
 ### 3. Configure and deploy the Worker
 
@@ -79,7 +79,7 @@ Both `MCP_API_KEY` and `MCP_WRITE_API_KEY` are required and must be different ra
 
 `MCP_TOOLSET` controls the **MCP-visible tool surface**. The default is `research`, which exposes all read-only research tools but hides capture and star/ingest. `core` keeps only personal-library retrieval/comparison/status tools. Write tools are exposed only when `all` is selected explicitly. REST routes are unchanged; invalid values fail MCP initialization.
 
-To deploy automatically after a data update, also set the Actions secret `CLOUDFLARE_API_TOKEN` with Worker deployment permission for the account. Without it, the workflow only publishes R2 data. Configuration details are listed in [.env.example](.env.example) and the [developer guide](docs/DEVELOPMENT.md).
+Data publication and Worker deployment are separate workflows. **Update Repos Info** only publishes R2 data. **Deploy Worker** runs on relevant main-branch code changes or manual dispatch and requires Actions secrets `CLOUDFLARE_API_TOKEN`, `R2_ACCOUNT_ID`, `MCP_API_KEY`, plus repository variable `WORKER_URL`; it performs a production `/health` smoke check after deploy. Configuration details are listed in [.env.example](.env.example) and the [developer guide](docs/DEVELOPMENT.md).
 
 ## Connect an AI assistant
 
@@ -141,7 +141,7 @@ Stars saved through the service become lexically searchable after journal refres
 
 Your categories are your own GitHub Lists, with no fixed count. Uncategorized public stars use `everything-else`. Ingest tags stay in the radar and do not modify GitHub Lists.
 
-Production retrieval quality still needs labels from your own corpus. `pnpm eval:retrieval:gate` can enforce private-fixture thresholds for Recall/MRR/NDCG, negative-query behavior, forbidden hits and latency; synthetic fixtures are not presented as production-quality proof.
+Production retrieval quality still needs labels from your own corpus. `pnpm eval:retrieval:gate` can enforce private-fixture thresholds for Recall/MRR/NDCG, negative-query behavior, forbidden hits and latency. The **Retrieval Quality** workflow restores the active production generation and runs that gate when `RETRIEVAL_BENCHMARK_B64` is configured; otherwise it explicitly skips it. Synthetic fixtures are not presented as production-quality proof.
 
 Generated data lives in your R2 bucket and is not committed to Git. The sync excludes private repositories. Keep the bucket private and share the service key only with trusted clients. This is a single-account service: all clients with the same key share its data and permissions.
 
