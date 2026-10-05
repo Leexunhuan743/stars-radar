@@ -6,7 +6,7 @@ import { buildRepositoryQuery } from './github-query.js'
 import { enrichLiveResults } from './live-results.js'
 import { PROBE_CAPTURE_PREFIX } from './object-keys.js'
 import { buildProbeCaptures, PROBE_MAX_CAPTURES, PROBE_MIN_STARS } from './probe-capture.js'
-import { ProbeRequestError, readGithubSearch, requestProbe } from './probe-errors.js'
+import { githubFailure, ProbeRequestError, readGithubSearch, requestProbe } from './probe-errors.js'
 
 export async function searchGithubLive(env, {
   query = '',
@@ -17,7 +17,6 @@ export async function searchGithubLive(env, {
   since,
   until,
   limit = 10,
-  persist = false,
 } = {}, { fetcher = fetch } = {}) {
   const catalog = await getCatalog(env)
   const reposCatalog = catalog.repos || {}
@@ -50,31 +49,6 @@ export async function searchGithubLive(env, {
 
   const enriched = enrichLiveResults(items, { reposCatalog, communityIndex: communitySet })
 
-  // 开集探测沉淀: persist=true 时, 把满足预过滤的发现项捕获到 R2 state/probe-captures/<key>.jsonl
-  // (每次响应一个新 key, 由 CI 的 asset_store 合并; 探针命中永不自动进向量库)
-  //
-  // 这里以前写的是一个按日共享的 probes/<date>.jsonl, 读出来拼接再整体写回 —— 同一天两个
-  // isolate 同时捕获就会互相覆盖。改成每次一个新对象后, 捕获之间不可能冲突。
-  // 预过滤规则本身在 src/probe-capture.js（纯函数，可测）。
-  //
-  // 结果里如实报告捕获了几条：`persist=true` 是调用方的一个请求，只说"我记下了"而没有任何
-  // 可核对的字段，就等于让调用方凭信任相信一次副作用发生了（捕获失败只写 console.warn，
-  // 线上的调用方看不到）。
-  let capture = null
-  if (persist && enriched.length > 0) {
-    const captures = buildProbeCaptures(enriched, { query: query || githubQuery })
-    if (captures.length > 0) {
-      try {
-        capture = { captured: captures.length, capture_key: await appendJsonLines(env, PROBE_CAPTURE_PREFIX, captures) }
-      }
-      catch (e) {
-        capture = { captured: 0, capture_error: e.message || String(e) }
-      }
-    }
-    else {
-      capture = { captured: 0, capture_skipped: `no discovery met the capture rule (>=${PROBE_MIN_STARS} stars, described, top ${PROBE_MAX_CAPTURES})` }
-    }
-  }
 
   return {
     source: 'github_live_search',
@@ -83,7 +57,77 @@ export async function searchGithubLive(env, {
     ...(typeof data.incomplete_results === 'boolean' ? { incomplete_results: data.incomplete_results } : {}),
     returned: enriched.length,
     repos: enriched,
-    ...(capture ? { capture } : {}),
+  }
+}
+
+export async function captureGithubDiscovery(env, {
+  repo,
+  query,
+} = {}, { fetcher = fetch } = {}) {
+  const cleanRepo = String(repo || '').trim()
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/\/$/, '')
+  const cleanQuery = String(query || '').trim()
+
+  if (!/^[\w.-]+\/[\w.-]+$/.test(cleanRepo) || cleanRepo.split('/').some(part => part === '.' || part === '..'))
+    throw new ProbeRequestError('invalid_repo', 'Discovery capture requires a repository in owner/repo format.', 400)
+  if (!cleanQuery)
+    throw new ProbeRequestError('invalid_query', 'Discovery capture requires the originating search query.', 400)
+
+  const headers = {
+    'User-Agent': 'Stars-Radar-MCP',
+    'Accept': 'application/vnd.github+json',
+  }
+  if (env.GITHUB_TOKEN)
+    headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`
+
+  const operation = 'GitHub discovery capture'
+  const encodedRepo = cleanRepo.split('/').map(encodeURIComponent).join('/')
+  const response = await requestProbe(
+    `https://api.github.com/repos/${encodedRepo}`,
+    { headers, signal: AbortSignal.timeout(10000) },
+    fetcher,
+    operation,
+  )
+  if (!response.ok)
+    throw githubFailure(response, operation)
+
+  let data
+  try {
+    data = await response.json()
+  }
+  catch (error) {
+    throw new ProbeRequestError('invalid_upstream_response', `${operation}: GitHub returned invalid JSON (${error.message}).`)
+  }
+  if (typeof data?.full_name !== 'string' || !Number.isFinite(data.stargazers_count))
+    throw new ProbeRequestError('invalid_upstream_response', `${operation}: GitHub repository metadata is incomplete.`)
+
+  const [capture] = buildProbeCaptures([{
+    repo: data.full_name,
+    url: data.html_url,
+    stars: data.stargazers_count,
+    description: data.description || '',
+    language: data.language || '',
+    topics: data.topics || [],
+    created_at: data.created_at,
+    pushed_at: data.pushed_at,
+  }], { query: cleanQuery })
+
+  if (!capture) {
+    return {
+      captured: 0,
+      repo: data.full_name,
+      capture_skipped: `repository does not meet the capture rule (>=${PROBE_MIN_STARS} stars and non-empty description)`,
+    }
+  }
+
+  try {
+    const captureKey = await appendJsonLines(env, PROBE_CAPTURE_PREFIX, [capture])
+    return { captured: 1, repo: data.full_name, query: cleanQuery, capture_key: captureKey }
+  }
+  catch (error) {
+    throw new ProbeRequestError('capture_failed', `Could not append discovery capture: ${error.message || String(error)}`, 503)
   }
 }
 
