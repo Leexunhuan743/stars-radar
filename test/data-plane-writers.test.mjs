@@ -206,3 +206,12 @@ test('state compaction uses the oldest retained generation and retrieval quality
   assert.doesNotMatch(retrieval, /legacy flat production plane/)
   assert.doesNotMatch(retrieval, /string-only vector index/)
 })
+
+test('fork retrieval PRs use a non-secret regression path instead of requiring repository secrets', () => {
+  const retrieval = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'retrieval-quality.yaml'), 'utf-8')
+  assert.match(retrieval, /TRUSTED_QUALITY_EVENT/)
+  assert.match(retrieval, /Run non-secret fork retrieval regression/)
+  assert.match(retrieval, /if: env\.TRUSTED_QUALITY_EVENT != 'true'/)
+  assert.match(retrieval, /run: pnpm eval:retrieval/)
+  assert.match(retrieval, /Require strict candidate quality configuration\n\s+if: env\.TRUSTED_QUALITY_EVENT == 'true'/)
+})
