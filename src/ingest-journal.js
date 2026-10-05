@@ -113,10 +113,7 @@ export function foldJournalFiles(files) {
 
 /** CI embeds confirmed ingests even when they are absent from the user's GitHub star list. */
 export function embeddingRepositories(catalogRepos, harvested) {
-  // Historical ingest rows may contain `summary` copied from GitHub description. That text is
-  // already represented by `description`; carrying it as a personal summary both duplicates the
-  // semantic signal and crosses the trust boundary.
-  const inputs = new Map(harvested.map(repo => [repo.repo.toLowerCase(), { ...repo, summary: '' }]))
+  const inputs = new Map(harvested.map(repo => [repo.repo.toLowerCase(), repo]))
   for (const repo of Object.values(catalogRepos)) {
     const ingested = inputs.get(repo.repo.toLowerCase())
     inputs.set(repo.repo.toLowerCase(), {
