@@ -13,11 +13,16 @@ import {
   EMBEDDINGS_INDEX_KEY,
   EMBEDDINGS_MANIFEST_KEY,
   LOCAL_RANKINGS_DIR,
+  LOCAL_STARS_DIR,
   RANKINGS_KEY,
+  readmeBlobKey,
+  READMES_MANIFEST_KEY,
+  README_SUFFIX,
 } from '../src/object-keys.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export const GENERATION_STAGE_DIR = '.generation-stage'
+export const README_CONTENT_STAGE_DIR = '.readme-content-stage'
 export const GENERATION_MANIFEST_KEY = 'generation-manifest.json'
 
 const FILES = [
@@ -41,8 +46,11 @@ export function prepareDataGeneration({
 } = {}) {
   const pointer = createGenerationPointer(generationId, commit, publishedAt)
   const stage = path.resolve(root, GENERATION_STAGE_DIR)
+  const readmeStage = path.resolve(root, README_CONTENT_STAGE_DIR)
   fs.rmSync(stage, { recursive: true, force: true })
+  fs.rmSync(readmeStage, { recursive: true, force: true })
   fs.mkdirSync(stage, { recursive: true })
+  fs.mkdirSync(readmeStage, { recursive: true })
 
   const missing = FILES.filter(([, local]) => !fs.existsSync(path.resolve(root, local)))
   const vectorMissing = missing.filter(([key]) => key.startsWith('embeddings'))
@@ -68,14 +76,45 @@ export function prepareDataGeneration({
     }
   }
 
+  const readmes = { schema: 1, repos: {} }
+  const starsRoot = path.resolve(root, LOCAL_STARS_DIR)
+  if (fs.existsSync(starsRoot)) {
+    for (const owner of fs.readdirSync(starsRoot, { withFileTypes: true })) {
+      if (!owner.isDirectory())
+        continue
+      for (const file of fs.readdirSync(path.join(starsRoot, owner.name), { withFileTypes: true })) {
+        if (!file.isFile() || !file.name.endsWith(README_SUFFIX))
+          continue
+        const source = path.join(starsRoot, owner.name, file.name)
+        const bytes = fs.readFileSync(source)
+        const sha256 = digest(bytes)
+        const repo = `${owner.name}/${file.name.slice(0, -README_SUFFIX.length)}`
+        const blobKey = readmeBlobKey(sha256)
+        const blobTarget = path.resolve(readmeStage, path.basename(blobKey))
+        if (!fs.existsSync(blobTarget))
+          fs.writeFileSync(blobTarget, bytes)
+        readmes.repos[repo.toLowerCase()] = { repo, sha256, object_key: blobKey }
+      }
+    }
+  }
+
+  const readmesBytes = Buffer.from(`${JSON.stringify(readmes, null, 2)}\n`)
+  fs.writeFileSync(path.resolve(stage, READMES_MANIFEST_KEY), readmesBytes)
+  files[READMES_MANIFEST_KEY] = {
+    bytes: readmesBytes.byteLength,
+    sha256: digest(readmesBytes),
+    object_key: generationKey(pointer.id, READMES_MANIFEST_KEY),
+  }
+
   const manifest = {
     schema: 1,
     generation: pointer,
     files,
+    readme_blobs: Object.keys(readmes.repos).length,
   }
   fs.writeJsonSync(path.resolve(stage, GENERATION_MANIFEST_KEY), manifest, { spaces: 2 })
   fs.writeJsonSync(path.resolve(root, 'active-generation.json'), pointer, { spaces: 2 })
-  return { pointer, manifest, stage }
+  return { pointer, manifest, stage, readmeStage }
 }
 
 if (process.argv[1]?.endsWith('prepare_data_generation.js')) {
