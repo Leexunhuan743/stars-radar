@@ -1,0 +1,18 @@
+{
+  "dataset": "replace-with-private-real-stars-benchmark",
+  "cases": [
+    {
+      "id": "example-webdav-storage",
+      "query": "支持 WebDAV 和 S3 的自托管工具",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "forbidden": [],
+      "options": { "scope": "starred" }
+    },
+    {
+      "id": "example-memory-query",
+      "query": "我收藏过的离线 Markdown 笔记工具",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "options": { "scope": "starred" }
+    }
+  ]
+}
