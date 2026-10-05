@@ -153,19 +153,40 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
         : asset?.categories?.length
           ? 'asset_index'
           : source === 'readme_generation' ? 'readme_generation' : null)
-  const metadataFields = ['description', 'stars', 'language', 'license', 'pushed_at', 'created_at', 'archived', 'topics']
+  const metadataFields = ['stars', 'language', 'license', 'pushed_at', 'created_at', 'archived', 'topics']
     .filter(field => projected[field] !== null && projected[field] !== undefined)
-  const metadataEvidence = buildRepositoryEvidence({
-    kind: 'repository_metadata',
-    repo: record.repo,
-    source,
-    fetchedAt,
-    snapshotAt,
-    generation: source === 'readme_generation' ? readmes.generation : null,
-    fields: metadataFields,
-  })
-  const evidenceChain = [metadataEvidence]
-  const fieldProvenance = Object.fromEntries(metadataFields.map(field => [field, metadataEvidence.id]))
+  const evidenceChain = []
+  const fieldProvenance = {}
+  if (metadataFields.length > 0) {
+    const metadataEvidence = buildRepositoryEvidence({
+      kind: 'repository_metadata',
+      repo: record.repo,
+      source,
+      fetchedAt,
+      snapshotAt,
+      generation: source === 'readme_generation' ? readmes.generation : null,
+      trust: EVIDENCE_TRUST.EXTERNAL_STRUCTURED,
+      fields: metadataFields,
+    })
+    evidenceChain.push(metadataEvidence)
+    for (const field of metadataFields)
+      fieldProvenance[field] = metadataEvidence.id
+  }
+
+  if (projected.description) {
+    const descriptionEvidence = buildRepositoryEvidence({
+      kind: 'repository_description',
+      repo: record.repo,
+      source,
+      fetchedAt,
+      snapshotAt,
+      generation: source === 'readme_generation' ? readmes.generation : null,
+      trust: EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
+      fields: ['description'],
+    })
+    evidenceChain.push(descriptionEvidence)
+    fieldProvenance.description = descriptionEvidence.id
+  }
 
   const personalFields = ['reason', 'summary'].filter(field => projected[field] !== null && projected[field] !== undefined)
   if (personalFields.length > 0) {
