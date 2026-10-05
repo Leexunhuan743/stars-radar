@@ -295,5 +295,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
     limit,
     explain,
     applyCommunityDiversityCap: scope === 'all' && !targetSource,
+    catalogSnapshotAt: catalog.generatedAt || null,
+    rankingSnapshotAt: rankings.generatedAt || null,
   })
 }
