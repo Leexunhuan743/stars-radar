@@ -1,7 +1,7 @@
 import { appendJsonLines } from './append-store.js'
 import { buildCommunityIndex } from './community-index.js'
-import { EVIDENCE_TRUST } from './evidence.js'
 import { parseDateRange } from './date-range.js'
+import { EVIDENCE_TRUST } from './evidence.js'
 import { getCatalog, getHarvested, getRankings } from './documents.js'
 import { buildRepositoryQuery } from './github-query.js'
 import { enrichLiveResults } from './live-results.js'
