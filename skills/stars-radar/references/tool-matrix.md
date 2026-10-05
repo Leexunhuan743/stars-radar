@@ -10,7 +10,7 @@ Complete reference for all 15 MCP tools provided by the `Stars Radar` MCP server
 
 - **Description**: Returns the current Stars Radar workspace context: curated star count, vector DB capacity, available community intelligence layers, and search tool selection guidance. Call this first to understand what data the radar currently holds before deciding which search tool to use.
 - **Inputs**: None.
-- **Output**: Object with `workspace`, `version`, `total_starred`, `vector_db_capacity`, `vector_dimensions`, `vector_model`, `vector_input_profile`, `intent_domains`, `community_layers`, and `search_tool_hint`. `vector_input_profile=repo-metadata-readme-v2` means README evidence is included in repo-level embeddings. Missing or different profiles are rejected and must be rebuilt.
+- **Output**: Object with `workspace`, `version`, `total_starred`, `vector_db_capacity`, `vector_dimensions`, `vector_model`, `vector_input_profile`, `intent_domains`, `community_layers`, and `search_tool_hint`. `vector_input_profile=repo-metadata-readme-chunks-v3` means the index contains structured repository metadata vectors plus independent README section chunk vectors. Missing or different profiles are rejected and must be rebuilt.
   > Zero capacity can mean an empty installation. An inconsistent generation is a visible document error, or a stale cached view; inspect `/health` and its data-plane status rather than treating every zero as a provider outage.
 
 ### `search_github_stars`
@@ -40,9 +40,7 @@ diversity cap applies only to the default mixed view (`scope=all` without a sour
 `scope=rankings` or `source=...` requests can fill the requested limit. `explain=true` reports matching evidence. Hyphens, underscores and spaces share
 one lexical form, and short words use boundaries.
 
-Repository vectors use input profile `repo-metadata-readme-v2`: bounded, cleaned README text is part
-of the repo-level BGE-M3 input alongside metadata. This is not chunk-level README retrieval and does
-not prove that a particular README section matched.
+Repository vectors use input profile `repo-metadata-readme-chunks-v3`. Each repository gets one metadata vector and up to six selected README section vectors. A README chunk can therefore directly recall a repository even when the feature is absent from short GitHub metadata. Under `explain=true`, `semantic_evidence.readme_chunk` identifies the semantic chunk that contributed the strongest vector evidence; cached literal README snippets remain a separate verification channel.
 
 Run `pnpm eval:retrieval` for the synthetic labeled regression corpus. Its deterministic vector
 fixtures test channel behavior; they do not measure real BGE-M3 or production precision/recall. Use
