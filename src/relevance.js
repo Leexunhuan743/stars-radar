@@ -18,16 +18,28 @@ export function keywordRelevanceScore(kwWeight) {
 // Extracted from src/index.js so the confidence-bonus arithmetic and the three
 // branches are unit-testable: the +0.35 keyword bonus and the separate 0.98 / 0.95
 // ceilings previously existed only inside the file that cannot be imported.
-export function relevanceScore({ vScore = 0, kwWeight = 0 }) {
+export function relevanceScore({ vScore = 0, kwWeight = 0, facetCoverage } = {}) {
+  let base = 0
   if (vScore > 0 && kwWeight > 0) {
     const kwBonus = Math.min((kwWeight / 100) * 0.35, 0.35)
-    return Number(Math.min(vScore + kwBonus, 0.98).toFixed(3))
+    base = Math.min(vScore + kwBonus, 0.98)
   }
-  if (vScore > 0)
-    return Number(Math.min(vScore, 0.95).toFixed(3))
-  if (kwWeight > 0)
-    return keywordRelevanceScore(kwWeight)
-  return 0
+  else if (vScore > 0) {
+    base = Math.min(vScore, 0.95)
+  }
+  else if (kwWeight > 0) {
+    base = keywordRelevanceScore(kwWeight)
+  }
+
+  // Multi-facet coverage is a separate ranking signal: covering several distinct user
+  // requirements should beat repeating synonyms from one intent domain. Single-facet
+  // queries keep the previous score exactly, so identity and narrow recall semantics do
+  // not drift just because the structured query representation exists.
+  let facetBonus = 0
+  if (facetCoverage?.total >= 2 && facetCoverage.matched >= 2)
+    facetBonus = Math.min((facetCoverage.matched / facetCoverage.total) * 0.12, 0.12)
+
+  return Number(Math.min(base + facetBonus, 0.99).toFixed(3))
 }
 
 // Community cap: at most ceil(limit*0.4) community/archive results per query.
