@@ -10,6 +10,7 @@ import {
   dataPlaneStatus,
   getAssetIndex,
   getCatalog,
+  getDataGeneration,
   getHarvested,
   getRankings,
   getVectors,
@@ -283,6 +284,7 @@ async function handleRequest(req, env, ctx) {
 
     // Direct REST API Endpoints
     if (url.pathname === '/health') {
+      const generation = await getDataGeneration(env)
       const catalog = await getCatalog(env)
       const rankings = await getRankings(env)
       const assetIndex = await getAssetIndex(env)
@@ -304,6 +306,9 @@ async function handleRequest(req, env, ctx) {
         repoVectorCount: vectors.records?.filter(record => record.kind === 'repo').length || 0,
         readmeChunkVectorCount: vectors.records?.filter(record => record.kind === 'readme_chunk').length || 0,
         harvestedIngests: harvested.length,
+        dataGeneration: generation.id
+          ? { id: generation.id, publishedAt: generation.published_at, commit: generation.commit }
+          : null,
         dataPlane: dataPlane.statuses,
         rateLimits: rateLimitStatus(env),
         mcpToolset: toolsetStatus(env.MCP_TOOLSET),
