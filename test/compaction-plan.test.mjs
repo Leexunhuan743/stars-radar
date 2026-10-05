@@ -61,7 +61,6 @@ test('compaction refuses a snapshot key outside its owned prefix', () => {
   }
 })
 
-
 test('compaction refuses a probe snapshot key outside its owned prefix', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-compaction-'))
   try {
