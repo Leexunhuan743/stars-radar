@@ -15,8 +15,10 @@
 /** The one model the vectors come from. Reported by `/health`, so it is part of the contract. */
 export const EMBEDDING_MODEL = 'BAAI/bge-m3'
 
-/** What text is embedded into each repository vector. */
-export const EMBEDDING_INPUT_PROFILE = 'repo-metadata-readme-v2'
+/** The exact semantic generation contract. Index records are repo metadata or README chunks. */
+export const EMBEDDING_INPUT_PROFILE = 'repo-metadata-readme-chunks-v3'
+
+export const VECTOR_RECORD_KINDS = new Set(['repo', 'readme_chunk'])
 
 /** Float32 components per vector. */
 export const DIMS = 1024
@@ -61,12 +63,48 @@ export function vectorCountFromBytes(bytes) {
  * @param {{ names: string[], bytes: number }} pair
  * @returns {string|null} why the pair is unusable, or `null` when it is usable.
  */
-export function describePairMismatch({ names, bytes }) {
-  const expected = expectedPairBytes(names.length)
+export function describePairMismatch({ records, bytes }) {
+  const expected = expectedPairBytes(records.length)
   if (bytes === expected)
     return null
-  return `${bytes}B holds ${vectorCountFromBytes(bytes)} vectors but the index lists ${names.length} names `
+  return `${bytes}B holds ${vectorCountFromBytes(bytes)} vectors but the index lists ${records.length} records `
     + `(expected ${expected}B). Both objects must come from the same pipeline run.`
+}
+
+export function validateVectorIndex(records) {
+  if (!Array.isArray(records))
+    throw new Error('Vector index must be an array of structured records.')
+
+  const ids = new Set()
+  const repoRecords = new Set()
+  for (const [index, record] of records.entries()) {
+    if (!record || typeof record !== 'object' || Array.isArray(record))
+      throw new Error(`Vector index record ${index} must be an object.`)
+    if (typeof record.id !== 'string' || !record.id)
+      throw new Error(`Vector index record ${index} is missing id.`)
+    if (ids.has(record.id))
+      throw new Error(`Vector index contains duplicate id ${record.id}.`)
+    ids.add(record.id)
+
+    if (typeof record.repo !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(record.repo))
+      throw new Error(`Vector index record ${record.id} has invalid repo.`)
+    if (!VECTOR_RECORD_KINDS.has(record.kind))
+      throw new Error(`Vector index record ${record.id} has invalid kind ${JSON.stringify(record.kind)}.`)
+
+    if (record.kind === 'repo') {
+      if (repoRecords.has(record.repo.toLowerCase()))
+        throw new Error(`Vector index contains multiple repo records for ${record.repo}.`)
+      repoRecords.add(record.repo.toLowerCase())
+      continue
+    }
+
+    if (typeof record.heading !== 'string' || !record.heading.trim())
+      throw new Error(`README vector record ${record.id} is missing heading.`)
+    if (typeof record.text !== 'string' || !record.text.trim())
+      throw new Error(`README vector record ${record.id} is missing text.`)
+  }
+
+  return { recordCount: records.length, repoCount: repoRecords.size }
 }
 
 export async function vectorDigest(bytes) {
@@ -75,19 +113,21 @@ export async function vectorDigest(bytes) {
 }
 
 /** The manifest commits both exact object contents, not merely their vector count. */
-export async function vectorManifest(names, indexBytes, binaryBytes) {
+export async function vectorManifest(records, indexBytes, binaryBytes) {
+  const { repoCount } = validateVectorIndex(records)
   return {
     model: EMBEDDING_MODEL,
     input_profile: EMBEDDING_INPUT_PROFILE,
     dimensions: DIMS,
-    count: names.length,
+    count: records.length,
+    repo_count: repoCount,
     index_sha256: await vectorDigest(indexBytes),
     binary_sha256: await vectorDigest(binaryBytes),
   }
 }
 
-export async function verifyVectorManifest(manifest, names, indexBytes, binaryBytes) {
-  const expected = await vectorManifest(names, indexBytes, binaryBytes)
+export async function verifyVectorManifest(manifest, records, indexBytes, binaryBytes) {
+  const expected = await vectorManifest(records, indexBytes, binaryBytes)
   if (Object.keys(expected).some(key => manifest?.[key] !== expected[key])) {
     throw new Error(
       `Vector manifest does not match the required ${EMBEDDING_INPUT_PROFILE} generation. Rebuild and publish one complete vector generation through CI.`,
