@@ -26,7 +26,8 @@
     "test:schema:update": "node scripts/update-tool-schemas.js",
     "postinstall": "simple-git-hooks",
     "dev:seed": "node scripts/seed-local-r2.js",
-    "eval:retrieval:real": "node scripts/evaluate_retrieval_real.js"
+    "eval:retrieval:real": "node scripts/evaluate_retrieval_real.js",
+    "eval:retrieval:gate": "node scripts/evaluate_retrieval_real.js --enforce-thresholds"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
