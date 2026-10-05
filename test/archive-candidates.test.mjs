@@ -138,7 +138,7 @@ test('repos whose display name has uppercase letters still resolve', () => {
   assert.ok(hit, 'uppercase-named repo must not be dropped from the archive channel')
   assert.equal(hit.repo, 'Moriafly/SaltUI', 'the display casing must be preserved in the result')
   assert.equal(hit.item.url, 'https://github.com/Moriafly/SaltUI')
-  assert.equal(hit.weight, 12)
+  assert.equal(hit.weight, 10)
 })
 
 test('an intent word with capitals still reaches the lowercase inverted index', () => {
@@ -219,4 +219,30 @@ test('category and subject filters still apply to archive candidates', () => {
 test('an intent word absent from the inverted index yields nothing', () => {
   assert.deepEqual(resolve({ matchedGroups: ['notes'], assetIndex: { repos: {}, intent_inverted: {} } }), [])
   assert.deepEqual(resolve({ matchedGroups: ['unknown-group'] }), [])
+})
+
+
+test('archive ranking reflects match strength instead of assigning every candidate one flat score', () => {
+  const hits = resolveArchiveCandidates({
+    assetIndex: {
+      repos: {
+        'a/strong': { repo: 'a/strong', tier: 'community', description: 'music player with player controls' },
+        'b/weak': { repo: 'b/weak', tier: 'community', description: 'music utility' },
+      },
+      intent_inverted: {
+        player: ['a/strong'],
+        music: ['a/strong', 'b/weak'],
+      },
+    },
+    intents: INTENTS,
+    matchedGroups: ['player'],
+    queryTokens: [],
+    scoredRepos: new Set(),
+    specificSubjects: [],
+  })
+
+  const byRepo = new Map(hits.map(hit => [hit.repo, hit.weight]))
+  assert.ok(byRepo.get('a/strong') > byRepo.get('b/weak'))
+  assert.equal(byRepo.get('a/strong'), 10)
+  assert.equal(byRepo.get('b/weak'), 5)
 })
