@@ -225,7 +225,6 @@ test('GitHub Actions dependencies are pinned to immutable commit SHAs', () => {
   }
 })
 
-
 test('data publication is generation-atomic and state compaction is exact-key only', () => {
   const build = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
 
