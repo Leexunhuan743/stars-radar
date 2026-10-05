@@ -49,7 +49,6 @@ export async function searchGithubLive(env, {
 
   const enriched = enrichLiveResults(items, { reposCatalog, communityIndex: communitySet })
 
-
   return {
     source: 'github_live_search',
     query: githubQuery,
@@ -64,10 +63,10 @@ export async function captureGithubDiscovery(env, {
   repo,
   query,
 } = {}, { fetcher = fetch } = {}) {
-  const cleanRepo = String(repo || '').trim()
-    .replace(/^https?:\/\/github\.com\//i, '')
-    .replace(/\.git$/i, '')
-    .replace(/\/$/, '')
+  let cleanRepo = String(repo || '').trim()
+  cleanRepo = cleanRepo.replace(/^https?:\/\/github\.com\//i, '')
+  cleanRepo = cleanRepo.replace(/\.git$/i, '')
+  cleanRepo = cleanRepo.replace(/\/$/, '')
   const cleanQuery = String(query || '').trim()
 
   if (!/^[\w.-]+\/[\w.-]+$/.test(cleanRepo) || cleanRepo.split('/').some(part => part === '.' || part === '..'))
