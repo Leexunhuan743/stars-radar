@@ -3,6 +3,7 @@ import { createMcpHandler } from 'agents/mcp'
 import { z } from 'zod'
 import defaultIntents from '../data/intents.json'
 import { appendIngest } from './append-store.js'
+import { AuthConfigError, authorizeCredential } from './auth.js'
 import { listReadmePage } from './archive-candidates.js'
 import { DocumentUnavailableError } from './document-cache.js'
 import {
@@ -211,21 +212,19 @@ async function handleRequest(req, env, ctx) {
     const authHeader = req.headers.get('Authorization')
     const apiKey = authHeader?.replace(/^bearer\s+/i, '').trim()
 
-    if (!env.MCP_API_KEY || !env.MCP_WRITE_API_KEY || env.MCP_API_KEY === env.MCP_WRITE_API_KEY) {
-      return errorResponse(
-        'server_misconfigured',
-        'MCP_API_KEY and MCP_WRITE_API_KEY are both required and must be different values.',
-        500,
-      )
+    let auth
+    try {
+      auth = authorizeCredential(apiKey, env)
     }
+    catch (error) {
+      if (error instanceof AuthConfigError)
+        return errorResponse('server_misconfigured', error.message, 500)
+      throw error
+    }
+    const { canRead, canWrite } = auth
 
-    const writeKey = env.MCP_WRITE_API_KEY
-    const canRead = apiKey === env.MCP_API_KEY || apiKey === writeKey
-    const canWrite = apiKey === writeKey
-
-    if (!canRead) {
+    if (!canRead)
       return errorResponse('unauthorized', 'Invalid API key. Supply your key via Authorization: Bearer <KEY> header.', 401)
-    }
 
     // Read and write capabilities are intentionally separate. The write credential may read so a
     // privileged operator does not need to juggle two keys in one session; the read key never writes.
