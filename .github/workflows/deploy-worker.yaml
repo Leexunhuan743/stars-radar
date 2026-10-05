@@ -57,8 +57,8 @@ jobs:
 
       - name: Require production Worker auth secrets before deploy
         run: |
-          pnpm exec wrangler secret list --format json > "${RUNNER_TEMP}/worker-secrets.json"
-          node --input-type=module - "${RUNNER_TEMP}/worker-secrets.json" <<'NODE'
+          pnpm exec wrangler secret list --format json > "${RUNNER_TEMP}/worker-bindings.json"
+          node --input-type=module - "${RUNNER_TEMP}/worker-bindings.json" <<'NODE'
           import fs from 'node:fs'
           const secrets = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
           const names = new Set((Array.isArray(secrets) ? secrets : []).map(secret => secret?.name).filter(Boolean))
