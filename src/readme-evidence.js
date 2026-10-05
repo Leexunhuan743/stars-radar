@@ -160,8 +160,10 @@ export function findReadmeEvidence(markdown, query, intents, { limit = 2 } = {})
   const { queryTokens, matchedGroups, specificSubjects } = analyzeQuery(query, intents)
   const scoringQuery = { queryTokens, matchedGroups, specificSubjects, intents }
   const hits = []
+  let sectionOrdinal = 0
 
   for (const section of splitReadmeSections(markdown)) {
+    const ordinal = sectionOrdinal++
     const pool = `${section.heading} ${section.text}`.toLowerCase()
     if (!matchesSubjectGate(pool, specificSubjects))
       continue
@@ -177,6 +179,7 @@ export function findReadmeEvidence(markdown, query, intents, { limit = 2 } = {})
       ...evidence.matched_intents.flatMap(match => match.terms),
     ]
     hits.push({
+      section_ordinal: ordinal,
       heading: section.heading,
       snippet: snippetAround(section.text, [...new Set(terms)]),
       keyword_weight: weight,
