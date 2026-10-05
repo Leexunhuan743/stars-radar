@@ -39,6 +39,7 @@ export function compileResults({
   minScore,
   limit,
   explain = false,
+  applyCommunityDiversityCap = false,
 }) {
   const results = []
   const reposByName = new Map(Object.entries(repos).map(([name, record]) => [name.toLowerCase(), record]))
@@ -106,6 +107,7 @@ export function compileResults({
   for (const r of results)
     delete r._rrf
 
-  // 已拍板: community/archive 单 query 结果数上限 = ceil(limit * 40%), 防止默认视图被社区刷屏
-  return applyCommunityCap(results, limit)
+  // Diversity is a policy for the default mixed view, not a property of community results.
+  // Explicit source/rankings queries must be able to fill the requested limit.
+  return applyCommunityDiversityCap ? applyCommunityCap(results, limit) : results.slice(0, limit)
 }
