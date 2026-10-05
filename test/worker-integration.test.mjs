@@ -70,6 +70,11 @@ test('the actual Worker serves authenticated research routes and registers usabl
     assert.equal(health.ok, true)
     assert.equal(health.data.totalStarred, 2, 'temporary R2 data must be loaded before any candidate lookup')
     assert.equal(health.data.vectorCount, 2)
+    assert.deepEqual(health.data.rateLimits, {
+      expensive_requests: false,
+      write_requests: false,
+      locality: 'cloudflare_location',
+    })
     const compared = await (await worker.fetch('/api/compare?repos=fixture/one,fixture/two', { headers })).json()
     assert.deepEqual(compared.data.repositories.map(repo => repo.license), ['MIT', 'Apache-2.0'])
     assert.equal((await worker.fetch('/api/compare?repos=fixture/one,FIXTURE/ONE', { headers })).status, 400)
