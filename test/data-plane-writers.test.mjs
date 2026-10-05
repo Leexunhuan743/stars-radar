@@ -169,7 +169,6 @@ test('no workflow recursively deletes Worker-owned state prefixes', () => {
   }
 })
 
-
 test('Worker deployment validates a complete active generation before wrangler deploy', () => {
   const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'deploy-worker.yaml'), 'utf-8')
   const preflight = workflow.indexOf('Validate active v3 data generation before deploy')
