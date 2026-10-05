@@ -6,6 +6,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { ACTIVE_GENERATION_KEY } from '../src/data-generation.js'
 import { seedLocalR2 } from '../scripts/seed-local-r2.js'
 import { verifyVectorPair } from '../scripts/verify_vector_pair.js'
 
@@ -71,7 +72,15 @@ for (const starred of [[], [{ full_name: 'fixture/tool', name: 'tool', owner: { 
       await seedLocalR2({ put: async (key) => {
         keys.push(key)
       } }, setup.directory)
-      assert.ok(keys.includes('asset-index.json'))
+      assert.ok(keys.includes(ACTIVE_GENERATION_KEY))
+      assert.ok(
+        keys.some(key => /^generations\/[\w.-]+\/asset-index\.json$/.test(key)),
+        'local seed must mirror production and place the asset index under the active generation',
+      )
+      assert.ok(
+        keys.some(key => /^generations\/[\w.-]+\/generation-manifest\.json$/.test(key)),
+        'local seed must include the generation manifest used to inspect a staged publication',
+      )
       assert.equal(keys.includes('fixture/tool.md'), starred.length > 0)
       fs.unlinkSync(path.join(setup.directory, 'asset-index.json'))
       await assert.rejects(seedLocalR2({ put: async () => assert.fail('no partial seed allowed') }, setup.directory), /ENOENT/)
