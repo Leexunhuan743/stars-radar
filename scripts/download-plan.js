@@ -24,9 +24,9 @@ export function needsReadmeDownload({ fileExists, cachedEntry, pushedAt }) {
     return true
   // Repository metadata may advance even when a README refresh failed. Compare the live push
   // against the push that the cached README actually represents, not the catalogue snapshot itself.
-  // Falling back to pushedAt migrates pre-v2 catalogues without a second compatibility path.
-  const readmePushedAt = cachedEntry.readmePushedAt || cachedEntry.pushedAt
-  if (!pushedAt || !readmePushedAt)
+  // Missing readmePushedAt is treated as unknown and therefore forces a refresh; no pre-v2 fallback
+  // is retained.
+  if (!pushedAt || !cachedEntry.readmePushedAt)
     return true
-  return readmePushedAt !== pushedAt
+  return cachedEntry.readmePushedAt !== pushedAt
 }
