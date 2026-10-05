@@ -245,8 +245,17 @@ test('data publication is generation-atomic and state compaction is exact-key on
     build.indexOf('Verify immutable generation in R2') < build.indexOf('Activate verified data generation'),
     'the active pointer is the commit point and must move only after read-back verification',
   )
-  assert.match(build, /--exclude "generations\/\*"/, 'README --delete must never sweep immutable generations')
-  assert.match(build, /--exclude "active-generation\.json"/, 'README --delete must never remove the active pointer')
+  assert.match(build, /Publish content-addressed README blobs/)
+  assert.match(
+    build,
+    /aws s3 sync \.readme-content-stage\/ "s3:\/\/\$\{R2_BUCKET\}\/readmes\/"/,
+    'README bodies must publish to the content-addressed blob namespace',
+  )
+  assert.doesNotMatch(
+    build,
+    /aws s3 sync stars\/ "s3:\/\/\$\{R2_BUCKET\}\//,
+    'the data workflow must not mutate a bucket-root README archive',
+  )
   assert.doesNotMatch(
     build,
     /s3:\/\/\$\{R2_BUCKET\}\/catalog\.json/,
