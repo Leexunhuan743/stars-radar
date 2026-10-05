@@ -16,6 +16,7 @@ on:
       - data/intents.json
       - scripts/vector_pipeline.js
       - scripts/evaluate_retrieval_real.js
+      - scripts/build_retrieval_benchmark_from_corpus.js
       - .github/workflows/retrieval-quality.yaml
   workflow_dispatch:
 
@@ -23,7 +24,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: stars-radar-retrieval-quality
+  group: stars-radar-retrieval-quality-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -49,68 +50,105 @@ jobs:
             - recursive: true
               args: [--frozen-lockfile, --strict-peer-dependencies]
 
-      - name: Detect private benchmark configuration
-        id: config
-        run: |
-          if [ -n "${RETRIEVAL_BENCHMARK_B64}" ]; then
-            echo "enabled=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "enabled=false" >> "${GITHUB_OUTPUT}"
-            echo "::notice::RETRIEVAL_BENCHMARK_B64 is not configured; real retrieval quality gate was not run."
-          fi
-
-      - name: Restore active production retrieval plane
-        if: steps.config.outputs.enabled == 'true'
+      - name: Validate retrieval gate configuration
         run: |
           test -n "${SILICONFLOW_KEY}" || { echo "::error::SILICONFLOW_KEY is required"; exit 1; }
           test -n "${R2_ACCOUNT_ID}" || { echo "::error::R2_ACCOUNT_ID is required"; exit 1; }
           test -n "${R2_BUCKET}" || { echo "::error::R2_BUCKET is required"; exit 1; }
+          test -n "${AWS_ACCESS_KEY_ID}" || { echo "::error::R2_ACCESS_KEY_ID is required"; exit 1; }
+          test -n "${AWS_SECRET_ACCESS_KEY}" || { echo "::error::R2_SECRET_ACCESS_KEY is required"; exit 1; }
+
+      - name: Restore active production retrieval plane
+        run: |
           aws configure set default.region auto
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           aws s3 cp "s3://${R2_BUCKET}/active-generation.json" "${RUNNER_TEMP}/active-generation.json" --endpoint-url "${endpoint}"
           active=$(node --input-type=module -e 'import fs from "node:fs"; import { parseGenerationPointer } from "./src/data-generation.js"; console.log(parseGenerationPointer(JSON.parse(fs.readFileSync(process.argv[1],"utf8"))).id)' "${RUNNER_TEMP}/active-generation.json")
           mkdir -p rankings data
-          for spec in             "catalog.json:catalog.json"             "rankings.json:rankings/rankings.json"             "asset-index.json:asset-index.json"             "embeddings.bin:embeddings.bin"             "embeddings-index.json:embeddings-index.json"; do
+          for spec in \
+            "catalog.json:catalog.json" \
+            "rankings.json:rankings/rankings.json" \
+            "asset-index.json:asset-index.json" \
+            "embeddings.bin:embeddings.bin" \
+            "embeddings-index.json:embeddings-index.json"; do
             key="${spec%%:*}"
             local_path="${spec##*:}"
             aws s3 cp "s3://${R2_BUCKET}/generations/${active}/${key}" "${local_path}" --endpoint-url "${endpoint}"
           done
           echo "Evaluating active production generation ${active}"
 
+      - name: Derive mandatory production benchmark
+        run: node scripts/build_retrieval_benchmark_from_corpus.js --output data/retrieval-benchmark.derived.json
+
+      - name: Enforce production-derived retrieval gate
+        run: |
+          pnpm eval:retrieval:gate -- \
+            --fixture data/retrieval-benchmark.derived.json \
+            --output retrieval-quality-derived-report.json
+
+      - name: Detect private benchmark configuration
+        id: private
+        run: |
+          if [ -n "${RETRIEVAL_BENCHMARK_B64}" ]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::RETRIEVAL_BENCHMARK_B64 is not configured; mandatory production-derived gate ran, optional human-labeled gate was skipped."
+          fi
+
       - name: Materialize private benchmark
-        if: steps.config.outputs.enabled == 'true'
+        if: steps.private.outputs.enabled == 'true'
         run: |
           printf '%s' "${RETRIEVAL_BENCHMARK_B64}" | base64 --decode > data/retrieval-benchmark.private.json
           node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("data/retrieval-benchmark.private.json"));if(!Array.isArray(x.cases)||!x.cases.length||!x.thresholds)throw new Error("benchmark must contain non-empty cases and thresholds")'
 
-      - name: Enforce real retrieval quality thresholds
-        if: steps.config.outputs.enabled == 'true'
-        run: pnpm eval:retrieval:gate -- --output retrieval-quality-report.json
+      - name: Enforce private human-labeled retrieval gate
+        if: steps.private.outputs.enabled == 'true'
+        run: |
+          pnpm eval:retrieval:gate -- \
+            --fixture data/retrieval-benchmark.private.json \
+            --output retrieval-quality-private-report.json
 
       - name: Summarize retrieval quality
-        if: steps.config.outputs.enabled == 'true' && always()
+        if: always()
         run: |
-          if [ ! -f retrieval-quality-report.json ]; then
-            echo "### Retrieval Quality" >> "${GITHUB_STEP_SUMMARY}"
-            echo "No report was produced because evaluation did not complete." >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
-          fi
           node --input-type=module - <<'NODE' >> "${GITHUB_STEP_SUMMARY}"
           import fs from 'node:fs'
-          const report = JSON.parse(fs.readFileSync('retrieval-quality-report.json', 'utf8'))
+
+          const paths = [
+            ['Production-derived', 'retrieval-quality-derived-report.json'],
+            ['Private human-labeled', 'retrieval-quality-private-report.json'],
+          ]
           console.log('### Retrieval Quality')
           console.log('')
-          console.log('| Mode / class | Recall@K | Precision@K | MRR | NDCG@K | Negative empty | Forbidden | p95 ms |')
+          console.log('| Dataset / mode / class | Recall@K | Precision@K | MRR | NDCG@K | Negative empty | Forbidden | p95 ms |')
           console.log('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+          const format = value => Number.isFinite(value) ? Number(value).toFixed(3) : '—'
           const row = (label, summary) => {
-            const f = value => Number.isFinite(value) ? Number(value).toFixed(3) : '—'
-            console.log(`| ${label} | ${f(summary.mean_recall_at_k)} | ${f(summary.mean_precision_at_k)} | ${f(summary.mrr)} | ${f(summary.mean_ndcg_at_k)} | ${f(summary.negative_empty_success_rate)} | ${summary.forbidden_hits ?? '—'} | ${f(summary.p95_latency_ms)} |`)
+            console.log(`| ${label} | ${format(summary.mean_recall_at_k)} | ${format(summary.mean_precision_at_k)} | ${format(summary.mrr)} | ${format(summary.mean_ndcg_at_k)} | ${format(summary.negative_empty_success_rate)} | ${summary.forbidden_hits ?? '—'} | ${format(summary.p95_latency_ms)} |`)
           }
-          for (const mode of report.reports || []) {
-            row(mode.mode, mode.summary)
-            for (const [name, summary] of Object.entries(mode.classes || {}))
-              row(`${mode.mode} / ${name}`, summary)
+
+          for (const [label, file] of paths) {
+            if (!fs.existsSync(file))
+              continue
+            const report = JSON.parse(fs.readFileSync(file, 'utf8'))
+            for (const mode of report.reports || []) {
+              row(`${label} / ${mode.mode}`, mode.summary)
+              for (const [name, summary] of Object.entries(mode.classes || {}))
+                row(`${label} / ${mode.mode} / ${name}`, summary)
+            }
+            console.log('')
+            console.log(report.quality_gate?.passed
+              ? `✅ ${label} thresholds passed.`
+              : `❌ ${label} thresholds failed.`)
           }
-          console.log('')
-          console.log(report.quality_gate?.passed ? '✅ Configured thresholds passed.' : '❌ One or more configured thresholds failed.')
+
+          if (!fs.existsSync('retrieval-quality-derived-report.json')) {
+            console.log('')
+            console.log('❌ Mandatory production-derived report was not produced.')
+          }
+          if (!fs.existsSync('retrieval-quality-private-report.json')) {
+            console.log('')
+            console.log('ℹ️ Optional private human-labeled benchmark is not configured or did not run.')
+          }
           NODE
