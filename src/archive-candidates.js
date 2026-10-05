@@ -1,5 +1,5 @@
 import { repoFromReadmeKey } from './object-keys.js'
-import { containsTerm } from './scoring.js'
+import { containsTerm, scoreText } from './scoring.js'
 // Level-2 (archive / curated / community) candidate resolution for hybrid search.
 //
 // Extracted from src/index.js so the key-space contract between the producer
@@ -13,10 +13,6 @@ import { containsTerm } from './scoring.js'
 // original GitHub casing. Every lookup therefore normalises to lowercase; doing
 // an exact-match lookup against `intent_inverted` values silently drops every
 // repository whose name contains an uppercase letter.
-
-// Weight awarded to a repo that is only reachable through the archive channel.
-// Lower than any direct token hit so the archive can never outrank a real match.
-const ARCHIVE_WEIGHT = 12
 
 const TIER_PRESENTATION = {
   starred: { source: 'starred', badge: '⭐ Starred' },
@@ -116,17 +112,22 @@ export function resolveArchiveCandidates({
       continue
 
     const displayName = record.repo || repoName
-    if (specificSubjects.length > 0) {
-      const pool = `${displayName} ${record.description || ''} ${record.reason || ''} ${record.summary || ''} ${(record.topics || []).join(' ')}`.toLowerCase()
-      if (!specificSubjects.some(sub => containsTerm(pool, sub)))
-        continue
-    }
+    const pool = `${displayName} ${record.description || ''} ${record.reason || ''} ${record.summary || ''} ${(record.topics || []).join(' ')}`.toLowerCase()
+    if (specificSubjects.length > 0 && !specificSubjects.some(sub => containsTerm(pool, sub)))
+      continue
+
+    // Archive recall should still reflect evidence strength. A flat constant made every
+    // long-tail candidate tie regardless of whether it matched one weak synonym or several
+    // explicit query terms, which becomes unstable as the archive grows.
+    const weight = scoreText(pool, { specificSubjects, queryTokens, matchedGroups, intents })
+    if (weight <= 0)
+      continue
 
     const tier = record.tier || 'community'
     const presentation = TIER_PRESENTATION[tier] || TIER_PRESENTATION.community
     resolved.push({
       repo: displayName,
-      weight: ARCHIVE_WEIGHT,
+      weight,
       source: presentation.source,
       badge: presentation.badge,
       tier,
