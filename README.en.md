@@ -65,12 +65,14 @@ Set Worker secrets separately from Actions secrets:
 
 ```sh
 pnpm exec wrangler secret put MCP_API_KEY
+# Optional but recommended: use a different key for mutations
+pnpm exec wrangler secret put MCP_WRITE_API_KEY
 pnpm exec wrangler secret put GITHUB_TOKEN
 pnpm exec wrangler secret put SILICONFLOW_KEY
 pnpm deploy
 ```
 
-Use a random private value for `MCP_API_KEY` and your personal GitHub token for `GITHUB_TOKEN`. Wrangler prints the deployed URL. Anyone with the service key can read notes, invoke upstream APIs and perform star operations using your GitHub token.
+Use a random read key for `MCP_API_KEY` and your personal GitHub token for `GITHUB_TOKEN`. Optionally configure a different `MCP_WRITE_API_KEY`; when present, the read key can search and read but cannot capture discoveries or star/ingest repositories. Without it, the legacy single-key read/write behavior remains. Wrangler prints the deployed URL.
 
 To deploy automatically after a data update, also set the Actions secret `CLOUDFLARE_API_TOKEN` with Worker deployment permission for the account. Without it, the workflow only publishes R2 data. Configuration details are listed in [.env.example](.env.example) and the [developer guide](docs/DEVELOPMENT.md).
 
@@ -102,7 +104,7 @@ Replace the placeholders. Client formats vary. The service uses Bearer-key authe
 
 ## Command-line client
 
-The client uses only the Python standard library. Set `WORKER_URL` and `MCP_API_KEY` in your shell; it does not load `.env` automatically.
+The client uses only the Python standard library. Set `WORKER_URL` and `MCP_API_KEY` in your shell; it does not load `.env` automatically. If the deployment uses a separate write key, set `MCP_WRITE_API_KEY` before commands that persist or star repositories.
 
 PowerShell:
 
