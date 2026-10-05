@@ -4,6 +4,7 @@ import { collectCommunityHits } from './community-layers.js'
 import { DIMS } from './embeddings.js'
 import { analyzeQuery } from './query-analysis.js'
 import { fuseRankings } from './ranking.js'
+import { snippetAround } from './readme-evidence.js'
 import { compileResults } from './result-compiler.js'
 import { explainTextMatch, matchesSubjectGate, scoreText, termMatcher } from './scoring.js'
 
@@ -27,10 +28,11 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
 
   // 1. Vector Semantic Search (SiliconFlow BAAI/bge-m3, single embedding authority)
   const vectorScores = new Map()
+  const vectorEvidence = new Map()
   if (scope === 'starred' || scope === 'all') {
-    const { values: matrix, names } = vectors
+    const { values: matrix, records } = vectors
 
-    if (matrix && names) {
+    if (matrix && records) {
       const qVector = queryVector
 
       if (qVector && qVector.length === DIMS) {
@@ -39,10 +41,13 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
         normQ = Math.sqrt(normQ)
 
         if (normQ > 0) {
-          const maxVectors = Math.min(names.length, Math.floor(matrix.length / DIMS))
+          const maxVectors = Math.min(records.length, Math.floor(matrix.length / DIMS))
           for (let i = 0; i < maxVectors; i++) {
-            if (scope === 'starred' && !starredNames.has(names[i].toLowerCase()))
+            const record = records[i]
+            const repoKey = record.repo.toLowerCase()
+            if (scope === 'starred' && !starredNames.has(repoKey))
               continue
+
             let dot = 0
             let normV = 0
             const offset = i * DIMS
@@ -51,10 +56,39 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
               dot += qVector[j] * v
               normV += v * v
             }
+
             const cos = normV > 0 ? dot / (normQ * Math.sqrt(normV)) : 0
-            if (cos > 0.2) {
-              vectorScores.set(names[i].toLowerCase(), cos)
+            if (cos <= 0.2)
+              continue
+
+            vectorScores.set(repoKey, Math.max(vectorScores.get(repoKey) || 0, cos))
+            const semantic = vectorEvidence.get(repoKey) || {
+              repo_similarity: 0,
+              readme_chunk: null,
             }
+
+            if (record.kind === 'repo') {
+              semantic.repo_similarity = Math.max(semantic.repo_similarity, cos)
+            }
+            else if (!semantic.readme_chunk || cos > semantic.readme_chunk.similarity) {
+              const textPool = `${record.heading} ${record.text}`.toLowerCase()
+              const literal = explain ? explainTextMatch(textPool, layerQuery) : null
+              const terms = literal
+                ? [
+                    ...literal.matched_subjects,
+                    ...literal.matched_tokens,
+                    ...literal.matched_intents.flatMap(match => match.terms),
+                  ]
+                : []
+              semantic.readme_chunk = {
+                heading: record.heading,
+                text: record.text,
+                snippet: snippetAround(record.text, [...new Set(terms)]),
+                similarity: cos,
+              }
+            }
+
+            vectorEvidence.set(repoKey, semantic)
           }
         }
       }
@@ -205,6 +239,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
   // 3. Reciprocal Rank Fusion (RRF) between Vector & Intent Scores
   const rrfMap = fuseRankings({
     vectorScores,
+    vectorEvidence,
     keywordScores,
     repos,
     specificSubjects,
