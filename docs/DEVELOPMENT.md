@@ -133,7 +133,7 @@ pnpm dev:seed
 pnpm dev:mcp
 ```
 
-`dev:stars` 调用真实 GitHub、社区和向量 API，可能产生请求费用；它只生成本地文件，不发布向量。全新账号可以没有 Star，构建会生成空目录和零长度向量数据，无需维护者的旧文件。
+`dev:stars` 调用真实 GitHub、社区和向量 API，可能产生请求费用；它只生成本地文件，不发布向量。全新账号可以没有 Star；空语料不会生成向量 generation，直到至少有一个确认仓库需要语义索引。
 
 `dev:seed` 检查向量一致性，先读取全部必要输入，再写入 `.wrangler/state/v3` 下的本地 R2。它加载目录、社区数据、索引和 README，不操作远端桶。默认 `wrangler dev` 使用本地模拟存储，详见 [Cloudflare 本地数据文档](https://developers.cloudflare.com/workers/local-development/local-data/)。此命令覆盖同名对象，适合新的开发环境，不负责清理旧对象。
 
@@ -157,7 +157,7 @@ Bash / zsh 使用 `export WORKER_URL=...` 和 `export MCP_API_KEY=...`。
 | `rankings.json`                           | 社区榜单及各来源更新时间 / 失败状态          | CI                |
 | `asset-state.json`                        | 历史资产、首次发现、上榜次数等持久状态       | CI                |
 | `asset-index.json`                        | 热集检索索引与 `ingest_snapshot`             | CI                |
-| `embeddings.bin`、`embeddings-index.json` | Float32 向量及对应槽位的仓库名               | CI                |
+| `embeddings.bin`、`embeddings-index.json` | Float32 向量及结构化 records（repo metadata / README chunks） | CI                |
 | `embeddings-fingerprints.json`            | 文本 / 模型与向量内容指纹，用于复用          | CI                |
 | `embeddings-manifest.json`                | 模型、维度、数量及 index/bin 的 SHA-256      | CI                |
 | `state/ingest-journal/*.jsonl`            | 经确认的收录和备注，每次操作追加一个对象     | Worker 或本地收割 |
@@ -173,11 +173,11 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 ## 检索与证据
 
-向量模型固定为 `BAAI/bge-m3`，维度为 1024。输入 profile 固定为 `repo-metadata-readme-v2`：仓库名称、分类、语言、备注、摘要、简介、topics 与经过清理后的 README 证据共同组成 repo-level embedding；README 最多贡献 6000 个字符，整条 embedding 文本最多 8000 个字符。它仍然不是 chunk-level README 索引，因此当前只能把 README 作为仓库级语义证据，不能声称精确命中了某个章节。manifest 必须显式声明该 profile；缺少 profile 或 profile 不匹配会被拒绝，必须重新构建向量。默认构建与查询都使用 SiliconFlow；查询向量接口失败时退回词法通道。
+向量模型固定为 `BAAI/bge-m3`，维度为 1024。输入 profile 固定为 `repo-metadata-readme-chunks-v3`。每个仓库至少有一个 metadata record（仓库名、分类、语言、备注、摘要、简介、topics），README 则按 Markdown 章节切分并选择最多 6 个有信息量的 chunk，各自拥有独立向量。`embeddings-index.json` 保存结构化 record，而不是简单仓库名数组；record 明确区分 `kind=repo` 与 `kind=readme_chunk`，README record 同时保存 heading 和用于证据展示的文本。manifest 必须精确匹配该 profile、record count、repo count 以及 index/bin SHA-256；任何旧 profile、字符串 index、混合代次或内容哈希不一致都会被拒绝并要求重建。默认构建与查询都使用 SiliconFlow；查询向量接口失败时退回词法通道。
 
 检索结合向量相似度、关键词、通用意图词表与具体主体匹配。明确的仓库名或技术主体约束候选；个人收藏有排序加权，综合结果也保留社区候选。`scope` 选择收藏 / 社区范围，`category` 选择用户分类，`source` 选择来源。
 
-`explain=true` 返回实际匹配的词语、主体、意图与检索通道，并额外对前 5 个结果读取 R2 中已缓存的 README：按 Markdown 标题切分，返回最多两个短片段及其真实词面命中。该步骤不会访问 GitHub；Stars Radar 自己生成的分类/推荐理由头会先被剥离，避免把 curator 元数据伪装成上游 README 证据。若 README 缺失、读取失败或只有语义相似而没有实际词面证据，会分别通过 `readme_evidence.status` / 空 `snippets` 如实表达，不制造片段。`min_score` 是排序门槛，不是准确率。
+`explain=true` 同时暴露两类 README 证据。第一类是 `semantic_evidence.readme_chunk`：它来自 v3 chunk 向量本身，包含命中的 heading、chunk 文本、snippet 与 cosine similarity，可解释“为何一个功能即使不在 GitHub description 里也被召回”。第二类是 `readme_evidence`：对前 5 个结果额外读取 R2 已缓存 README，只在存在真实词面命中时返回最多两个短片段。两类证据都不会访问 GitHub；Stars Radar 自己生成的分类/推荐理由头会先被剥离，避免 curator 元数据伪装成上游 README。`min_score` 是排序门槛，不是准确率。
 
 详情和比较区分 `evidence.source`、`snapshot_at`、`fetched_at`。`refresh=true` 请求 GitHub 当前元数据并保留个人备注；未知字段为 `null`，不能推断为“没有许可证”或“已经停止维护”。README 最多返回 50,000 个字符。上游文字与代码片段是来源内容，应结合原始链接核实。
 
