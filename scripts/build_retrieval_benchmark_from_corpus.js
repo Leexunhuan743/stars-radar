@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { CATALOG_KEY } from '../src/object-keys.js'
 
-const DEFAULT_CATALOG = 'catalog.json'
+const DEFAULT_CATALOG = CATALOG_KEY
 const DEFAULT_OUTPUT = 'data/retrieval-benchmark.derived.json'
 
 function argValue(name, fallback) {
