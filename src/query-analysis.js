@@ -77,5 +77,21 @@ export function analyzeQuery(query, intents) {
     NAMED_SUBJECTS.has(subject) || /^[\w.-]+\/[\w.-]+$/.test(subject),
   )
 
-  return { queryTokens, matchedGroups, specificSubjects, hardSubjects }
+  const hardSet = new Set(hardSubjects)
+  const facets = [
+    ...specificSubjects.map(subject => ({
+      id: `subject:${subject}`,
+      kind: hardSet.has(subject) ? 'identity' : 'subject',
+      value: subject,
+      terms: [subject],
+    })),
+    ...[...matchedGroups].sort().map(group => ({
+      id: `intent:${group}`,
+      kind: 'intent',
+      value: group,
+      terms: [...new Set((intents[group] || []).map(word => word.toLowerCase()))],
+    })),
+  ]
+
+  return { queryTokens, matchedGroups, specificSubjects, hardSubjects, facets }
 }
