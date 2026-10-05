@@ -2,6 +2,7 @@ import { resolveArchiveCandidates } from './archive-candidates.js'
 import { buildCommunityIndex } from './community-index.js'
 import { collectCommunityHits } from './community-layers.js'
 import { DIMS } from './embeddings.js'
+import { EVIDENCE_TRUST } from './evidence.js'
 import { analyzeQuery } from './query-analysis.js'
 import { fuseRankings } from './ranking.js'
 import { snippetAround } from './readme-evidence.js'
@@ -10,13 +11,50 @@ import { evaluateFacetCoverage, explainTextMatch, intentMatchScore, matchesSubje
 
 export function searchDocuments({ catalog, rankings, assetIndex, harvested, vectors, queryVector, intents }, query, { category, source, scope = 'all', limit = 5, min_score = 0.25, explain = false } = {}) {
   const genericIntents = intents
-  const repos = Object.fromEntries(Object.entries(catalog.repos || {}).map(
-    ([name, record]) => [name.toLowerCase(), { ...record, repo: record.repo || name }],
-  ))
-  for (const item of harvested) {
+  const catalogSnapshotAt = catalog.generatedAt || null
+  const repos = Object.fromEntries(Object.entries(catalog.repos || {}).map(([name, record]) => {
+    const fieldOrigins = {
+      ...(record.reason
+        ? { reason: { source: 'catalog', snapshotAt: catalogSnapshotAt, trust: EVIDENCE_TRUST.USER_TRUSTED } }
+        : {}),
+      ...(record.summary
+        ? { summary: { source: 'catalog', snapshotAt: catalogSnapshotAt, trust: EVIDENCE_TRUST.USER_TRUSTED } }
+        : {}),
+      ...((record.categories || []).length > 0
+        ? { categories: { source: 'github_lists', snapshotAt: catalogSnapshotAt, trust: EVIDENCE_TRUST.USER_TRUSTED } }
+        : {}),
+    }
+    return [name.toLowerCase(), { ...record, repo: record.repo || name, fieldOrigins }]
+  }))
+
+  // Ingest owns only fields the user actually supplied. Historical ingest rows may still contain
+  // `summary` copied from GitHub's repository description; treating that as a personal note would
+  // cross the trust boundary. Keep description external and reason/categories user-authored.
+  const curated = harvested.map(item => ({
+    ...item,
+    summary: '',
+    fieldOrigins: {
+      ...(item.reason
+        ? { reason: { source: 'ingest_journal', snapshotAt: item.ingested_at || null, trust: EVIDENCE_TRUST.USER_TRUSTED } }
+        : {}),
+      ...((item.categories || []).length > 0
+        ? { categories: { source: 'ingest_journal', snapshotAt: item.ingested_at || null, trust: EVIDENCE_TRUST.USER_TRUSTED } }
+        : {}),
+    },
+  }))
+
+  for (const item of curated) {
     const key = item.repo.toLowerCase()
-    if (repos[key])
-      repos[key] = { ...repos[key], reason: item.reason || repos[key].reason, summary: item.summary || repos[key].summary }
+    if (repos[key] && item.reason) {
+      repos[key] = {
+        ...repos[key],
+        reason: item.reason,
+        fieldOrigins: {
+          ...(repos[key].fieldOrigins || {}),
+          reason: item.fieldOrigins.reason,
+        },
+      }
+    }
   }
   const starredNames = new Set(Object.keys(repos).map(name => name.toLowerCase()))
   const targetCategory = category?.trim().toLowerCase()
@@ -184,7 +222,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
 
   // The journal is immediately searchable even before the batch index catches up.
   if (scope !== 'starred') {
-    for (const item of harvested) {
+    for (const item of curated) {
       if (starredNames.has(item.repo.toLowerCase()))
         continue
       const text = [item.repo, item.description, item.reason, item.summary, ...(item.topics || [])]
@@ -275,7 +313,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
     facets,
   })
 
-  const ingestedByName = new Map(harvested.map(item => [item.repo.toLowerCase(), item]))
+  const ingestedByName = new Map(curated.map(item => [item.repo.toLowerCase(), item]))
   for (const [name, stats] of rrfMap) {
     if (!repos[name] && ingestedByName.has(name)) {
       stats.source = 'curated'
@@ -285,7 +323,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
   }
 
   // 4. Compile and Sort Results
-  const communityMap = buildCommunityIndex({ rankings, harvested })
+  const communityMap = buildCommunityIndex({ rankings, harvested: curated })
 
   return compileResults({
     rrfMap,
@@ -297,7 +335,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
     limit,
     explain,
     applyCommunityDiversityCap: scope === 'all' && !targetSource,
-    catalogSnapshotAt: catalog.generatedAt || null,
+    catalogSnapshotAt,
     rankingSnapshotAt: rankings.generatedAt || null,
   })
 }
