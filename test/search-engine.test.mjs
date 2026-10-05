@@ -92,6 +92,50 @@ test('a new reason for an existing star is immediately searchable before the cat
   assert.equal(results[0].reason, 'quantum research')
 })
 
+test('star plus ingest keeps per-field provenance and rejects legacy ingest summary trust', () => {
+  const [result] = search('quantum', { explain: true }, {
+    catalog: {
+      generatedAt: '2026-10-05T00:00:00Z',
+      repos: {
+        'acme/tool': {
+          repo: 'acme/tool',
+          description: 'generic utility',
+          reason: 'catalog reason',
+          summary: 'catalog summary',
+          categories: ['research'],
+        },
+      },
+    },
+    harvested: [{
+      repo: 'acme/tool',
+      reason: 'quantum research',
+      summary: 'legacy GitHub description copied into summary',
+      ingested_at: '2026-10-05T01:00:00Z',
+    }],
+  })
+
+  assert.equal(result.reason, 'quantum research')
+  assert.equal(result.summary, 'catalog summary')
+  const reasonEvidence = result.evidence.find(item => item.id === result.provenance.reason)
+  const summaryEvidence = result.evidence.find(item => item.id === result.provenance.summary)
+  assert.equal(reasonEvidence.source.kind, 'ingest_journal')
+  assert.equal(reasonEvidence.source.snapshot_at, '2026-10-05T01:00:00Z')
+  assert.equal(summaryEvidence.source.kind, 'catalog')
+  assert.equal(result.trust.reason, 'user_trusted')
+  assert.equal(result.trust.summary, 'user_trusted')
+
+  const legacyOnly = search('legacy copied summary', {}, {
+    harvested: [{
+      ...INGESTED,
+      reason: '',
+      description: 'generic utility',
+      summary: 'legacy copied summary',
+      ingested_at: '2026-10-05T01:00:00Z',
+    }],
+  })
+  assert.deepEqual(legacyOnly, [])
+})
+
 test('a vector for an unstarred repository cannot leak into starred-only search', () => {
   const values = new Float32Array(DIMS * 2)
   values[0] = 1
