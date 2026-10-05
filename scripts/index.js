@@ -139,11 +139,10 @@ async function main() {
 
     console.log(`Repos needing README download: ${toDownload.length} / ${liveStarred.length}`)
 
-    // A README that could not be fetched must leave NO file behind. `needsReadmeDownload` treats an
-    // existing file as up to date, so writing an empty document here would make the failure
-    // permanent: the corpus would keep a README-less entry for a repository that has one, and the
-    // next run would skip it. Leaving the file absent means the next run retries, and the failures
-    // are reported below rather than counted as successes.
+    // README refreshes degrade independently from repository metadata. A transient failure keeps an
+    // existing README blob as stale evidence and preserves its own readmePushedAt clock; a new
+    // repository with no cached README is marked unavailable. Either state retries on the next run,
+    // while vector/generation integrity failures later in the pipeline still stop publication.
     let readmeFailures = []
     if (toDownload.length > 0) {
       const run = await mapLimit(toDownload, CONCURRENCY, async (repoInfo) => {
