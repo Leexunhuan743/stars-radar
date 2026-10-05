@@ -46,3 +46,34 @@ test('a date missing on either side downloads rather than assuming it is current
   assert.equal(needsReadmeDownload({ fileExists: true, cachedEntry: { pushedAt: '' }, pushedAt: '2026-02-01T00:00:00Z' }), true)
   assert.equal(needsReadmeDownload({ fileExists: true, cachedEntry: { pushedAt: '2026-02-01T00:00:00Z' }, pushedAt: undefined }), true)
 })
+
+
+test('a stale README is retried even after repository metadata advances', () => {
+  assert.equal(
+    needsReadmeDownload({
+      fileExists: true,
+      cachedEntry: {
+        repo: 'acme/tool',
+        pushedAt: '2026-02-02T00:00:00Z',
+        readmePushedAt: '2026-02-01T00:00:00Z',
+      },
+      pushedAt: '2026-02-02T00:00:00Z',
+    }),
+    true,
+    'repository metadata freshness must not make an older README look current',
+  )
+})
+
+test('a successfully refreshed README records its own push clock', () => {
+  assert.equal(
+    needsReadmeDownload({
+      fileExists: true,
+      cachedEntry: {
+        pushedAt: '2026-02-02T00:00:00Z',
+        readmePushedAt: '2026-02-02T00:00:00Z',
+      },
+      pushedAt: '2026-02-02T00:00:00Z',
+    }),
+    false,
+  )
+})
