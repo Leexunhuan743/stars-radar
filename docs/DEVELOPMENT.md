@@ -92,7 +92,7 @@ Fine-grained token 对 Stars 读取要求 Starring read，点 Star 要求 Starri
 
 `.github/workflows/build.yaml` 每 6 小时运行，也支持手动触发。Fork 后需要主动启用 Actions 和定时工作流。一次运行依次：
 
-1. 从 R2 下载向量缓存、资产状态、社区快照、README 和追加日志；对象不存在是首次运行，认证或网络失败会停止运行。
+1. 读取 `active-generation.json`，从当前 `generations/<id>/` 恢复向量、资产状态和社区快照；README 与追加日志仍从各自长期前缀增量恢复。没有 active generation 是首次运行，认证、指针损坏或当前 generation 缺文件都会停止运行。
 2. 获取当前公开 Stars 和全部 Lists / 成员页，更新目录和 README。
 3. 为 Stars 和已确认收录构建向量，再抓取社区快照。
 4. 合并持久资产状态，生成热集索引和入库日志快照。
@@ -102,7 +102,7 @@ Fine-grained token 对 Stars 读取要求 Starring read，点 Star 要求 Starri
 
 数据发布使用共享并发组串行执行。Checkout 使用只读工作流令牌，个人 `GH_TOKEN` 只用于业务 API 调用。Worker secrets 由部署者独立设置，不从 Actions 自动注入。
 
-上传不是整个桶的事务：对象依次上传，向量 manifest 在向量对象之后上传。Worker 验证内容哈希，遇到混合代次会报错或返回标记为陈旧的已缓存副本，不会把损坏向量当成空检索成功。变更数据格式时，先发布匹配的数据，再部署读取该格式的 Worker。
+derived JSON/vector 数据平面采用 generation 发布：`catalog.json`、`rankings.json`、`asset-index.json`、`asset-state.json` 与向量四件套先写入新的不可变 `generations/<id>/`；验证完成后，单独替换 `active-generation.json` 作为提交点。Worker 先缓存 active generation，再从同一 generation 读取所有 derived 文档；generation id 变化时对应缓存失效，因此不会把新 catalog 与旧 vectors 混读。最近三个 generation 保留用于快速回滚。README archive 仍是独立的增量 corpus，不属于这个原子提交边界。
 
 自定义 `SILICONFLOW_URL` 时，构建和 Worker 必须使用产生相同向量空间的接口，不能只切换查询端。上游价格与额度以服务商当前说明为准。
 
@@ -167,7 +167,7 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 资产分为 `starred`、`curated`、`community`、`discovered`。前三种进入热集；实时搜索本身永远不写状态，只有显式调用 `capture_github_discovery` 才记录一次发现观察，满足跨查询确认等规则后才晋升为社区资产。取消 Star 会移除个人收藏标记，历史资产可能作为社区候选保留；已明确收录的记录仍保存在日志中。
 
-`ingest_snapshot` 记录 CI 实际折叠的对象键和最新条目，Worker 只下载未被快照覆盖的日志。构建期间的新写入进入尾部，不依赖时间戳猜测范围；原始日志保留用于重建。没有快照时读取全部日志。尾部按 10 个对象一组读取，失败不会变成部分成功。
+`ingest_snapshot` 保存 CI 已折叠的 curator entries 与仍存在的原始 key。下一轮只解析上一代 snapshot 尚未覆盖的 raw tail，再把旧 compacted entries 与新 tail 合并成新 snapshot。active generation 成功切换后，CI 只删除上一代明确列出的 ingest key，以及本轮实际下载并已折叠的 probe key；不会递归删除 state 前缀。这样构建期间的新写入不会被误删，同时历史 curator 信息即使原始 JSONL 已回收仍保存在 generation snapshot 中。
 
 常规数据缓存为 30 分钟，入库日志视图为 60 秒，均是每个 Worker 实例独立的缓存。写入实例立即安装新视图，其他实例刷新后可见。大量语料或高频写入会增加内存与 R2 请求开销，当前架构适用于个人库，是单账号共享密钥服务，没有多租户隔离。
 
@@ -260,11 +260,13 @@ pnpm exec wrangler deploy --dry-run --outdir dist
 cp test/fixtures/retrieval-benchmark.example.json data/retrieval-benchmark.private.json
 # 编辑 private fixture 后：
 pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 10
+# fixture 中配置 thresholds 后，可作为失败门禁运行
+pnpm eval:retrieval:gate -- --fixture data/retrieval-benchmark.private.json --k 10 --output retrieval-report.json
 ```
 
 行为变更需补充结果测试。工具参数变化还需检查 schema snapshot；确实改变契约时，运行跨平台命令 `pnpm test:schema:update`，不要更新快照来掩盖意外变化。
 
-常规测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。`pnpm eval:retrieval` 仍使用合成标注及固定向量，只负责规则回归，不能作为真实模型质量或生产准确率声明。`pnpm eval:retrieval:real` 则直接读取本地真实 `catalog.json`、`asset-index.json`、`embeddings.bin` 与私有 relevance labels，并用真实 BGE-M3 query embedding 比较 lexical 与 hybrid，输出 Recall@K、Precision@K、MRR、NDCG@K、forbidden hits 以及 P50/P95 延迟。真实标注文件 `data/retrieval-benchmark.private.json` 已加入忽略规则，避免个人收藏与判断进入仓库。
+常规测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。`pnpm eval:retrieval` 仍使用合成标注及固定向量，只负责规则回归，不能作为真实模型质量或生产准确率声明。`pnpm eval:retrieval:real` 则直接读取本地真实 `catalog.json`、`asset-index.json`、`embeddings.bin` 与私有 relevance labels，并用真实 BGE-M3 query embedding 比较 lexical 与 hybrid，输出 Recall@K、Precision@K、MRR、NDCG@K、forbidden hits 以及 P50/P95 延迟。真实标注文件 `data/retrieval-benchmark.private.json` 已加入忽略规则，避免个人收藏与判断进入仓库。fixture 可为 lexical / hybrid 模式配置最低 Recall、Precision、MRR、NDCG、negative empty-success，以及最大 forbidden hits / P95；`pnpm eval:retrieval:gate` 任一阈值不达标即非零退出，因此可以接入部署者自己的私有 CI。公共仓库仍不会假装持有真实 relevance labels。
 
 发布前在自己的目标环境完成：
 
@@ -296,4 +298,4 @@ pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 
 | 收录成功但 GitHub 没点 Star | 检查 `starred_on_github`、令牌写权限与限流                                 |
 | 资产或日志损坏              | 保留原始对象，修复失败记录或从完整备份恢复；构建停止覆盖持久状态           |
 
-R2 是运行数据的持久存储，代码仓库不能恢复个人备注和发现历史。项目没有自动备份与整桶事务回滚；需要恢复能力时，独立备份数据集及 `state/` 原始日志。
+R2 是运行数据的持久存储，代码仓库不能恢复个人备注和发现历史。derived data plane 默认保留最近三个不可变 generation，可通过切换 `active-generation.json` 快速回滚 derived 状态；这不是整桶备份，因为 README corpus 和最新尚未折叠的 `state/` tail 独立存在。重要部署仍应独立备份 R2。
