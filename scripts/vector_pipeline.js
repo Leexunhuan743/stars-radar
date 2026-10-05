@@ -36,6 +36,10 @@ const EMBED_ATTEMPTS = 3
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 
 const METADATA_TEXT_LIMIT = 2400
+const configuredVectorBudget = Number.parseInt(process.env.VECTOR_CORPUS_MAX_RECORDS || '', 10)
+export const VECTOR_CORPUS_MAX_RECORDS = Number.isInteger(configuredVectorBudget) && configuredVectorBudget > 0
+  ? configuredVectorBudget
+  : 10000
 
 function readLocalReadme(repo) {
   const file = path.resolve(PROJECT_ROOT, localReadmePath(repo))
@@ -64,7 +68,7 @@ export function repositoryVectorRows(repo) {
 
   const readme = readLocalReadme(repo.repo)
   const readmeSha256 = readme ? digest(readme) : null
-  for (const [ordinal, chunk] of selectReadmeVectorChunks(readme).entries()) {
+  for (const chunk of selectReadmeVectorChunks(readme)) {
     const contentSha256 = digest(chunk.text)
     const chunkHash = digest(`${chunk.heading}\0${chunk.text}`).slice(0, 20)
     rows.push({
@@ -74,11 +78,13 @@ export function repositoryVectorRows(repo) {
         kind: 'readme_chunk',
         readme_sha256: readmeSha256,
         content_sha256: contentSha256,
-        ordinal,
+        ordinal: chunk.section_ordinal,
+        chunk_ordinal: chunk.section_chunk_ordinal,
         heading: chunk.heading,
+        heading_path: chunk.heading_path,
         text: chunk.text,
       },
-      text: [repo.repo, chunk.heading, chunk.text].filter(Boolean).join(' '),
+      text: [repo.repo, ...(chunk.heading_path || [chunk.heading]), chunk.text].filter(Boolean).join(' '),
     })
   }
 
@@ -87,7 +93,28 @@ export function repositoryVectorRows(repo) {
 
 function desiredRows(repositories) {
   const byRepo = new Map(repositories.map(repo => [repo.repo.toLowerCase(), repo]))
-  const rows = [...byRepo.values()].flatMap(repositoryVectorRows)
+  const groups = [...byRepo.values()].map(repositoryVectorRows)
+  const rows = groups.map(group => group[0]).filter(Boolean)
+  const readmeGroups = groups.map(group => group.slice(1))
+  const budget = Math.max(rows.length, VECTOR_CORPUS_MAX_RECORDS)
+
+  // Metadata vectors are mandatory. README capacity is distributed round-robin by selected depth
+  // so one giant README cannot consume the corpus budget before other repositories get evidence.
+  for (let depth = 0; rows.length < budget; depth++) {
+    let added = false
+    for (const group of readmeGroups) {
+      const row = group[depth]
+      if (!row)
+        continue
+      rows.push(row)
+      added = true
+      if (rows.length >= budget)
+        break
+    }
+    if (!added)
+      break
+  }
+
   const ids = new Set()
   return rows.filter((row) => {
     if (ids.has(row.record.id))
@@ -212,6 +239,7 @@ export async function buildRepositoryVectors(repositories) {
     totalVectors: outputRecords.length,
     repoVectors: outputRecords.filter(record => record.kind === 'repo').length,
     readmeChunkVectors: outputRecords.filter(record => record.kind === 'readme_chunk').length,
+    vectorBudgetRecords: VECTOR_CORPUS_MAX_RECORDS,
     elapsedMs: Number((performance.now() - started).toFixed(1)),
   }
 }
