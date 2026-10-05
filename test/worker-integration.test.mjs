@@ -15,13 +15,14 @@ test('the actual Worker serves authenticated research routes and registers usabl
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-worker-'))
   const config = path.join(directory, 'wrangler.json')
   const state = path.join(directory, 'state')
-  const key = 'fixture-integration-key'
+  const key = 'fixture-integration-read-key'
+  const writeKey = 'fixture-integration-write-key'
   fs.writeFileSync(config, JSON.stringify({
     name: 'fixture-research-worker',
     main: path.join(root, 'src', 'index.js'),
     compatibility_date: '2025-04-08',
     compatibility_flags: ['nodejs_compat'],
-    vars: { MCP_API_KEY: key, GITHUB_TOKEN: '', SILICONFLOW_KEY: '', BRAVE_SEARCH_API_KEY: '', TAVILY_API_KEY: '' },
+    vars: { MCP_API_KEY: key, MCP_WRITE_API_KEY: writeKey, GITHUB_TOKEN: '', SILICONFLOW_KEY: '', BRAVE_SEARCH_API_KEY: '', TAVILY_API_KEY: '' },
     r2_buckets: [{ binding: 'R2', bucket_name: 'fixture-research-bucket' }],
   }))
   let proxy
@@ -63,6 +64,7 @@ test('the actual Worker serves authenticated research routes and registers usabl
       experimental: { disableExperimentalWarning: true, disableDevRegistry: true, watch: false, showInteractiveDevSession: false },
     })
     const headers = { Authorization: `Bearer ${key}` }
+    const writeHeaders = { Authorization: `Bearer ${writeKey}` }
     assert.equal((await worker.fetch('/health')).status, 401)
     const health = await (await worker.fetch('/health', { headers })).json()
     assert.equal(health.ok, true)
@@ -74,8 +76,13 @@ test('the actual Worker serves authenticated research routes and registers usabl
     assert.equal((await worker.fetch('/api/ingest', {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: 'fixture/one' }),
+    })).status, 403, 'read credentials must be rejected before any write-side work')
+    assert.equal((await worker.fetch('/api/ingest', {
+      method: 'POST',
+      headers: { ...writeHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo: 'fixture/one', categories: 'incorrect-type' }),
-    })).status, 400, 'malformed permanent metadata must be rejected before upstream calls or journal writes')
+    })).status, 400, 'the write credential reaches validation but malformed metadata is still rejected before upstream work')
     const metadata = await (await worker.fetch('/api/repository?repo=fixture/one', { headers })).json()
     assert.equal('readme' in metadata.data, false)
     const search = await (await worker.fetch('/api/search?q=music%20player&explain=true', { headers })).json()
@@ -84,9 +91,14 @@ test('the actual Worker serves authenticated research routes and registers usabl
     client = new Client({ name: 'fixture-research-client', version: '1.0.0' })
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://${worker.address}:${worker.port}/mcp`), { requestInit: { headers } }))
     const tools = await client.listTools()
-    assert.equal(tools.tools.length, 14)
+    assert.equal(tools.tools.length, 15)
     assert.equal(tools.tools.find(tool => tool.name === 'compare_repositories').annotations.readOnlyHint, true)
-    assert.equal(tools.tools.find(tool => tool.name === 'search_github_live').annotations.readOnlyHint, false)
+    assert.equal(tools.tools.find(tool => tool.name === 'search_github_live').annotations.readOnlyHint, true)
+    assert.equal(tools.tools.find(tool => tool.name === 'capture_github_discovery').annotations.readOnlyHint, false)
+    const deniedWrite = await client.callTool({ name: 'capture_github_discovery', arguments: { repo: 'acme/tool', query: 'terminal' } })
+    assert.equal(deniedWrite.isError, true)
+    assert.equal(JSON.parse(deniedWrite.content[0].text).error, 'write_forbidden')
+
     const result = await client.callTool({ name: 'compare_repositories', arguments: { repos: ['fixture/one', 'fixture/two'] } })
     assert.notEqual(result.isError, true)
     assert.equal(JSON.parse(result.content[0].text).repositories.length, 2)
