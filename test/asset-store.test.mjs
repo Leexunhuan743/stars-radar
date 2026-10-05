@@ -381,7 +381,6 @@ test('the hot index includes a snapshot of exactly the ingests folded by CI', ()
   assert.ok(snapshot.entries.every(entry => snapshot.keys.includes(entry.key)))
 })
 
-
 test('a previous generation snapshot preserves compacted ingests after raw objects are deleted', () => {
   const previousPath = path.join(TMP, 'previous-asset-index.json')
   const compactedKey = 'state/ingest-journal/compacted-old.jsonl'
