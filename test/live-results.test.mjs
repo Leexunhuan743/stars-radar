@@ -85,7 +85,6 @@ test('an empty result set is an empty list', () => {
   assert.deepEqual(enrichLiveResults(undefined), [])
 })
 
-
 test('live results expose every community source that observed the repository', () => {
   const communityIndex = buildCommunityIndex({
     rankings: {
