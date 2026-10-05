@@ -58,7 +58,7 @@ Add these Repository secrets in your fork's **Settings → Secrets and variables
 
 The S3 credentials need read/write access to that bucket. The workflow maps `GH_TOKEN` to `GITHUB_TOKEN`; GitHub's automatic workflow token is not your personal star-sync token.
 
-Enable workflows in **Actions** and manually run **Update Repos Info**. The first run builds your catalogue, README archive and retrieval index. Subsequent runs are scheduled every six hours. A failed run does not guarantee new vectors were published; retry it after addressing the failure.
+Enable workflows in **Actions** and manually run **Update Repos Info**. The first run builds your catalogue, README archive and retrieval index. Subsequent runs are scheduled every six hours. Catalogue, rankings, asset state/index and vectors are uploaded as one immutable derived-data generation and activated only after the whole generation verifies, so a failed build never exposes a half-published derived data plane. The three newest derived generations are retained for quick rollback.
 
 ### 3. Configure and deploy the Worker
 
@@ -140,6 +140,8 @@ python scripts/search_stars_cli.py --help
 Stars saved through the service become lexically searchable after journal refresh, normally within a minute on other instances. Semantic search follows the next successful CI build. Stars made directly on GitHub require the next successful star sync.
 
 Your categories are your own GitHub Lists, with no fixed count. Uncategorized public stars use `everything-else`. Ingest tags stay in the radar and do not modify GitHub Lists.
+
+Production retrieval quality still needs labels from your own corpus. `pnpm eval:retrieval:gate` can enforce private-fixture thresholds for Recall/MRR/NDCG, negative-query behavior, forbidden hits and latency; synthetic fixtures are not presented as production-quality proof.
 
 Generated data lives in your R2 bucket and is not committed to Git. The sync excludes private repositories. Keep the bucket private and share the service key only with trusted clients. This is a single-account service: all clients with the same key share its data and permissions.
 
