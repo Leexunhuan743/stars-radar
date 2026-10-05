@@ -5,7 +5,7 @@
 // returned by that pointer, so an isolate may be briefly stale but can never combine documents
 // from two different builds.
 
-import { parseGenerationPointer, ACTIVE_GENERATION_KEY, generationKey } from './data-generation.js'
+import { ACTIVE_GENERATION_KEY, generationKey, parseGenerationPointer } from './data-generation.js'
 import { createDocumentCache, DOCUMENT_STATUS } from './document-cache.js'
 import { describePairMismatch, validateVectorIndex, verifyVectorManifest } from './embeddings.js'
 import { foldIngestEntries, foldJournalFiles } from './ingest-journal.js'
