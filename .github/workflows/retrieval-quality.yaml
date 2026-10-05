@@ -88,6 +88,27 @@ jobs:
             aws s3 cp "s3://${R2_BUCKET}/${prefix}${key}" "${local_path}" --endpoint-url "${endpoint}"
           done
 
+          # Before the first immutable-v2 generation is activated, the live flat plane may still
+          # carry the pre-v2 string-only vector index. The binary order is already authoritative;
+          # normalize only the index shape for this migration gate, while keeping the evaluator
+          # itself strict about the v2 structured-record contract.
+          if [ -z "${prefix}" ]; then
+            node --input-type=module - <<'NODE'
+          import fs from 'node:fs'
+          const file = 'embeddings-index.json'
+          const index = JSON.parse(fs.readFileSync(file, 'utf8'))
+          if (Array.isArray(index) && index.every(item => typeof item === 'string')) {
+            const records = index.map((repo) => ({
+              id: `repo:${repo.toLowerCase()}`,
+              repo,
+              kind: 'repo',
+            }))
+            fs.writeFileSync(file, `${JSON.stringify(records, null, 2)}\n`)
+            console.log(`Normalized ${records.length} legacy vector index entries for the migration-only gate.`)
+          }
+          NODE
+          fi
+
       - name: Derive mandatory production benchmark
         run: node scripts/build_retrieval_benchmark_from_corpus.js --output data/retrieval-benchmark.derived.json
 
