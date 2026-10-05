@@ -53,6 +53,7 @@ function bucket(objects = {}, { listFails = false } = {}) {
 }
 
 const CATALOG = JSON.stringify({ repos: { 'a/b': { repo: 'a/b' } }, categories: [], totalRepos: 1 })
+const repoRecord = repo => ({ id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' })
 const JOURNAL_ENTRY = JSON.stringify({ repo: 'acme/tool', by: 'worker', ingested_at: '2026-02-26T00:00:00.000Z' })
 
 test.beforeEach(() => {
@@ -66,7 +67,7 @@ test('an absent document is served as the documented placeholder', async () => {
   const rankings = await getRankings(env)
   assert.deepEqual(Object.keys(rankings).sort(), ['agentSkillRepos', 'agentSkills', 'breakoutWeekly', 'helloGitHub', 'topStarred', 'trending'])
   assert.deepEqual(await getHarvested(env), [])
-  assert.deepEqual(await getVectors(env), { vectors: null, names: null })
+  assert.deepEqual(await getVectors(env), { vectors: null, records: null })
   const { statuses, degraded } = dataPlaneStatus()
   assert.equal(statuses.catalog, 'missing', 'an absent document is a first run, not a fault')
   assert.equal(degraded, false, 'nothing is published yet, so nothing is degraded')
@@ -102,29 +103,31 @@ test('a warm cache answers without touching the bucket again', async () => {
 })
 
 test('a vector pair whose halves disagree is unavailable, not an empty index', async () => {
-  const names = JSON.stringify(['a/b', 'c/d'])
-  const bytes = new Uint8Array(2 * 1024 * 4) // correct length
-  const shortBytes = new Uint8Array(1024 * 4) // one vector instead of two
-  const manifest = await vectorManifest(JSON.parse(names), new TextEncoder().encode(names), bytes)
-  const env = { R2: bucket({ 'embeddings-index.json': names, 'embeddings.bin': bytes.buffer, 'embeddings-manifest.json': JSON.stringify(manifest) }) }
+  const records = [repoRecord('a/b'), repoRecord('c/d')]
+  const index = JSON.stringify(records)
+  const bytes = new Uint8Array(2 * 1024 * 4)
+  const shortBytes = new Uint8Array(1024 * 4)
+  const manifest = await vectorManifest(records, new TextEncoder().encode(index), bytes)
+  const env = { R2: bucket({ 'embeddings-index.json': index, 'embeddings.bin': bytes.buffer, 'embeddings-manifest.json': JSON.stringify(manifest) }) }
 
   const pair = await getVectors(env)
-  assert.equal(pair.names.length, 2, 'a consistent pair loads')
+  assert.equal(pair.records.length, 2, 'a consistent pair loads')
 
   resetDocumentCaches()
-  const broken = { R2: bucket({ 'embeddings-index.json': names, 'embeddings.bin': shortBytes.buffer }) }
+  const broken = { R2: bucket({ 'embeddings-index.json': index, 'embeddings.bin': shortBytes.buffer }) }
   await assert.rejects(getVectors(broken), /invariant violated/, 'the mismatch must surface as a fault')
   assert.equal(dataPlaneStatus().statuses.vectors, 'unavailable')
 })
 
 test('same-length mixed vector generations are rejected by their content manifest', async () => {
-  const names = JSON.stringify(['a/b'])
+  const records = [repoRecord('a/b')]
+  const index = JSON.stringify(records)
   const original = new Uint8Array(1024 * 4)
-  const manifest = await vectorManifest(['a/b'], new TextEncoder().encode(names), original)
+  const manifest = await vectorManifest(records, new TextEncoder().encode(index), original)
   const changed = new Uint8Array(1024 * 4)
   changed[0] = 1
   const env = { R2: bucket({
-    'embeddings-index.json': names,
+    'embeddings-index.json': index,
     'embeddings.bin': changed.buffer,
     'embeddings-manifest.json': JSON.stringify(manifest),
   }) }
