@@ -58,6 +58,7 @@ export function fuseRankings({
       tier: meta.tier,
       extraItem: meta.item,
       sourceChannels: meta.sourceChannels,
+      scoringSource: meta.scoringSource,
     }
     // Private stars keep their visibility without displacing relevance: the boost
     // only breaks ties, because relevance_score is the primary sort key.
@@ -71,6 +72,7 @@ export function fuseRankings({
     cur.evidence = meta.evidence
     cur.channel = meta.channel || 'keyword'
     cur.sourceChannels = meta.sourceChannels || cur.sourceChannels
+    cur.scoringSource = meta.scoringSource || cur.scoringSource
     rrfMap.set(repo, cur)
   })
 
