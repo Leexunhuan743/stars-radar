@@ -27,7 +27,8 @@
     "postinstall": "simple-git-hooks",
     "dev:seed": "node scripts/seed-local-r2.js",
     "eval:retrieval:real": "node scripts/evaluate_retrieval_real.js",
-    "eval:retrieval:gate": "node scripts/evaluate_retrieval_real.js --enforce-thresholds"
+    "eval:retrieval:gate": "node scripts/evaluate_retrieval_real.js --enforce-thresholds",
+    "data:rollback": "node scripts/rollback_data_generation.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
