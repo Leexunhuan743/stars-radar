@@ -111,17 +111,14 @@ test('the publishing job cannot write to the repository', () => {
   )
 })
 
-test('the README sweep is guarded and immutable generation uploads are read back before activation', () => {
+test('README blobs and immutable generation uploads are verified before activation', () => {
   const build = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
 
-  const emptyCorpusGuard = build.match(/local_readmes[\s\S]{0,400}?exit 1/)
-  assert.ok(emptyCorpusGuard, 'the README sweep is no longer gated on a non-empty corpus')
-  assert.ok(
-    build.indexOf('local_readmes') < build.indexOf('aws s3 sync stars/'),
-    'the corpus check must precede the sync that uses --delete',
-  )
-  assert.match(build, /--exclude "generations\/\*"/)
-  assert.match(build, /--exclude "active-generation\.json"/)
+  assert.match(build, /Restore active generation README corpus/)
+  assert.match(build, /generations\/\$\{ACTIVE_GENERATION_ID\}\/readmes\.json/)
+  assert.match(build, /Publish content-addressed README blobs/)
+  assert.match(build, /s3:\/\/\$\{R2_BUCKET\}\/readmes\//)
+  assert.doesNotMatch(build, /aws s3 sync stars\/ "s3:\/\/\$\{R2_BUCKET\}\//)
 
   assert.match(
     build,
@@ -136,16 +133,6 @@ test('the README sweep is guarded and immutable generation uploads are read back
   assert.ok(
     build.indexOf('Verify immutable generation in R2') < build.indexOf('Activate verified data generation'),
     'active-generation.json must move only after immutable object verification',
-  )
-
-  assert.match(
-    build,
-    /aws s3 sync "s3:\/\/\$\{R2_BUCKET\}\/" stars\/[\s\S]{0,200}--include "\*\/\*\.md"/,
-    'the README corpus must be restored from R2 before the incremental sync',
-  )
-  assert.ok(
-    build.indexOf('Download the README corpus from R2') < build.indexOf('Fetch starred repos and READMEs'),
-    'the corpus restore must happen before the sync that decides what to fetch',
   )
 })
 
@@ -175,22 +162,6 @@ test('no workflow recursively deletes Worker-owned state prefixes', () => {
 
   const build = workflows.find(w => w.name === 'build.yaml')
   assert.ok(build, 'build.yaml must exist for this check to mean anything')
-
-  // Specifically the sync whose destination is the bucket root: the other `s3 sync` calls only
-  // read state prefixes into the workspace.
-  const sync = build.text.match(/aws s3 sync stars\/ "s3:\/\/\$\{R2_BUCKET\}\/"[\s\S]*?cli-connect-timeout \d+/)
-  assert.ok(sync, 'the bucket-root sync is expected to exist')
-  assert.match(sync[0], /--exclude "state\/\*"/, 'the state prefix must be excluded from the corpus sync')
-
-  // `--delete` is passed through the guarded array rather than spelled out in the sync command,
-  // so the way to check that the sweep is still gated is to check where the flag is built.
-  // (`--delete` also appears in the comment above the guard, so match the assignment itself.)
-  const deleteFlag = build.text.match(/sweep=\(--delete\)/)
-  assert.ok(deleteFlag, 'the corpus sweep disappeared, or it is no longer passed through the guard; stale READMEs would accumulate forever')
-  assert.ok(
-    build.text.indexOf('local_readmes') < build.text.indexOf('sweep=(--delete)'),
-    'the corpus check must run before the sweep flag is built',
-  )
 
   for (const { name, text } of workflows) {
     const destructive = text.match(/aws s3 rm[^\n]*state\/[^\n]*/g) || []
