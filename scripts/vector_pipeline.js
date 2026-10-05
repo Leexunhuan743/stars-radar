@@ -5,7 +5,7 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import fs from 'fs-extra'
 import { $fetch } from 'ofetch'
-import { describePairMismatch, DIMS, EMBEDDING_MODEL, expectedPairBytes, isEmbedding, vectorManifest } from '../src/embeddings.js'
+import { describePairMismatch, DIMS, EMBEDDING_INPUT_PROFILE, EMBEDDING_MODEL, expectedPairBytes, isEmbedding, vectorManifest } from '../src/embeddings.js'
 import { parseFrontmatter } from '../src/frontmatter.js'
 import { EMBEDDINGS_BIN_KEY, EMBEDDINGS_FINGERPRINTS_KEY, EMBEDDINGS_INDEX_KEY, EMBEDDINGS_MANIFEST_KEY, localReadmePath } from '../src/object-keys.js'
 import { retryAsync } from '../src/retry.js'
@@ -70,7 +70,7 @@ export async function buildRepositoryVectors(repositories) {
   const rows = [...desired.values()].map((repo) => {
     const key = repo.repo.toLowerCase()
     const text = embeddingText(repo)
-    const textHash = digest(`${EMBEDDING_MODEL}\0${text}`)
+    const textHash = digest(`${EMBEDDING_MODEL}\0${EMBEDDING_INPUT_PROFILE}\0${text}`)
     const slot = oldSlots.get(key)
     const binary = slot === undefined ? null : oldBinary.subarray(slot * DIMS * 4, (slot + 1) * DIMS * 4)
     const fingerprint = oldFingerprints[key]
