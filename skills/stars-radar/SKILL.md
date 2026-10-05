@@ -78,11 +78,11 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
 
 ### 第二步：CLI 命令行执行规则（当处于终端环境时）
 
-在无 MCP 连接的本地终端环境中，需先配置自有部署地址与认证密钥（`export WORKER_URL="https://stars.example.com"`、`export MCP_API_KEY="..."`，两者都必填且无默认值），直接运行 Python CLI 脚本完成等价操作：
+在无 MCP 连接的本地终端环境中，需先配置自有部署地址与读取密钥（`export WORKER_URL="https://stars.example.com"`、`export MCP_API_KEY="..."`）。执行 capture / star 等写操作时还必须设置不同的 `MCP_WRITE_API_KEY`。
 
 - 搜私藏与全网：`python scripts/search_stars_cli.py "<query>"`
 - 全网搜仓库：`python scripts/search_stars_cli.py --live "<query>" --limit 5`
-- **全网搜仓库并显式沉淀发现**：`python scripts/search_stars_cli.py --live "<query>" --limit 5 --persist`。这里的 `--persist` 只是 CLI 兼容工作流：先执行只读 `/api/live`，再对符合阈值的 Top-3 候选逐个调用显式写接口 `/api/capture`；服务端会重新校验 GitHub 元数据。若启用了独立写密钥，请同时设置 `MCP_WRITE_API_KEY`。
+- **显式沉淀一个已选择的发现**：`python scripts/search_stars_cli.py "<query>" --capture "owner/repo"`。先用 `--live` 找候选，再由用户明确选择一个仓库写入；服务端会重新校验 GitHub 元数据。
 - 全网搜代码：`python scripts/search_stars_cli.py --code "<code_query>" --language <lang>`
 - 全网搜文档：`python scripts/search_stars_cli.py --web "<tech_query>"`
 - 一键点星入库：`python scripts/search_stars_cli.py --star "owner/repo" --reason "<curator_note>"`
