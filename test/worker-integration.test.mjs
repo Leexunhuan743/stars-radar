@@ -78,6 +78,21 @@ test('the actual Worker serves authenticated research routes and registers usabl
     const compared = await (await worker.fetch('/api/compare?repos=fixture/one,fixture/two', { headers })).json()
     assert.deepEqual(compared.data.repositories.map(repo => repo.license), ['MIT', 'Apache-2.0'])
     assert.equal((await worker.fetch('/api/compare?repos=fixture/one,FIXTURE/ONE', { headers })).status, 400)
+    assert.equal(
+      (await worker.fetch(`/api/search?q=${'x'.repeat(513)}`, { headers })).status,
+      400,
+      'oversized REST search input must fail before embedding or document work',
+    )
+    assert.equal(
+      (await worker.fetch(`/api/repository?repo=${'x'.repeat(201)}`, { headers })).status,
+      400,
+      'oversized repository identifiers must be rejected at the HTTP boundary',
+    )
+    assert.equal(
+      (await worker.fetch('/api/trending?category=not-a-board', { headers })).status,
+      400,
+      'unknown trending boards must not masquerade as successful empty lists',
+    )
     assert.equal((await worker.fetch('/api/ingest', {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
@@ -88,6 +103,11 @@ test('the actual Worker serves authenticated research routes and registers usabl
       headers: { ...writeHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo: 'fixture/one', categories: 'incorrect-type' }),
     })).status, 400, 'the write credential reaches validation but malformed metadata is still rejected before upstream work')
+    assert.equal((await worker.fetch('/api/ingest', {
+      method: 'POST',
+      headers: { ...writeHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: 'fixture/one', reason: 'x'.repeat(1001) }),
+    })).status, 400, 'oversized curator notes fail schema validation before any GitHub write')
     const metadata = await (await worker.fetch('/api/repository?repo=fixture/one', { headers })).json()
     assert.equal('readme' in metadata.data, false)
     const search = await (await worker.fetch('/api/search?q=music%20player&explain=true', { headers })).json()
