@@ -220,40 +220,12 @@ def show_web_search(query, domain=None, freshness="all", limit=5):
         print()
 
 def execute_star(repo, reason=None, categories=None):
-    require_api_config()
     clean_repo = repo.strip().replace("https://github.com/", "")
-    body = json.dumps({
+    result = post_json("/api/ingest", {
         "repo": clean_repo,
-        "reason": reason or f"Starred via Stars Radar CLI",
-        "categories": categories or []
-    }).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {API_KEY}",
-        **HEADERS
-    }
-    req = urllib.request.Request(
-        f"{WORKER_URL}/api/ingest",
-        data=body,
-        headers=headers
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        try:
-            failure = json.loads(e.read().decode("utf-8"))
-            raise ApiError(f"/api/ingest failed: {failure.get('error')} — {failure.get('message')}")
-        except ApiError:
-            raise
-        except Exception:
-            raise ApiError(f"/api/ingest failed with HTTP {e.code}")
-    except ApiError:
-        raise
-    except Exception as e:
-        raise ApiError(f"/api/ingest could not be reached: {e}")
-
-    result = data.get("data") or {}
+        "reason": reason or "Starred via Stars Radar CLI",
+        "categories": categories or [],
+    }) or {}
     if result.get("success"):
         print(f"\n✨ Success! Starred and Staged: {clean_repo}")
         print(f"   Badge: {result.get('badge')}")
