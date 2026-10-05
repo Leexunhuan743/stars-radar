@@ -6,7 +6,7 @@ import { analyzeQuery } from './query-analysis.js'
 import { fuseRankings } from './ranking.js'
 import { snippetAround } from './readme-evidence.js'
 import { compileResults } from './result-compiler.js'
-import { explainTextMatch, intentMatchScore, matchesSubjectGate, scoreText, termMatcher } from './scoring.js'
+import { evaluateFacetCoverage, explainTextMatch, intentMatchScore, matchesSubjectGate, scoreText, termMatcher } from './scoring.js'
 
 export function searchDocuments({ catalog, rankings, assetIndex, harvested, vectors, queryVector, intents }, query, { category, source, scope = 'all', limit = 5, min_score = 0.25, explain = false } = {}) {
   const genericIntents = intents
@@ -21,10 +21,10 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
   const starredNames = new Set(Object.keys(repos).map(name => name.toLowerCase()))
   const targetCategory = category?.trim().toLowerCase()
   const targetSource = source?.trim().toLowerCase()
-  const { queryTokens, matchedGroups, specificSubjects, hardSubjects } = analyzeQuery(query, genericIntents)
+  const { queryTokens, matchedGroups, specificSubjects, hardSubjects, facets } = analyzeQuery(query, genericIntents)
   // The channels every catalogue-free layer scores through; defined in src/scoring.js so a layer
   // cannot weigh a match differently from its neighbours.
-  const layerQuery = { specificSubjects, queryTokens, matchedGroups, intents: genericIntents, explain }
+  const layerQuery = { specificSubjects, queryTokens, matchedGroups, facets, intents: genericIntents, explain }
 
   // 1. Vector Semantic Search (SiliconFlow BAAI/bge-m3, single embedding authority)
   const vectorScores = new Map()
@@ -169,7 +169,13 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
       }
 
       if (score > 0) {
-        keywordScores.set(name, { weight: score, source: 'starred', item: r, evidence: explain ? explainTextMatch(textPool, layerQuery) : undefined })
+        keywordScores.set(name, {
+          weight: score,
+          source: 'starred',
+          item: r,
+          facetCoverage: evaluateFacetCoverage(textPool, facets),
+          evidence: explain ? explainTextMatch(textPool, layerQuery) : undefined,
+        })
       }
     }
   }
@@ -187,7 +193,15 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
         continue
       const weight = scoreText(text, layerQuery)
       if (weight > 0)
-        keywordScores.set(item.repo.toLowerCase(), { weight, source: 'curated', badge: '💎 Curated Asset', tier: 'curated', item, evidence: explain ? explainTextMatch(text, layerQuery) : undefined })
+        keywordScores.set(item.repo.toLowerCase(), {
+          weight,
+          source: 'curated',
+          badge: '💎 Curated Asset',
+          tier: 'curated',
+          item,
+          facetCoverage: evaluateFacetCoverage(text, facets),
+          evidence: explain ? explainTextMatch(text, layerQuery) : undefined,
+        })
     }
   }
 
@@ -216,6 +230,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
       scoredRepos,
       specificSubjects,
       targetCategory,
+      facets,
     })
 
     for (const entry of archived) {
@@ -226,6 +241,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
         badge: entry.badge,
         tier: entry.tier,
         item: entry.item,
+        facetCoverage: entry.facetCoverage,
         evidence: explain
           ? explainTextMatch(
               [
@@ -253,6 +269,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
     repos,
     specificSubjects,
     hardSubjects,
+    facets,
   })
 
   const ingestedByName = new Map(harvested.map(item => [item.repo.toLowerCase(), item]))
