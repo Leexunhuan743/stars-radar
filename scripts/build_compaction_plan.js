@@ -10,9 +10,7 @@ const ROOT = process.env.ASSET_STORE_ROOT
 
 export const COMPACTION_PLAN_FILE = '.data-compaction-plan.json'
 
-export function buildCompactionPlan(root = ROOT, indexPath = process.env.COMPACTION_BASE_INDEX
-  ? path.resolve(process.env.COMPACTION_BASE_INDEX)
-  : path.resolve(root, PREVIOUS_ASSET_INDEX_FILE)) {
+export function buildCompactionPlan(root = ROOT, indexPath = path.resolve(root, PREVIOUS_ASSET_INDEX_FILE)) {
   const previousIndexPath = indexPath
   let ingestKeys = []
   let probeKeys = []
@@ -53,7 +51,7 @@ if (process.argv[1]?.endsWith('build_compaction_plan.js')) {
   const at = process.argv.indexOf('--index')
   const indexPath = at >= 0 ? process.argv[at + 1] : undefined
   if (at >= 0 && !indexPath)
-    throw new Error('Usage: node scripts/build_compaction_plan.js [--index <asset-index.json>]')
+    throw new Error('Usage: node scripts/build_compaction_plan.js [--index <index-file>]')
   const plan = buildCompactionPlan(ROOT, indexPath ? path.resolve(indexPath) : undefined)
   fs.writeJsonSync(path.resolve(ROOT, COMPACTION_PLAN_FILE), plan, { spaces: 2 })
   console.log(`[Compaction] planned ${plan.ingest_keys.length} ingest deletion(s) and ${plan.probe_keys.length} probe deletion(s).`)
