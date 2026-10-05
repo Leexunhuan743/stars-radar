@@ -19,7 +19,7 @@
 // in `sourceChannels`. Multiple boards observing the same repository are evidence, not duplicate
 // results; ranking is deliberately NOT boosted here until a real retrieval benchmark justifies it.
 
-import { explainTextMatch, matchesSubjectGate, scoreText } from './scoring.js'
+import { evaluateFacetCoverage, explainTextMatch, matchesSubjectGate, scoreText } from './scoring.js'
 
 /** Trending boards and Top Starred both publish `{ repo, description, language, stars, url }`. */
 export const COMMUNITY_LAYERS = [
@@ -123,6 +123,7 @@ export function collectCommunityHits({ rankings, query, keywordScores }) {
           if (score > existing.weight) {
             existing.weight = score
             existing.scoringSource = layer.source
+            existing.facetCoverage = evaluateFacetCoverage(text, query.facets)
             existing.evidence = query.explain ? explainTextMatch(text, query) : undefined
           }
           existing.sourceChannels = [...new Set([...(existing.sourceChannels || [existing.source]), layer.source])]
@@ -135,6 +136,7 @@ export function collectCommunityHits({ rankings, query, keywordScores }) {
           scoringSource: layer.source,
           badge: layer.badge(entry),
           item: layer.project(entry),
+          facetCoverage: evaluateFacetCoverage(text, query.facets),
           evidence: query.explain ? explainTextMatch(text, query) : undefined,
         })
       }
