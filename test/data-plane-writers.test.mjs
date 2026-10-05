@@ -125,8 +125,8 @@ test('the README sweep is guarded and immutable generation uploads are read back
 
   assert.match(
     build,
-    /head-object --bucket "\$\{R2_BUCKET\}"[\s\S]{0,180}?generations\/\$\{GENERATION_ID\}\/\$\{rel\}[\s\S]{0,180}?ContentLength/,
-    'every staged generation object must be read back and sized',
+    /aws s3 cp "s3:\/\/\$\{R2_BUCKET\}\/generations\/\$\{GENERATION_ID\}\/\$\{rel\}"[\s\S]{0,260}?cmp -s "\.generation-stage\/\$\{rel\}" "\$\{verify_dir\}\/\$\{rel\}"/,
+    'every staged generation object must be read back and compared byte-for-byte',
   )
   assert.ok(
     build.indexOf('Verify immutable generation in R2') < build.indexOf('Activate verified data generation'),
