@@ -224,3 +224,33 @@ test('GitHub Actions dependencies are pinned to immutable commit SHAs', () => {
     }
   }
 })
+
+
+test('data publication is generation-atomic and state compaction is exact-key only', () => {
+  const build = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
+
+  assert.match(build, /active-generation\.json/)
+  assert.match(build, /generations\/\$\{GENERATION_ID\}\//)
+  assert.ok(
+    build.indexOf('Upload immutable data generation') < build.indexOf('Verify immutable generation in R2'),
+    'generation objects must upload before verification',
+  )
+  assert.ok(
+    build.indexOf('Verify immutable generation in R2') < build.indexOf('Activate verified data generation'),
+    'the active pointer is the commit point and must move only after read-back verification',
+  )
+  assert.match(build, /--exclude "generations\/\*"/, 'README --delete must never sweep immutable generations')
+  assert.match(build, /--exclude "active-generation\.json"/, 'README --delete must never remove the active pointer')
+  assert.doesNotMatch(
+    build,
+    /s3:\/\/\$\{R2_BUCKET\}\/catalog\.json/,
+    'catalog.json must not be published as a mutable root data object',
+  )
+  assert.doesNotMatch(
+    build,
+    /s3 rm[^\n]*state\/(?:ingest-journal|probe-captures)[^\n]*--recursive/,
+    'append-only state must never be compacted by recursive prefix deletion',
+  )
+  assert.match(build, /s3api delete-object[^\n]*--key "\$\{key\}"/, 'compaction must delete exact planned keys')
+  assert.match(build, /Retain the three newest data generations/)
+})
