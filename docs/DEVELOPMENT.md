@@ -157,11 +157,11 @@ Bash / zsh 使用 `export WORKER_URL=...` 和 `export MCP_API_KEY=...`。
 | `embeddings-fingerprints.json`            | 文本 / 模型与向量内容指纹，用于复用          | CI                |
 | `embeddings-manifest.json`                | 模型、维度、数量及 index/bin 的 SHA-256      | CI                |
 | `state/ingest-journal/*.jsonl`            | 经确认的收录和备注，每次操作追加一个对象     | Worker 或本地收割 |
-| `state/probe-captures/*.jsonl`            | `persist=true` 的实时发现元数据              | Worker            |
+| `state/probe-captures/*.jsonl`            | 经 `capture_github_discovery` 明确确认的发现元数据 | Worker            |
 
 CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件，不由 Worker 读取，也不上传。
 
-资产分为 `starred`、`curated`、`community`、`discovered`。前三种进入热集；一次自动发现只记录元数据，满足跨查询确认等规则后才晋升为社区资产。取消 Star 会移除个人收藏标记，历史资产可能作为社区候选保留；已明确收录的记录仍保存在日志中。
+资产分为 `starred`、`curated`、`community`、`discovered`。前三种进入热集；实时搜索本身永远不写状态，只有显式调用 `capture_github_discovery` 才记录一次发现观察，满足跨查询确认等规则后才晋升为社区资产。取消 Star 会移除个人收藏标记，历史资产可能作为社区候选保留；已明确收录的记录仍保存在日志中。
 
 `ingest_snapshot` 记录 CI 实际折叠的对象键和最新条目，Worker 只下载未被快照覆盖的日志。构建期间的新写入进入尾部，不依赖时间戳猜测范围；原始日志保留用于重建。没有快照时读取全部日志。尾部按 10 个对象一组读取，失败不会变成部分成功。
 
@@ -187,7 +187,8 @@ Streamable HTTP 入口为 `/mcp`，认证为 `Authorization: Bearer <MCP_API_KEY
 | `search_github_stars`   | `query`；可选 `scope`、`category`、`source`、`limit`、`min_score`、`explain` |
 | `get_repo_readme`       | `repo`；`include_readme=false` 获取元数据，`refresh=true` 获取当前元数据     |
 | `compare_repositories`  | `repos` 数组，2–5 个不同仓库；可选 `refresh`                                 |
-| `search_github_live`    | 查询、语言、Star 数、日期、排序；`persist=true` 会写发现日志                 |
+| `search_github_live`    | 只读实时 GitHub 查询：语言、Star 数、日期、排序                               |
+| `capture_github_discovery` | 显式写入一个已选择的发现；服务端重新读取 GitHub 元数据后再决定是否记录         |
 | `search_github_code`    | 查询；可选仓库、语言、扩展名和路径                                           |
 | `search_web_tech`       | 查询；可选 `domain`、`freshness`                                             |
 | `star_and_ingest_repo`  | `repo`、`reason`、`categories`；点 Star 并追加收录                           |
@@ -215,7 +216,8 @@ Streamable HTTP 入口为 `/mcp`，认证为 `Authorization: Bearer <MCP_API_KEY
 | `GET /api/categories` | 用户分类                                                                   |
 | `GET /api/trending`   | `category`，返回快照榜单                                                   |
 | `GET /api/skills`     | `type=all` 或 `repos`、`limit`                                             |
-| `GET /api/live`       | `q`、`language`、`min_stars`、`sort`、`since`、`until`、`limit`、`persist` |
+| `GET /api/live`       | 只读：`q`、`language`、`min_stars`、`sort`、`since`、`until`、`limit` |
+| `POST /api/capture`   | 写入：JSON `repo`、`query`；服务端重新校验 GitHub 元数据                     |
 | `GET /api/code`       | `q`、`repo`、`language`、`extension`、`path`、`limit`                      |
 | `GET /api/web`        | `q`、`domain`、`freshness`、`limit`                                        |
 | `POST /api/ingest`    | JSON：`repo`、可选 `reason`、字符串数组 `categories`                       |
