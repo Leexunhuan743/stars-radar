@@ -1,0 +1,280 @@
+# Stars Radar 开发文档
+
+本文面向部署者和贡献者，说明配置、数据流、接口和验证方法。日常操作见 [README](../README.md)，英文介绍见 [README.en.md](../README.en.md)。
+
+## 项目组成
+
+Stars Radar 包含三个部分：Node.js 数据管线、Cloudflare Worker 服务和 MCP / Python 客户端。管线获取个人 GitHub Stars、Lists 和社区数据，Worker 从 R2 读取索引并执行实时查询，客户端负责呈现结果。
+
+项目没有前端应用、关系数据库或独立向量数据库。仓库保存代码和通用意图词表，用户数据保存在部署者自己的 R2 桶中。
+
+```mermaid
+flowchart LR
+  GitHub[GitHub Stars / Lists] --> Build[Actions 数据构建]
+  Community[社区来源] --> Build
+  Build --> Embedding[SiliconFlow 向量计算]
+  Embedding --> Build
+  Build --> R2[R2 数据与日志]
+  Client[AI 助手 / CLI] --> Worker[Cloudflare Worker]
+  R2 --> Worker
+  Worker --> Live[GitHub / 技术网页搜索]
+  Worker --> Journal[追加收录与发现日志]
+  Journal --> R2
+  R2 --> Build
+```
+
+| 路径                                                | 职责                                       |
+| --------------------------------------------------- | ------------------------------------------ |
+| `src/index.js`                                      | Worker 请求入口与 MCP 注册                 |
+| `src/tool-schemas.js`                               | MCP 工具参数与说明的统一定义               |
+| `src/search-engine.js`                              | 收藏、社区、入库日志与历史资产的检索编排   |
+| `src/query-analysis.js`、`scoring.js`、`ranking.js` | 查询解析、词法匹配和排序                   |
+| `src/documents.js`、`document-cache.js`             | R2 读取、缓存与数据状态                    |
+| `src/ingest-journal.js`、`append-store.js`          | 日志键、追加写入与折叠                     |
+| `src/repository-details.js`                         | 仓库详情、比较及证据来源                   |
+| `src/live-probes.js`                                | GitHub 仓库、代码和技术网页搜索            |
+| `scripts/index.js`                                  | 收藏同步与数据构建入口                     |
+| `scripts/github_stars.js`、`github-lists.js`        | GitHub 分页、README 下载与分类同步         |
+| `scripts/vector_pipeline.js`                        | 增量向量计算与本地文件输出                 |
+| `scripts/asset_store.js`                            | 合并持久状态，生成热集索引和日志快照       |
+| `scripts/search_stars_cli.py`                       | REST 命令行客户端                          |
+| `test/`                                             | 独立造数的单元、契约与本地 Worker 集成测试 |
+| `skills/stars-radar/`                               | 可选的 AI Agent 使用指南                   |
+
+## 环境与配置
+
+使用 Node.js 22.19.0 或更高版本及 pnpm 10。CI 通过 `.node-version` 安装 Node，包管理器版本来自 `package.json`。Python 客户端要求 Python 3.8 或更高版本。
+
+```sh
+pnpm install --frozen-lockfile
+```
+
+### 配置位置
+
+| 位置                             | 使用者              | 配置方式                                          |
+| -------------------------------- | ------------------- | ------------------------------------------------- |
+| `.env`                           | 本地数据构建        | 从 `.env.example` 复制；`pnpm dev:stars` 自动加载 |
+| `.dev.vars`                      | `wrangler dev`      | 从 `.dev.vars.example` 复制                       |
+| Actions secrets / Worker secrets | 线上构建 / 线上服务 | 分别在 GitHub 和 Cloudflare 配置                  |
+
+这三处不会自动互相同步。`pnpm build:stars`、收割脚本和 Python 客户端使用当前进程的环境变量；Python 不读取 `.env`。真实配置及其环境专用变体均被忽略，示例文件可以入仓。本地 secret 文件规则见 [Cloudflare 文档](https://developers.cloudflare.com/workers/configuration/secrets/)。
+
+| 名称                                       | 用途                                                    |
+| ------------------------------------------ | ------------------------------------------------------- |
+| `GITHUB_TOKEN`                             | 本地构建和 Worker 的 Stars、Lists、GitHub 搜索及点 Star |
+| `GH_TOKEN`                                 | 仅 Actions secret，在构建步骤映射为 `GITHUB_TOKEN`      |
+| `SILICONFLOW_KEY`                          | 数据构建和 Worker 查询向量                              |
+| `SILICONFLOW_URL`                          | 可选向量接口地址，默认 SiliconFlow embeddings 接口      |
+| `MCP_API_KEY`                              | Worker 与客户端 Bearer 认证，离线构建不需要             |
+| `R2_ACCOUNT_ID`、`R2_BUCKET`               | CI S3 上传及本地 R2 REST 操作的目标                     |
+| `R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` | Actions 的 S3 读写凭据                                  |
+| `CLOUDFLARE_API_TOKEN`                     | 可选 CI 部署；本地收割与向量恢复的 REST 操作也需要它    |
+| `WORKER_URL`                               | Python 客户端的服务根地址，不含 `/mcp`，没有内置地址    |
+| `BRAVE_SEARCH_API_KEY`、`TAVILY_API_KEY`   | 可选网页搜索提供商，配置到 Worker secrets               |
+| `HTTP_PROXY`、`HTTPS_PROXY`                | 可选本地出站代理，Worker 不使用本地代理                 |
+
+`ASSET_STORE_ROOT` 和 `VECTOR_STORE_ROOT` 是测试隔离入口，不是生产部署配置。生成数据使用项目内相对路径，测试在临时目录中造数并自行清理。
+
+### GitHub 权限与分类
+
+完整流程使用个人访问令牌，而非 Actions 自动生成的工作流令牌。Classic token 可选择 `public_repo` 和 `read:user`，用于公开仓库、用户 Lists 和收藏操作，无需为公开语料库申请读取私有仓库的 `repo` 权限。
+
+Fine-grained token 对 Stars 读取要求 Starring read，点 Star 要求 Starring write 和 Metadata read，详见 [GitHub Stars API 文档](https://docs.github.com/en/rest/activity/starring)。选用这种令牌时还要验证自己的 GraphQL Lists 和代码搜索权限，不同接口的授权要求并不相同。Lists 读取不完整或无权读取时，构建会失败，不会把错误响应当成空分类发布。
+
+同步排除私有仓库。分类名称按用户自己的 Lists 同步，取消分类会在下次成功构建生效；未分类仓库使用 `everything-else`。收录接口填写的标签属于 Radar 备注，不会修改 GitHub Lists。
+
+## 首次部署与更新
+
+首次部署步骤见 [README](../README.md#开始使用)。`wrangler.jsonc` 的 Worker 名称和桶名需要按部署环境填写，代码使用固定绑定名 `R2`。绑定配置见 [Cloudflare R2 文档](https://developers.cloudflare.com/r2/get-started/workers-api/)。
+
+`.github/workflows/build.yaml` 每 6 小时运行，也支持手动触发。Fork 后需要主动启用 Actions 和定时工作流。一次运行依次：
+
+1. 从 R2 下载向量缓存、资产状态、社区快照、README 和追加日志；对象不存在是首次运行，认证或网络失败会停止运行。
+2. 获取当前公开 Stars 和全部 Lists / 成员页，更新目录和 README。
+3. 为 Stars 和已确认收录构建向量，再抓取社区快照。
+4. 合并持久资产状态，生成热集索引和入库日志快照。
+5. 运行 lint、测试、向量一致性检查及 Worker 打包检查。
+6. 上传派生数据，检查上传对象长度，并检查入库日志没有减少。
+7. 设置部署令牌时部署 Worker，否则仅更新 R2 数据。
+
+数据发布使用共享并发组串行执行。Checkout 使用只读工作流令牌，个人 `GH_TOKEN` 只用于业务 API 调用。Worker secrets 由部署者独立设置，不从 Actions 自动注入。
+
+上传不是整个桶的事务：对象依次上传，向量 manifest 在向量对象之后上传。Worker 验证内容哈希，遇到混合代次会报错或返回标记为陈旧的已缓存副本，不会把损坏向量当成空检索成功。变更数据格式时，先发布匹配的数据，再部署读取该格式的 Worker。
+
+自定义 `SILICONFLOW_URL` 时，构建和 Worker 必须使用产生相同向量空间的接口，不能只切换查询端。上游价格与额度以服务商当前说明为准。
+
+### 本地开发
+
+从示例复制配置并填入自己的密钥：
+
+PowerShell：
+
+```powershell
+Copy-Item .env.example .env
+Copy-Item .dev.vars.example .dev.vars
+```
+
+Bash / zsh：
+
+```sh
+cp .env.example .env
+cp .dev.vars.example .dev.vars
+```
+
+然后执行：
+
+```sh
+pnpm dev:stars
+pnpm build:assets
+pnpm dev:seed
+pnpm dev:mcp
+```
+
+`dev:stars` 调用真实 GitHub、社区和向量 API，可能产生请求费用；它只生成本地文件，不发布向量。全新账号可以没有 Star，构建会生成空目录和零长度向量数据，无需维护者的旧文件。
+
+`dev:seed` 检查向量一致性，先读取全部必要输入，再写入 `.wrangler/state/v3` 下的本地 R2。它加载目录、社区数据、索引和 README，不操作远端桶。默认 `wrangler dev` 使用本地模拟存储，详见 [Cloudflare 本地数据文档](https://developers.cloudflare.com/workers/local-development/local-data/)。此命令覆盖同名对象，适合新的开发环境，不负责清理旧对象。
+
+启动后，在 shell 中设置客户端变量。PowerShell 示例：
+
+```powershell
+$env:WORKER_URL = "http://127.0.0.1:8787"
+$env:MCP_API_KEY = "与.dev.vars一致的密钥"
+python scripts/search_stars_cli.py "terminal music player"
+```
+
+Bash / zsh 使用 `export WORKER_URL=...` 和 `export MCP_API_KEY=...`。
+
+## 数据与写入职责
+
+| R2 对象                                   | 内容                                         | 写入者            |
+| ----------------------------------------- | -------------------------------------------- | ----------------- |
+| `catalog.json`                            | 当前公开 Stars、Lists 和元数据               | CI                |
+| `<owner>/<repo>.md`                       | README；本地路径为 `stars/<owner>/<repo>.md` | CI                |
+| `rankings.json`                           | 社区榜单及各来源更新时间 / 失败状态          | CI                |
+| `asset-state.json`                        | 历史资产、首次发现、上榜次数等持久状态       | CI                |
+| `asset-index.json`                        | 热集检索索引与 `ingest_snapshot`             | CI                |
+| `embeddings.bin`、`embeddings-index.json` | Float32 向量及对应槽位的仓库名               | CI                |
+| `embeddings-fingerprints.json`            | 文本 / 模型与向量内容指纹，用于复用          | CI                |
+| `embeddings-manifest.json`                | 模型、维度、数量及 index/bin 的 SHA-256      | CI                |
+| `state/ingest-journal/*.jsonl`            | 经确认的收录和备注，每次操作追加一个对象     | Worker 或本地收割 |
+| `state/probe-captures/*.jsonl`            | `persist=true` 的实时发现元数据              | Worker            |
+
+CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件，不由 Worker 读取，也不上传。
+
+资产分为 `starred`、`curated`、`community`、`discovered`。前三种进入热集；一次自动发现只记录元数据，满足跨查询确认等规则后才晋升为社区资产。取消 Star 会移除个人收藏标记，历史资产可能作为社区候选保留；已明确收录的记录仍保存在日志中。
+
+`ingest_snapshot` 记录 CI 实际折叠的对象键和最新条目，Worker 只下载未被快照覆盖的日志。构建期间的新写入进入尾部，不依赖时间戳猜测范围；原始日志保留用于重建。没有快照时读取全部日志。尾部按 10 个对象一组读取，失败不会变成部分成功。
+
+常规数据缓存为 30 分钟，入库日志视图为 60 秒，均是每个 Worker 实例独立的缓存。写入实例立即安装新视图，其他实例刷新后可见。大量语料或高频写入会增加内存与 R2 请求开销，当前架构适用于个人库，是单账号共享密钥服务，没有多租户隔离。
+
+## 检索与证据
+
+向量模型固定为 `BAAI/bge-m3`，维度为 1024。输入来自仓库名称、分类、语言、备注、摘要、简介和 topics，不是整份 README。默认构建与查询都使用 SiliconFlow；查询向量接口失败时退回词法通道。
+
+检索结合向量相似度、关键词、通用意图词表与具体主体匹配。明确的仓库名或技术主体约束候选；个人收藏有排序加权，综合结果也保留社区候选。`scope` 选择收藏 / 社区范围，`category` 选择用户分类，`source` 选择来源。
+
+`explain=true` 返回实际匹配的词语、主体、意图与检索通道。纯语义匹配不会伪造词面命中。`min_score` 是排序门槛，不是准确率。
+
+详情和比较区分 `evidence.source`、`snapshot_at`、`fetched_at`。`refresh=true` 请求 GitHub 当前元数据并保留个人备注；未知字段为 `null`，不能推断为“没有许可证”或“已经停止维护”。README 最多返回 50,000 个字符。上游文字与代码片段是来源内容，应结合原始链接核实。
+
+## MCP 工具
+
+Streamable HTTP 入口为 `/mcp`，认证为 `Authorization: Bearer <MCP_API_KEY>`。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
+
+| 工具                    | 用途 / 常用参数                                                              |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `get_radar_status`      | 数据规模、状态与工具选择提示                                                 |
+| `search_github_stars`   | `query`；可选 `scope`、`category`、`source`、`limit`、`min_score`、`explain` |
+| `get_repo_readme`       | `repo`；`include_readme=false` 获取元数据，`refresh=true` 获取当前元数据     |
+| `compare_repositories`  | `repos` 数组，2–5 个不同仓库；可选 `refresh`                                 |
+| `search_github_live`    | 查询、语言、Star 数、日期、排序；`persist=true` 会写发现日志                 |
+| `search_github_code`    | 查询；可选仓库、语言、扩展名和路径                                           |
+| `search_web_tech`       | 查询；可选 `domain`、`freshness`                                             |
+| `star_and_ingest_repo`  | `repo`、`reason`、`categories`；点 Star 并追加收录                           |
+| `get_trending_repos`    | `category`；日榜、语言周榜及 `breakout_weekly`                               |
+| `get_top_skills`        | `type`、`limit`；Skills 与近期技能仓库                                       |
+| `get_hellogithub_picks` | `category`、`limit`                                                          |
+| `list_categories`       | 当前 GitHub Lists 分类和数量                                                 |
+| `get_category_repos`    | `category`、`limit`                                                          |
+| `list_starred_repos`    | README 归档分页，`limit`、`cursor`                                           |
+
+收录结果分别报告 `starred_on_github` 与 `staged_in_radar`。GitHub 拒绝点 Star 时，真实仓库仍可能收录到 Radar，需要检查两个状态。服务没有取消收录或修改 GitHub Lists 的接口。
+
+网页搜索尝试 Brave、Tavily 与无密钥页面来源。无密钥来源受页面变更和访问挑战影响，并非保证可用；`freshness_applied` 表明日期过滤是否实际生效。GitHub 限流或不完整结果会在返回值中说明，不应解释成“没有项目”。
+
+## REST 接口
+
+除 CORS 预检外，所有接口都需要 Bearer 密钥，包括 `/health`。成功返回 `{ "ok": true, "data": ... }`，可能包含 `meta`；失败返回 `ok=false` 和错误上下文。
+
+| 方法 / 路径           | 主要参数或用途                                                             |
+| --------------------- | -------------------------------------------------------------------------- |
+| `GET /health`         | 数据状态、数量、向量模型及社区新鲜度                                       |
+| `GET /api/search`     | `q`、`scope`、`category`、`source`、`limit`、`explain`                     |
+| `GET /api/repository` | `repo`、`include_readme`、`refresh`                                        |
+| `GET /api/compare`    | `repos=owner/a,owner/b`、`refresh`                                         |
+| `GET /api/categories` | 用户分类                                                                   |
+| `GET /api/trending`   | `category`，返回快照榜单                                                   |
+| `GET /api/skills`     | `type=all` 或 `repos`、`limit`                                             |
+| `GET /api/live`       | `q`、`language`、`min_stars`、`sort`、`since`、`until`、`limit`、`persist` |
+| `GET /api/code`       | `q`、`repo`、`language`、`extension`、`path`、`limit`                      |
+| `GET /api/web`        | `q`、`domain`、`freshness`、`limit`                                        |
+| `POST /api/ingest`    | JSON：`repo`、可选 `reason`、字符串数组 `categories`                       |
+
+REST 与 MCP 的工具集合和可选参数不完全相同。例如 `min_score` 是 MCP 搜索参数，REST `/api/search` 没有暴露它。
+
+在已设置客户端环境变量的终端中检查状态：
+
+```sh
+python -c "import os,json,urllib.request; r=urllib.request.Request(os.environ['WORKER_URL'].rstrip('/')+'/health',headers={'Authorization':'Bearer '+os.environ['MCP_API_KEY']}); print(json.load(urllib.request.urlopen(r)))"
+```
+
+### 本地收割
+
+收割是写入行为。它获取候选并向配置的远端 R2 入库日志追加元数据，不点 GitHub Star，也不计算或上传向量。
+
+```sh
+node --env-file .env scripts/harvest_and_ingest.js --source breakout --days 14 --limit 10
+```
+
+`--source` 支持 `all`、`skills`、`breakout`。日志发布必须具备完整的 `R2_ACCOUNT_ID`、`R2_BUCKET`、`CLOUDFLARE_API_TOKEN`。空候选不会写空日志，抓取或追加失败退出非零。下一次成功 CI 构建会计算已确认收录的向量。
+
+## 测试与发布检查
+
+```sh
+pnpm lint
+pnpm test
+pnpm eval:retrieval
+pnpm exec wrangler deploy --dry-run --outdir dist
+```
+
+行为变更需补充结果测试。工具参数变化还需检查 schema snapshot；确实改变契约时，运行跨平台命令 `pnpm test:schema:update`，不要更新快照来掩盖意外变化。
+
+测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。检索评估使用合成标注及固定向量，只验证回归行为，不能作为真实模型质量或生产准确率声明。
+
+发布前在自己的目标环境完成：
+
+- 从空桶运行一次数据工作流，确认各阶段成功。
+- 设置 Worker secrets，部署后检查 `/health` 的文档状态和来源时间。
+- 用实际 MCP 客户端确认工具调用、搜索、详情和比较。
+- 在明确授权的测试仓库上验证收藏和备注，检查下次构建后的检索。
+- 确认桶名、地址、密钥及生成数据没有被提交。
+
+常规推送由 `ci.yaml` 检查代码，数据工作流执行自己的发布前检查。GitHub Release 或版本标签是单独的项目发布操作，`pnpm deploy` 只部署服务。
+
+## 排查问题
+
+| 现象                        | 检查与处理                                                                 |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `401 unauthorized`          | 检查 Bearer 请求头与 Worker 的 `MCP_API_KEY`                               |
+| `server_misconfigured`      | 本地检查 `.dev.vars`，线上检查 Worker secrets                              |
+| 没有收藏                    | 检查 `GH_TOKEN` 是否属于你的账号，公开 Stars 是否为空                      |
+| 分类构建失败                | 检查 GraphQL 权限、限流和错误日志，修复后重跑                              |
+| 新收藏暂时搜不到            | 区分 GitHub 直接收藏与服务收录，检查工作流与缓存时间                       |
+| `dataPlane` 出现 `missing`  | 检查首次构建和桶名；`status=ok` 不代表缺失对象已初始化                     |
+| `degraded`                  | 有陈旧副本或读取失败，检查各文档状态、R2 与对象内容                        |
+| 向量 manifest / 长度错误    | 重跑数据构建，用 `node scripts/verify_vector_pair.js` 检查产物，不混用代次 |
+| 社区榜单陈旧                | 查看每个来源的更新时间和错误；上游失败时保留旧快照                         |
+| 收录成功但 GitHub 没点 Star | 检查 `starred_on_github`、令牌写权限与限流                                 |
+| 资产或日志损坏              | 保留原始对象，修复失败记录或从完整备份恢复；构建停止覆盖持久状态           |
+
+R2 是运行数据的持久存储，代码仓库不能恢复个人备注和发现历史。项目没有自动备份与整桶事务回滚；需要恢复能力时，独立备份数据集及 `state/` 原始日志。

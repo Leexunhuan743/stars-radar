@@ -1,0 +1,52 @@
+{
+  "name": "stars-radar",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.5.2",
+  "description": "Personal open-source research assistant and MCP server for GitHub stars and community discoveries",
+  "author": "",
+  "license": "Apache-2.0",
+  "keywords": [],
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "dev:stars": "node --env-file .env scripts/index.js",
+    "build:stars": "node scripts/index.js",
+    "build:assets": "node scripts/asset_store.js",
+    "dev:mcp": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "lint": "eslint",
+    "lint:fix": "eslint --fix",
+    "test": "node --test test/*.test.mjs",
+    "eval:retrieval": "node scripts/evaluate_retrieval.js",
+    "test:schema": "node --test test/tool-schemas.test.mjs",
+    "test:schema:update": "node scripts/update-tool-schemas.js",
+    "postinstall": "simple-git-hooks",
+    "dev:seed": "node scripts/seed-local-r2.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "agents": "^0.17.3",
+    "fs-extra": "^11.3.6",
+    "ofetch": "^1.5.1",
+    "undici": "^8.10.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^9.1.0",
+    "eslint": "^10.7.0",
+    "eslint-plugin-format": "^2.0.1",
+    "lint-staged": "^17.0.8",
+    "simple-git-hooks": "^2.13.1",
+    "wrangler": "^4.110.0"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "pnpm lint-staged"
+  },
+  "lint-staged": {
+    "*": "eslint --fix"
+  }
+}

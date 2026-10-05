@@ -1,0 +1,431 @@
+{
+  "search_github_stars": {
+    "name": "search_github_stars",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "explain": {
+          "default": false,
+          "type": "boolean"
+        },
+        "category": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "starred",
+            "curated",
+            "archive",
+            "community",
+            "ranking",
+            "trending",
+            "hellogithub",
+            "breakout",
+            "skill",
+            "skill_repo"
+          ]
+        },
+        "scope": {
+          "default": "all",
+          "type": "string",
+          "enum": [
+            "all",
+            "starred",
+            "rankings"
+          ]
+        },
+        "limit": {
+          "default": 5,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "min_score": {
+          "default": 0.25,
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "query",
+        "explain",
+        "scope",
+        "limit",
+        "min_score"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "get_repo_readme": {
+    "name": "get_repo_readme",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string"
+        },
+        "include_readme": {
+          "default": true,
+          "type": "boolean"
+        },
+        "refresh": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "repo",
+        "include_readme",
+        "refresh"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "compare_repositories": {
+    "name": "compare_repositories",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "repos": {
+          "minItems": 2,
+          "maxItems": 5,
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "refresh": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "repos",
+        "refresh"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "get_trending_repos": {
+    "name": "get_trending_repos",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "default": "overall_daily",
+          "type": "string",
+          "enum": [
+            "overall_daily",
+            "overall_weekly",
+            "rust_weekly",
+            "python_weekly",
+            "typescript_weekly",
+            "go_weekly",
+            "cpp_weekly",
+            "csharp_weekly",
+            "breakout_weekly"
+          ]
+        },
+        "limit": {
+          "default": 10,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        }
+      },
+      "required": [
+        "category",
+        "limit"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "search_github_live": {
+    "name": "search_github_live",
+    "readOnly": false,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "min_stars": {
+          "default": 15,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sort": {
+          "default": "stars",
+          "type": "string",
+          "enum": [
+            "stars",
+            "updated",
+            "forks"
+          ]
+        },
+        "order": {
+          "default": "desc",
+          "type": "string",
+          "enum": [
+            "desc",
+            "asc"
+          ]
+        },
+        "since": {
+          "type": "string"
+        },
+        "until": {
+          "type": "string"
+        },
+        "limit": {
+          "default": 10,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "persist": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "query",
+        "min_stars",
+        "sort",
+        "order",
+        "limit",
+        "persist"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "search_github_code": {
+    "name": "search_github_code",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "extension": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "limit": {
+          "default": 5,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 15
+        }
+      },
+      "required": [
+        "query",
+        "limit"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "search_web_tech": {
+    "name": "search_web_tech",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "freshness": {
+          "default": "all",
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "year",
+            "all"
+          ]
+        },
+        "limit": {
+          "default": 5,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        }
+      },
+      "required": [
+        "query",
+        "freshness",
+        "limit"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "star_and_ingest_repo": {
+    "name": "star_and_ingest_repo",
+    "readOnly": false,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "categories": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "repo",
+        "categories"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "get_top_skills": {
+    "name": "get_top_skills",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "default": "all",
+          "type": "string",
+          "enum": [
+            "all",
+            "skills",
+            "repos",
+            "rising",
+            "trending"
+          ]
+        },
+        "limit": {
+          "default": 20,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "type",
+        "limit"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "get_hellogithub_picks": {
+    "name": "get_hellogithub_picks",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "limit": {
+          "default": 10,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        }
+      },
+      "required": [
+        "limit"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "list_categories": {
+    "name": "list_categories",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  "get_category_repos": {
+    "name": "get_category_repos",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "limit": {
+          "default": 25,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "required": [
+        "category",
+        "limit"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "list_starred_repos": {
+    "name": "list_starred_repos",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "default": 20,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "limit"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "get_radar_status": {
+    "name": "get_radar_status",
+    "readOnly": true,
+    "schema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  }
+}

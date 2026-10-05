@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "stars-radar",
+  "main": "src/index.js",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "compatibility_date": "2025-04-08",
+  "r2_buckets": [
+    {
+      "binding": "R2",
+      "bucket_name": "github-stars"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

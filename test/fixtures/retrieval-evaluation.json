@@ -1,0 +1,273 @@
+{
+  "catalog": {
+    "repos": {
+      "Acme/SongBox": {
+        "repo": "Acme/SongBox",
+        "name": "SongBox",
+        "description": "Rust terminal music player",
+        "topics": [
+          "music",
+          "tui"
+        ],
+        "categories": [
+          "media"
+        ],
+        "reason": "日常听音乐"
+      },
+      "Acme/Notebook": {
+        "repo": "Acme/Notebook",
+        "name": "Notebook",
+        "description": "offline markdown notes",
+        "topics": [
+          "notes"
+        ],
+        "categories": [
+          "knowledge"
+        ],
+        "reason": "离线研究资料"
+      },
+      "Acme/AntigravityProxy": {
+        "repo": "Acme/AntigravityProxy",
+        "name": "AntigravityProxy",
+        "description": "Antigravity reverse proxy",
+        "categories": [
+          "network"
+        ]
+      },
+      "Acme/GenericAgent": {
+        "repo": "Acme/GenericAgent",
+        "name": "GenericAgent",
+        "description": "LLM agent coding assistant",
+        "categories": [
+          "agents"
+        ]
+      },
+      "Acme/Mcp-Server": {
+        "repo": "Acme/Mcp-Server",
+        "name": "Mcp-Server",
+        "description": "agent server"
+      },
+      "Acme/Mcp_Server": {
+        "repo": "Acme/Mcp_Server",
+        "name": "Mcp_Server",
+        "description": "agent server"
+      }
+    }
+  },
+  "harvested": [
+    {
+      "repo": "Lab/DeepseekClient",
+      "description": "DeepSeek desktop client",
+      "categories": [
+        "research"
+      ],
+      "reason": "quantum research workflow",
+      "ingested_at": "2026-10-03T00:00:00Z"
+    }
+  ],
+  "rankings": {
+    "trending": {
+      "overall_daily": [
+        {
+          "repo": "Community/SongPlayer",
+          "description": "music player",
+          "stars": 200
+        },
+        {
+          "repo": "Community/Notebook",
+          "description": "markdown notes",
+          "stars": 100
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "exact-name",
+      "query": "acme/songbox",
+      "relevant": [
+        "Acme/SongBox"
+      ],
+      "first": "Acme/SongBox",
+      "min_recall": 1
+    },
+    {
+      "id": "chinese-note",
+      "query": "离线研究",
+      "relevant": [
+        "Acme/Notebook",
+        "Legacy/Forgotten"
+      ],
+      "first": "Acme/Notebook",
+      "min_recall": 1
+    },
+    {
+      "id": "chinese-intent",
+      "query": "音频播放器",
+      "relevant": [
+        "Acme/SongBox",
+        "Community/SongPlayer"
+      ],
+      "first": "Acme/SongBox",
+      "min_recall": 1
+    },
+    {
+      "id": "named-subject",
+      "query": "antigravity",
+      "relevant": [
+        "Acme/AntigravityProxy"
+      ],
+      "forbidden": [
+        "Acme/GenericAgent",
+        "Lab/DeepseekClient"
+      ],
+      "first": "Acme/AntigravityProxy",
+      "min_recall": 1
+    },
+    {
+      "id": "journal-reason",
+      "query": "quantum",
+      "relevant": [
+        "Lab/DeepseekClient"
+      ],
+      "first": "Lab/DeepseekClient",
+      "min_recall": 1
+    },
+    {
+      "id": "private-scope",
+      "query": "music player",
+      "options": {
+        "scope": "starred"
+      },
+      "relevant": [
+        "Acme/SongBox"
+      ],
+      "forbidden": [
+        "Community/SongPlayer"
+      ],
+      "min_recall": 1
+    },
+    {
+      "id": "community-source",
+      "query": "music player",
+      "options": {
+        "source": "trending"
+      },
+      "relevant": [
+        "Community/SongPlayer"
+      ],
+      "forbidden": [
+        "Acme/SongBox"
+      ],
+      "min_recall": 1
+    },
+    {
+      "id": "category-filter",
+      "query": "markdown notes",
+      "options": {
+        "category": "knowledge"
+      },
+      "relevant": [
+        "Acme/Notebook",
+        "Legacy/Forgotten"
+      ],
+      "forbidden": [
+        "Community/Notebook"
+      ],
+      "min_recall": 1
+    },
+    {
+      "id": "honest-empty",
+      "query": "unobtainiumfoobar",
+      "relevant": [],
+      "max_results": 0
+    },
+    {
+      "id": "vector-private-scope",
+      "query": "music player",
+      "options": {
+        "scope": "starred"
+      },
+      "vectors": [
+        "Acme/SongBox",
+        "Lab/DeepseekClient"
+      ],
+      "relevant": [
+        "Acme/SongBox"
+      ],
+      "forbidden": [
+        "Lab/DeepseekClient"
+      ],
+      "min_recall": 1
+    },
+    {
+      "id": "archive-identity",
+      "query": "legacy/forgotten",
+      "relevant": [
+        "Legacy/Forgotten"
+      ],
+      "first": "Legacy/Forgotten",
+      "min_recall": 1
+    },
+    {
+      "id": "named-vector-gate",
+      "query": "antigravity",
+      "vectors": [
+        "Acme/AntigravityProxy",
+        "Acme/GenericAgent",
+        "Lab/DeepseekClient"
+      ],
+      "relevant": [
+        "Acme/AntigravityProxy"
+      ],
+      "forbidden": [
+        "Acme/GenericAgent",
+        "Lab/DeepseekClient"
+      ],
+      "min_recall": 1
+    },
+    {
+      "id": "natural-chinese-intent",
+      "query": "推荐一个播放器",
+      "relevant": [
+        "Acme/SongBox",
+        "Community/SongPlayer"
+      ],
+      "first": "Acme/SongBox",
+      "min_recall": 1
+    },
+    {
+      "id": "exact-repository-identity",
+      "query": "acme/mcp-server",
+      "relevant": [
+        "Acme/Mcp-Server"
+      ],
+      "forbidden": [
+        "Acme/Mcp_Server"
+      ],
+      "first": "Acme/Mcp-Server",
+      "min_recall": 1
+    }
+  ],
+  "assetIndex": {
+    "repos": {
+      "legacy/forgotten": {
+        "repo": "Legacy/Forgotten",
+        "description": "retired markdown notes manager",
+        "reason": "曾用于离线研究",
+        "topics": [
+          "markdown"
+        ],
+        "categories": [
+          "knowledge"
+        ],
+        "tier": "community"
+      }
+    },
+    "intent_inverted": {
+      "markdown": [
+        "Legacy/Forgotten"
+      ]
+    }
+  }
+}
