@@ -89,7 +89,6 @@ test('generated Stars Radar archive metadata never masquerades as upstream READM
   assert.deepEqual(splitReadmeSections(archived).map(section => section.heading), ['Actual README'])
 })
 
-
 test('README vector chunks stay bounded and sample the full document instead of only the opening sections', () => {
   const markdown = Array.from({ length: 12 }, (_, index) => (
     `## Section ${index}\n${'feature detail '.repeat(12)} marker-${index}`
