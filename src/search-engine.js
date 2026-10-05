@@ -30,7 +30,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
   const vectorScores = new Map()
   const vectorEvidence = new Map()
   if (scope === 'starred' || scope === 'all') {
-    const { values: matrix, records } = vectors
+    const { values: matrix, records, norms } = vectors
 
     if (matrix && records) {
       const qVector = queryVector
@@ -49,15 +49,18 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
               continue
 
             let dot = 0
-            let normV = 0
+            let squared = 0
             const offset = i * DIMS
+            const cachedNorm = norms?.[i]
             for (let j = 0; j < DIMS; j++) {
               const v = matrix[offset + j]
               dot += qVector[j] * v
-              normV += v * v
+              if (cachedNorm === undefined)
+                squared += v * v
             }
 
-            const cos = normV > 0 ? dot / (normQ * Math.sqrt(normV)) : 0
+            const normV = cachedNorm === undefined ? Math.sqrt(squared) : cachedNorm
+            const cos = normV > 0 ? dot / (normQ * normV) : 0
             if (cos <= 0.2)
               continue
 
