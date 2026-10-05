@@ -43,6 +43,7 @@ import { retryUntilAcceptable } from './retry.js'
 import { searchDocuments } from './search-engine.js'
 import { DEFAULT_INGEST_CATEGORIES, INPUT_LIMITS, TOOL_DEFINITIONS } from './tool-schemas.js'
 import { resolveToolset, ToolsetConfigError, toolsetStatus } from './toolsets.js'
+import { VERSION } from './version.js'
 
 const SILICONFLOW_URL = 'https://api.siliconflow.cn/v1/embeddings'
 
@@ -293,7 +294,7 @@ async function handleRequest(req, env, ctx) {
         // read": both used to answer 200 ok with an empty body of data.
         status: dataPlane.degraded ? 'degraded' : 'ok',
         name: 'Stars Radar',
-        version: '1.0.0',
+        version: VERSION,
         vectorModel: EMBEDDING_MODEL,
         vectorInputProfile: vectors.inputProfile || null,
         vectorDimensions: DIMS,
@@ -542,7 +543,7 @@ async function handleRequest(req, env, ctx) {
 
     // NOTE: instructions must live in the SECOND argument (ServerOptions), not serverInfo.
     const server = new McpServer(
-      { name: 'Stars Radar MCP', version: '1.0.0' },
+      { name: 'Stars Radar MCP', version: VERSION },
       { instructions: instructionLines.join('\n') },
     )
     const registerTool = (name, config, handler) => {
@@ -955,7 +956,7 @@ async function handleRequest(req, env, ctx) {
               type: 'text',
               text: JSON.stringify({
                 workspace: 'Stars Radar',
-                version: '1.0.0',
+                version: VERSION,
                 total_starred: Object.keys(catalog.repos || {}).length,
                 vector_db_capacity: vectorRecords.length,
                 repo_vector_count: vectorRecords.filter(record => record.kind === 'repo').length,
