@@ -185,7 +185,7 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。`MCP_API_KEY` 与 `MCP_WRITE_API_KEY` 都是必填：读 key 只能读取和检索，写 key 可读且允许 `capture_github_discovery` 与 `star_and_ingest_repo`。REST 写接口使用相同规则，读 key 调用时返回 `403 write_forbidden`。昂贵的向量/GitHub/Web 路径与写路径分别经过平台 Rate Limiting binding；默认预算分别为 60/分钟与 20/分钟，超限返回 `429 rate_limited`。Cloudflare Rate Limiting 是按 location 的保护性、最终一致计数，不应作为精确用量或计费系统；配置了 binding 但 binding 调用异常时服务 fail closed，返回 `503 rate_limiter_unavailable`，避免静默失去成本保护。
 
-`MCP_TOOLSET` 只控制 MCP server 注册哪些工具，不改变 REST 路由：`all` 是兼容默认值，暴露全部 15 个工具；`research` 保留 13 个只读研究工具并隐藏 `capture_github_discovery` / `star_and_ingest_repo`；`core` 只保留 7 个个人库检索、README/比较、分类/列表和状态工具。非法值会返回 MCP 配置错误，不会回退到 `all`。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
+`MCP_TOOLSET` 只控制 MCP server 注册哪些工具，不改变 REST 路由：默认 `research` 自动包含所有声明为只读的 MCP 工具并隐藏写工具；`core` 只保留 7 个个人库检索、README/比较、分类/列表和状态工具；只有显式设置 `all` 才暴露全部 15 个工具。非法值会返回 MCP 配置错误。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
 
 <!-- prettier-ignore -->
 | 工具                    | 用途 / 常用参数                                                              |
@@ -282,7 +282,7 @@ pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 
 | 现象                        | 检查与处理                                                                 |
 | --------------------------- | -------------------------------------------------------------------------- |
 | `401 unauthorized`          | 检查 Bearer 请求头与 Worker 的读取 / 写入密钥                                 |
-| `403 write_forbidden`       | 已启用 `MCP_WRITE_API_KEY`；capture / star / ingest 必须使用写密钥           |
+| `403 write_forbidden`       | capture / star / ingest 使用了读取密钥；必须改用 `MCP_WRITE_API_KEY`         |
 | `429 rate_limited`          | 当前 Cloudflare location 的该认证 key 已用完对应保护预算；稍后重试             |
 | `503 rate_limiter_unavailable` | 已配置限流 binding 但平台调用异常；检查 Wrangler binding/Cloudflare 状态     |
 | `server_misconfigured`      | 本地检查 `.dev.vars`，线上检查 Worker secrets                              |
