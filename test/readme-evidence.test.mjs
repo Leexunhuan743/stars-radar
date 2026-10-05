@@ -48,7 +48,7 @@ test('the strongest literal README section is returned with verifiable matching 
 
 test('semantic similarity alone never fabricates a README snippet', () => {
   const markdown = '# Features\nSupports WebDAV synchronization and S3-compatible storage.'
-  assert.deepEqual(findReadmeEvidence(markdown, 'cloud sync', {}), [])
+  assert.deepEqual(findReadmeEvidence(markdown, 'remote replication', {}), [])
 })
 
 test('README snippets stay bounded even when the matching section is very long', () => {
