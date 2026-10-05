@@ -177,7 +177,7 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 检索结合向量相似度、关键词、通用意图词表与具体主体匹配。明确的仓库名或技术主体约束候选；个人收藏有排序加权，综合结果也保留社区候选。`scope` 选择收藏 / 社区范围，`category` 选择用户分类，`source` 选择来源。
 
-`explain=true` 同时暴露两类 README 证据。第一类是 `semantic_evidence.readme_chunk`：它来自 v3 chunk 向量本身，包含命中的 heading、chunk 文本、snippet 与 cosine similarity，可解释“为何一个功能即使不在 GitHub description 里也被召回”。第二类是 `readme_evidence`：对前 5 个结果额外读取 R2 已缓存 README，只在存在真实词面命中时返回最多两个短片段。两类证据都不会访问 GitHub；Stars Radar 自己生成的分类/推荐理由头会先被剥离，避免 curator 元数据伪装成上游 README。`min_score` 是排序门槛，不是准确率。
+`explain=true` 同时暴露两类 README 证据。第一类是 `semantic_evidence.readme_chunk`：它来自 v3 chunk 向量本身，返回命中的 heading、短 snippet 与 cosine similarity，可解释“为何一个功能即使不在 GitHub description 里也被召回”，同时避免把完整 chunk 重复塞进响应。第二类是 `readme_evidence`：对前 5 个结果额外读取 R2 已缓存 README，只在存在真实词面命中时返回最多两个短片段。两类证据都不会访问 GitHub；Stars Radar 自己生成的分类/推荐理由头会先被剥离，避免 curator 元数据伪装成上游 README。`min_score` 是排序门槛，不是准确率。
 
 详情和比较区分 `evidence.source`、`snapshot_at`、`fetched_at`。`refresh=true` 请求 GitHub 当前元数据并保留个人备注；未知字段为 `null`，不能推断为“没有许可证”或“已经停止维护”。README 最多返回 50,000 个字符。上游文字与代码片段是来源内容，应结合原始链接核实。
 
