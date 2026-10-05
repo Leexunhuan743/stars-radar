@@ -385,6 +385,8 @@ test('README chunks are separate records and do not force the repo metadata vect
   assert.match(records[1].readme_sha256, /^[0-9a-f]{64}$/)
   assert.match(records[1].content_sha256, /^[0-9a-f]{64}$/)
   assert.equal(records[1].ordinal, 0)
+  assert.equal(records[1].chunk_ordinal, 0)
+  assert.deepEqual(records[1].heading_path, ['Features'])
   assert.match(records[1].text, /S3-compatible storage/)
 
   const stable = await buildRepositoryVectors(inputs)
@@ -429,7 +431,7 @@ test('repositoryVectorRows always emits one metadata record plus bounded README 
 
   const rows = repositoryVectorRows({ repo: 'acme/one', description: 'metadata' })
   assert.equal(rows[0].record.kind, 'repo')
-  assert.ok(rows.length <= 7, 'one repo vector plus at most six README chunks')
+  assert.ok(rows.length <= 13, 'one repo vector plus at most twelve README chunks')
   assert.equal(new Set(rows.map(row => row.record.id)).size, rows.length)
 })
 
