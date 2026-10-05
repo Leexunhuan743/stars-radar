@@ -59,7 +59,6 @@ jobs:
           test -n "${R2_BUCKET}" || { echo "::error::R2_BUCKET is required"; exit 1; }
           test -n "${AWS_ACCESS_KEY_ID}" || { echo "::error::R2_ACCESS_KEY_ID is required"; exit 1; }
           test -n "${AWS_SECRET_ACCESS_KEY}" || { echo "::error::R2_SECRET_ACCESS_KEY is required"; exit 1; }
-          test -n "${RETRIEVAL_BENCHMARK_B64}" || { echo "::error::RETRIEVAL_BENCHMARK_B64 is required for Retrieval Quality Closure"; exit 1; }
 
       - name: Validate active production generation
         run: node scripts/validate_remote_generation.js --active
@@ -118,6 +117,10 @@ jobs:
           pnpm eval:retrieval:gate -- \
             --fixture data/retrieval-benchmark.derived.json \
             --output retrieval-regression-derived-report.json
+
+      - name: Require private human-labeled closure benchmark
+        run: |
+          test -n "${RETRIEVAL_BENCHMARK_B64}" || { echo "::error::RETRIEVAL_BENCHMARK_B64 is required for Retrieval Quality Closure"; exit 1; }
 
       - name: Materialize private human-labeled benchmark
         run: |
