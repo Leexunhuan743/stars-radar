@@ -60,10 +60,13 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
   const name = repositoryName(repo)
   const starred = findRecord(catalog.repos || {}, name)
   const asset = findRecord(assetIndex.repos || {}, name)
-  const ingest = harvested.find(item => item.repo.toLowerCase() === name.toLowerCase())
+  const rawIngest = harvested.find(item => item.repo.toLowerCase() === name.toLowerCase())
+  // Ingest never owns summary: historical rows may contain a GitHub description copied into that
+  // field by older code. Keep only fields the user actually supplied as trusted ingest data.
+  const ingest = rawIngest ? { ...rawIngest, summary: null } : null
   let record = starred || ingest || asset
   if (starred && ingest)
-    record = { ...starred, reason: ingest.reason || starred.reason, summary: ingest.summary || starred.summary }
+    record = { ...starred, reason: ingest.reason || starred.reason }
   let source = starred ? 'catalog' : ingest ? 'ingest_journal' : 'asset_index'
   let snapshotAt = starred ? catalog.generatedAt : ingest ? ingest.ingested_at : assetIndex.generatedAt
   let fetchedAt = record?.metadata_fetched_at || null
