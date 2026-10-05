@@ -84,3 +84,16 @@ test('documented named anchors and full repository names retain their subject ro
   assert.deepEqual(analyzeQuery('antigravity', intents).specificSubjects, ['antigravity'])
   assert.deepEqual(analyzeQuery('acme/mcp-server', intents).specificSubjects, ['acme/mcp-server'])
 })
+
+
+test('hard subjects distinguish explicit identities from ordinary feature language', () => {
+  const named = analyzeQuery('antigravity terminal', INTENTS)
+  assert.deepEqual(named.hardSubjects, ['antigravity'])
+
+  const repo = analyzeQuery('acme/mcp-server', INTENTS)
+  assert.deepEqual(repo.hardSubjects, ['acme/mcp-server'])
+
+  const feature = analyzeQuery('webdav sync', INTENTS)
+  assert.deepEqual(feature.specificSubjects.sort(), ['sync', 'webdav'])
+  assert.deepEqual(feature.hardSubjects, [], 'ordinary features may be evidenced semantically from README embeddings')
+})
