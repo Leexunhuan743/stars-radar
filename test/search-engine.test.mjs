@@ -204,7 +204,6 @@ test('semantic-only ingested matches keep curated source without inventing liter
   assert.deepEqual(result.explanation.matched_tokens, [])
 })
 
-
 test('explicit community searches are not truncated by mixed-view diversity policy', () => {
   const trending = Array.from({ length: 5 }, (_, index) => ({
     repo: `community/tool-${index + 1}`,
@@ -221,7 +220,6 @@ test('explicit community searches are not truncated by mixed-view diversity poli
   assert.equal(byScope.length, 5, 'scope=rankings explicitly asks for a community result set')
   assert.equal(mixed.length, 2, 'the default mixed view keeps its discovery diversity cap')
 })
-
 
 test('a strong semantic vector can recover an ordinary feature absent from short metadata', () => {
   const values = new Float32Array(DIMS)
