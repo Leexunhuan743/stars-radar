@@ -130,6 +130,7 @@ fixtures test channel behavior; they do not measure real BGE-M3 or production pr
 - **Output**: Repositories badged with `⭐ Starred`, `⚡ Community Ingested`, or `🌐 Global Discovery`, plus `community_sources` when several independent community feeds observed the same repository.
 
 ### `capture_github_discovery`
+
 - **Description**: Explicitly records one user-selected live discovery for later cross-query promotion.
 - **Mutability**: write.
 - **Inputs**:
@@ -169,7 +170,6 @@ fixtures test channel behavior; they do not measure real BGE-M3 or production pr
   - `reason` (string, optional): Curator reason note.
   - `categories` (array of strings, optional, default: `[]`): Personal tags supplied by the user; no category is assigned automatically.
 - **Output**: Confirmation with `starred_on_github: true`, `staged_in_radar: true`, and `badge: "⚡ Community Ingested"`.
-
 
 ## Retrieval quality evaluation
 
