@@ -76,7 +76,7 @@ export function prepareDataGeneration({
     }
   }
 
-  const readmes = { schema: 1, repos: {} }
+  const readmes = { schema: 1, generation: pointer, repos: {} }
   const starsRoot = path.resolve(root, LOCAL_STARS_DIR)
   if (fs.existsSync(starsRoot)) {
     for (const owner of fs.readdirSync(starsRoot, { withFileTypes: true })) {
