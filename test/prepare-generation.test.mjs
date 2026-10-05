@@ -58,3 +58,45 @@ test('a partial vector generation is refused', () => {
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+
+test('README manifest preserves stale and unavailable evidence state without blocking a generation', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-generation-'))
+  try {
+    seedRequired(root)
+    fs.mkdirSync(path.join(root, 'stars', 'acme'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'stars', 'acme', 'cached.md'), '# Cached README')
+    fs.writeFileSync(path.join(root, '.readme-sync-status.json'), JSON.stringify({
+      repos: {
+        'acme/cached': {
+          repo: 'acme/cached',
+          status: 'stale',
+          preserved_from_generation: '20261004T080000Z-ceaa138fd814-1',
+        },
+        'acme/unavailable': {
+          repo: 'acme/unavailable',
+          status: 'unavailable',
+        },
+      },
+    }))
+
+    const { stage, manifest } = prepareDataGeneration({
+      root,
+      generationId: ID,
+      commit: SHA,
+      publishedAt: '2026-10-05T08:00:00.000Z',
+    })
+    const readmes = JSON.parse(fs.readFileSync(path.join(stage, 'readmes.json'), 'utf8'))
+    assert.equal(readmes.schema, 2)
+    assert.equal(readmes.repos['acme/cached'].status, 'stale')
+    assert.equal(readmes.repos['acme/cached'].preserved_from_generation, '20261004T080000Z-ceaa138fd814-1')
+    assert.match(readmes.repos['acme/cached'].sha256, /^[0-9a-f]{64}$/)
+    assert.equal(readmes.repos['acme/unavailable'].status, 'unavailable')
+    assert.equal(readmes.repos['acme/unavailable'].sha256, null)
+    assert.equal(manifest.readme_blobs, 1)
+    assert.equal(manifest.readme_unavailable, 1)
+  }
+  finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
