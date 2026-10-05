@@ -53,7 +53,10 @@ function bucket(objects = {}, { listFails = false } = {}) {
 }
 
 const CATALOG = JSON.stringify({ repos: { 'a/b': { repo: 'a/b' } }, categories: [], totalRepos: 1 })
-const repoRecord = repo => ({ id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' })
+
+function repoRecord(repo) {
+  return { id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' }
+}
 const JOURNAL_ENTRY = JSON.stringify({ repo: 'acme/tool', by: 'worker', ingested_at: '2026-02-26T00:00:00.000Z' })
 
 test.beforeEach(() => {
