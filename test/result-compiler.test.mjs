@@ -21,8 +21,23 @@ function compile({
   minScore = 0,
   limit = 20,
   applyCommunityDiversityCap = false,
+  explain = false,
+  catalogSnapshotAt = null,
+  rankingSnapshotAt = null,
 } = {}) {
-  return compileResults({ rrfMap, repos, communityMap, targetCategory, targetSource, minScore, limit, applyCommunityDiversityCap })
+  return compileResults({
+    rrfMap,
+    repos,
+    communityMap,
+    targetCategory,
+    targetSource,
+    minScore,
+    limit,
+    applyCommunityDiversityCap,
+    explain,
+    catalogSnapshotAt,
+    rankingSnapshotAt,
+  })
 }
 
 // A vector-channel entry: source 'starred' is the default fuseRankings stamps on every
@@ -140,30 +155,38 @@ test('a repository with no record anywhere falls back to the github url and empt
     reason: undefined,
     summary: undefined,
     description: undefined,
-    relevance_score: 0,
-    vector_similarity: undefined,
+    ranking: { score: 0 },
   })
 })
 
-test('the results carry exactly the eleven documented fields', () => {
+test('results expose ranking separately from factual fields and explain adds provenance', () => {
   const results = compile({
     rrfMap: new Map([['a/b', vectorEntry({ vScore: 0.87654 })]]),
+    repos: {
+      'a/b': {
+        repo: 'a/b',
+        stars: 7,
+        description: 'external description',
+        reason: 'my research note',
+        categories: ['research'],
+      },
+    },
+    explain: true,
+    catalogSnapshotAt: '2026-10-05T00:00:00Z',
   })
 
-  assert.deepEqual(Object.keys(results[0]).sort(), [
-    'categories',
-    'description',
-    'reason',
-    'relevance_score',
-    'repo',
-    'source',
-    'source_badge',
-    'stars',
-    'summary',
-    'url',
-    'vector_similarity',
-  ])
-  assert.equal(results[0].vector_similarity, 0.8765)
+  const result = results[0]
+  assert.equal(result.ranking.score, 0.877)
+  assert.equal(result.ranking.vector_similarity, 0.8765)
+  assert.ok(result.provenance.description)
+  assert.ok(result.provenance.reason)
+  assert.ok(result.provenance.categories)
+  assert.deepEqual(
+    result.evidence.map(item => item.kind).sort(),
+    ['personal_note', 'repository_metadata', 'user_taxonomy'],
+  )
+  assert.equal(result.evidence.find(item => item.kind === 'personal_note').trust, 'user_trusted')
+  assert.equal(result.evidence.find(item => item.kind === 'repository_metadata').trust, 'external_untrusted')
 })
 
 test('targetCategory matches the record categories case-insensitively', () => {
@@ -316,12 +339,12 @@ test('a relevance exactly at min_score is kept, anything below is dropped', () =
 
   const kept = compile({ rrfMap, minScore: 0.5 })
   assert.deepEqual(kept.map(r => r.repo), ['a/edge'])
-  assert.equal(kept[0].relevance_score, 0.5)
+  assert.equal(kept[0].ranking.score, 0.5)
 
   assert.deepEqual(compile({ rrfMap, minScore: 0.5001 }), [])
 })
 
-test('relevance_score is the primary sort key, ahead of the RRF fusion score', () => {
+test('ranking score is the primary sort key, ahead of the RRF fusion score', () => {
   const results = compile({
     rrfMap: new Map([
       ['a/faint', vectorEntry({ rrf: 9, kwWeight: 4 })],
@@ -330,7 +353,7 @@ test('relevance_score is the primary sort key, ahead of the RRF fusion score', (
   })
 
   assert.deepEqual(results.map(r => r.repo), ['a/strong', 'a/faint'])
-  assert.ok(results[0].relevance_score > results[1].relevance_score)
+  assert.ok(results[0].ranking.score > results[1].ranking.score)
 })
 
 test('equal relevance is broken by the larger RRF score', () => {
