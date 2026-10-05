@@ -80,6 +80,9 @@ export function compileResults({
         kind: 'readme_chunk',
         repo: info.repo || repoName,
         chunkId: stats.vectorEvidence.readme_chunk.chunk_id,
+        readmeSha256: stats.vectorEvidence.readme_chunk.readme_sha256,
+        contentSha256: stats.vectorEvidence.readme_chunk.content_sha256,
+        ordinal: stats.vectorEvidence.readme_chunk.ordinal,
         heading: stats.vectorEvidence.readme_chunk.heading,
         snippet: stats.vectorEvidence.readme_chunk.snippet,
         similarity: stats.vectorEvidence.readme_chunk.similarity,
@@ -122,6 +125,9 @@ export function compileResults({
                       readme_chunk: stats.vectorEvidence.readme_chunk
                         ? {
                             chunk_id: stats.vectorEvidence.readme_chunk.chunk_id,
+                            readme_sha256: stats.vectorEvidence.readme_chunk.readme_sha256,
+                            content_sha256: stats.vectorEvidence.readme_chunk.content_sha256,
+                            ordinal: stats.vectorEvidence.readme_chunk.ordinal,
                             heading: stats.vectorEvidence.readme_chunk.heading,
                             snippet: stats.vectorEvidence.readme_chunk.snippet,
                             similarity: Number(stats.vectorEvidence.readme_chunk.similarity.toFixed(4)),
