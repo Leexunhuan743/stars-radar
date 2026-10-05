@@ -188,6 +188,7 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
   if (include_readme) {
     result.readme_available = body !== null
     result.readme_source = readmeSource
+    result.readme_trust = body !== null ? EVIDENCE_TRUST.EXTERNAL_UNTRUSTED : null
     result.truncated = body !== null && body.length > 50000
     result.readme = body === null ? null : `<untrusted_content source="github_readme">\n${body.trim().slice(0, 50000)}\n</untrusted_content>`
   }
