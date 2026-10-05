@@ -59,6 +59,38 @@ test('ingested metadata outranks the accumulated community copy', async () => {
   assert.equal(result.provenance.reason, note.id)
 })
 
+test('merged personal fields retain independent source provenance', async () => {
+  const documents = {
+    ...DOCUMENTS,
+    catalog: {
+      ...DOCUMENTS.catalog,
+      repos: {
+        ...DOCUMENTS.catalog.repos,
+        'Acme/Tool': {
+          ...DOCUMENTS.catalog.repos['Acme/Tool'],
+          reason: 'catalog reason',
+          summary: 'catalog summary',
+        },
+      },
+    },
+    harvested: [{
+      repo: 'Acme/Tool',
+      reason: 'ingest reason',
+      ingested_at: '2026-10-03T00:00:00Z',
+    }],
+  }
+  const result = await getRepositoryDetails(NO_README, documents, 'acme/tool', { ...NO_FETCH, include_readme: false })
+  assert.equal(result.reason, 'ingest reason')
+  assert.equal(result.summary, 'catalog summary')
+
+  const reasonEvidence = result.evidence.find(item => item.id === result.provenance.reason)
+  const summaryEvidence = result.evidence.find(item => item.id === result.provenance.summary)
+  assert.equal(reasonEvidence.source.kind, 'ingest_journal')
+  assert.equal(reasonEvidence.source.snapshot_at, '2026-10-03T00:00:00Z')
+  assert.equal(summaryEvidence.source.kind, 'catalog')
+  assert.equal(summaryEvidence.source.snapshot_at, '2026-10-01T00:00:00Z')
+})
+
 test('missing compact metadata is fetched from GitHub with provenance but without README calls', async () => {
   const calls = []
   const result = await getRepositoryDetails(NO_README, DOCUMENTS, 'fresh/project', {
@@ -92,13 +124,56 @@ test('archived README is wrapped and capped while metadata comes from the catalo
   assert.ok(result.readme.endsWith('</untrusted_content>'))
 })
 
-test('a missing archive falls back to GitHub README and 404 is explicitly unavailable', async () => {
+test('a missing archive falls back to GitHub README without reusing archived content identity', async () => {
   const env = { R2: { get: async () => null } }
-  const success = await getRepositoryDetails(env, DOCUMENTS, 'acme/tool', { fetcher: async () => new Response('# Live README') })
+  const success = await getRepositoryDetails(env, DOCUMENTS, 'acme/tool', {
+    now: () => new Date('2026-10-03T00:00:00Z'),
+    fetcher: async () => new Response('# Live README'),
+  })
   assert.equal(success.readme_source, 'github')
+  const evidence = success.evidence.find(item => item.kind === 'readme_document')
+  assert.match(evidence.content.readme_sha256, /^[0-9a-f]{64}$/)
+  assert.notEqual(evidence.content.readme_sha256, README_SHA)
+  assert.equal(evidence.content.object_key, null)
+  assert.equal(evidence.generation, null)
+  assert.equal(evidence.source.fetched_at, '2026-10-03T00:00:00.000Z')
+
   const absent = await getRepositoryDetails(env, DOCUMENTS, 'acme/tool', { fetcher: async () => new Response(null, { status: 404 }) })
   assert.equal(absent.readme_available, false)
   assert.equal(absent.readme, null)
+})
+
+test('generation README absence is returned as absence without loading or refetching fake content', async () => {
+  const documents = {
+    ...DOCUMENTS,
+    readmes: {
+      generation: {
+        id: '20261005T080000Z-ceaa138fd814-777',
+        commit: 'ceaa138fd814f70ff2a194cf050a789e7e77cf95',
+        published_at: '2026-10-05T08:00:00.000Z',
+      },
+      repos: {
+        'acme/tool': {
+          repo: 'Acme/Tool',
+          sha256: null,
+          object_key: null,
+          status: 'absent',
+          source_pushed_at: '2026-10-01T00:00:00Z',
+        },
+      },
+    },
+  }
+  const env = { R2: { get: async () => assert.fail('absent README must not read a blob') } }
+  const result = await getRepositoryDetails(env, documents, 'acme/tool', {
+    fetcher: async () => assert.fail('unchanged absent README must not be refetched'),
+  })
+  assert.equal(result.readme_available, false)
+  assert.equal(result.readme_source, 'generation')
+  assert.equal(result.readme_status, 'absent')
+  const evidence = result.evidence.find(item => item.kind === 'readme_document')
+  assert.equal(evidence.content.readme_sha256, null)
+  assert.equal(evidence.content.object_key, null)
+  assert.equal(evidence.content.status, 'absent')
 })
 
 test('upstream failure is not returned as empty metadata or an absent README', async () => {
