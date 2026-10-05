@@ -85,7 +85,6 @@ test('documented named anchors and full repository names retain their subject ro
   assert.deepEqual(analyzeQuery('acme/mcp-server', intents).specificSubjects, ['acme/mcp-server'])
 })
 
-
 test('hard subjects distinguish explicit identities from ordinary feature language', () => {
   const named = analyzeQuery('antigravity terminal', INTENTS)
   assert.deepEqual(named.hardSubjects, ['antigravity'])
