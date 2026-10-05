@@ -17,6 +17,7 @@ import {
   optionalString,
   PayloadTooLargeError,
   readJsonBody,
+  stringParam,
 } from '../src/http.js'
 
 test('an absent or empty integer parameter falls back to the documented default', () => {
@@ -136,4 +137,16 @@ test('an ingest body that is legitimately sized passes', async () => {
   const body = JSON.stringify({ repo: 'owner/name', reason: 'x'.repeat(500), categories: ['cli-tools'] })
   const parsed = await readJsonBody(new Request('https://x/api/ingest', { method: 'POST', body }), { limit: 8 * 1024 })
   assert.equal(parsed.repo, 'owner/name')
+})
+
+
+test('bounded string parameters reject oversized search inputs before upstream work', () => {
+  const options = { parameter: 'q', fallback: '', minLength: 0, maxLength: 8 }
+  assert.equal(stringParam(null, options), '')
+  assert.equal(stringParam('  terminal  ', options), 'terminal')
+  assert.throws(() => stringParam('123456789', options), BadRequestError)
+  assert.throws(
+    () => stringParam('', { parameter: 'query', minLength: 1, maxLength: 8 }),
+    BadRequestError,
+  )
 })
