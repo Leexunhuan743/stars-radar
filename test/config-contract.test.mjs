@@ -256,5 +256,15 @@ test('data publication is generation-atomic and state compaction is exact-key on
     'append-only state must never be compacted by recursive prefix deletion',
   )
   assert.match(build, /s3api delete-object[^\n]*--key "\$\{key\}"/, 'compaction must delete exact planned keys')
+  assert.match(
+    build,
+    /head-object[^\n]*embeddings-manifest\.json/,
+    'an active generation without vectors must be detected as a valid empty semantic corpus',
+  )
+  assert.match(
+    build,
+    /cmp -s "\.generation-stage\/\$\{rel\}" "\$\{verify_dir\}\/\$\{rel\}"/,
+    'generation verification must compare the exact uploaded bytes, not only ContentLength',
+  )
   assert.match(build, /Retain the three newest data generations/)
 })
