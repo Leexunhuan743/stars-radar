@@ -97,7 +97,7 @@ Fine-grained token 对 Stars 读取要求 Starring read，点 Star 要求 Starri
 3. 为 Stars 和已确认收录构建向量，再抓取社区快照。
 4. 合并持久资产状态，生成热集索引和入库日志快照。
 5. 运行 lint、测试、向量一致性检查及 Worker 打包检查。
-6. 上传派生数据，检查上传对象长度，并检查入库日志没有减少。
+6. 上传派生 generation，逐对象从 R2 回读并与本地 staged artifact 做 byte-for-byte 比较；全部一致后才切换 active pointer。
 7. 设置部署令牌时部署 Worker，否则仅更新 R2 数据。
 
 数据发布使用共享并发组串行执行。Checkout 使用只读工作流令牌，个人 `GH_TOKEN` 只用于业务 API 调用。Worker secrets 由部署者独立设置，不从 Actions 自动注入。
