@@ -1,9 +1,12 @@
-// A concrete subject must be evidenced by metadata; high semantic similarity alone cannot prove it.
+// Repository identities and explicitly named product anchors must be evidenced literally.
+// Ordinary feature subjects may use a conservative semantic fallback because README evidence is
+// embedded even when GitHub's short metadata does not mention the feature.
 
 import { matchesSubjectGate } from './scoring.js'
 
 export const RRF_K = 60
 export const STARRED_BOOST = 1.5
+export const SEMANTIC_SUBJECT_FALLBACK = 0.65
 
 /**
  * @returns Map<repoName, {rrf, vScore, kwWeight, source, badge, tier?, extraItem?}>
@@ -13,6 +16,7 @@ export function fuseRankings({
   keywordScores,
   repos,
   specificSubjects,
+  hardSubjects = specificSubjects,
 }) {
   const rrfMap = new Map()
 
@@ -23,7 +27,12 @@ export function fuseRankings({
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
-    if (!matchesSubjectGate(pool, specificSubjects))
+    // Hard identities (owner/repo and named anchors such as antigravity/deepseek/pi) may never be
+    // inferred from vector proximity alone. For ordinary feature subjects, a high semantic score
+    // may be evidence from the README text that was embedded offline but is not present in metadata.
+    if (!matchesSubjectGate(pool, hardSubjects))
+      return
+    if (!matchesSubjectGate(pool, specificSubjects) && vScore < SEMANTIC_SUBJECT_FALLBACK)
       return
 
     const cur = rrfMap.get(repo) || {
