@@ -23,12 +23,14 @@ export const EMBEDDINGS_INDEX_KEY = 'embeddings-index.json'
 export const EMBEDDINGS_FINGERPRINTS_KEY = 'embeddings-fingerprints.json'
 export const EMBEDDINGS_MANIFEST_KEY = 'embeddings-manifest.json'
 export const EMBEDDINGS_BIN_KEY = 'embeddings.bin'
+export const READMES_MANIFEST_KEY = 'readmes.json'
+export const README_BLOB_PREFIX = 'readmes/'
 
 /** Worker-owned append-only prefixes; builds fold them and later compact only exact snapshotted keys. */
 export const INGEST_JOURNAL_PREFIX = 'state/ingest-journal/'
 export const PROBE_CAPTURE_PREFIX = 'state/probe-captures/'
 
-/** The README corpus: one `.md` object per repository, keyed by `owner/repo`. */
+/** Content-addressed README blobs plus the local corpus staging suffix. */
 export const README_SUFFIX = '.md'
 
 /** Local staging directories the pipeline reads and writes before syncing to the bucket. */
@@ -63,4 +65,10 @@ export function bucketKeyForLocalReadme(relativePath) {
   if (!relativePath.startsWith(prefix))
     throw new Error(`${relativePath} is not under ${prefix}`)
   return relativePath.slice(prefix.length)
+}
+
+export function readmeBlobKey(sha256) {
+  if (!/^[0-9a-f]{64}$/.test(sha256 || ''))
+    throw new Error('README blob keys require a lowercase SHA-256 digest.')
+  return `${README_BLOB_PREFIX}${sha256}${README_SUFFIX}`
 }
