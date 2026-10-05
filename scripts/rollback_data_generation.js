@@ -4,6 +4,13 @@ import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { parseGenerationPointer, validateGenerationId } from '../src/data-generation.js'
+import {
+  ASSET_INDEX_KEY,
+  ASSET_STATE_KEY,
+  CATALOG_KEY,
+  RANKINGS_KEY,
+  READMES_MANIFEST_KEY,
+} from '../src/object-keys.js'
 
 function required(name) {
   const value = process.env[name]
@@ -76,7 +83,7 @@ export function validateRollbackTarget(generationId) {
   if (manifest?.generation?.id !== id)
     throw new Error(`generation-manifest.json belongs to ${manifest?.generation?.id || 'unknown'}, not ${id}.`)
 
-  for (const name of ['catalog.json', 'rankings.json', 'asset-index.json', 'asset-state.json', 'readmes.json']) {
+  for (const name of [CATALOG_KEY, RANKINGS_KEY, ASSET_INDEX_KEY, ASSET_STATE_KEY, READMES_MANIFEST_KEY]) {
     if (!manifest.files?.[name])
       throw new Error(`Generation ${id} is missing ${name} in its manifest.`)
     s3(
