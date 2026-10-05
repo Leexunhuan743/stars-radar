@@ -120,7 +120,11 @@ export function collectCommunityHits({ rankings, query, keywordScores }) {
       const score = scoreText(text, query)
       if (score > 0) {
         if (existing) {
-          existing.weight = Math.max(existing.weight, score)
+          if (score > existing.weight) {
+            existing.weight = score
+            existing.scoringSource = layer.source
+            existing.evidence = query.explain ? explainTextMatch(text, query) : undefined
+          }
           existing.sourceChannels = [...new Set([...(existing.sourceChannels || [existing.source]), layer.source])]
           continue
         }
@@ -128,6 +132,7 @@ export function collectCommunityHits({ rankings, query, keywordScores }) {
           weight: score,
           source: layer.source,
           sourceChannels: [layer.source],
+          scoringSource: layer.source,
           badge: layer.badge(entry),
           item: layer.project(entry),
           evidence: query.explain ? explainTextMatch(text, query) : undefined,
