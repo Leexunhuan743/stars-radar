@@ -84,6 +84,8 @@ function reciprocalRank(returned, relevant) {
 }
 
 function ndcgAtK(returned, relevant, k) {
+  if (relevant.size === 0)
+    return null
   let dcg = 0
   for (let i = 0; i < Math.min(k, returned.length); i++) {
     if (relevant.has(returned[i]))
@@ -93,7 +95,7 @@ function ndcgAtK(returned, relevant, k) {
   let idcg = 0
   for (let i = 0; i < ideal; i++)
     idcg += 1 / Math.log2(i + 2)
-  return idcg === 0 ? 1 : dcg / idcg
+  return dcg / idcg
 }
 
 export function evaluateOne(returned, relevantList, forbiddenList, k) {
@@ -102,26 +104,37 @@ export function evaluateOne(returned, relevantList, forbiddenList, k) {
   const top = returned.slice(0, k).map(v => v.toLowerCase())
   const hits = top.filter(repo => relevant.has(repo)).length
   const forbiddenHits = top.filter(repo => forbidden.has(repo))
+  const hasRelevant = relevant.size > 0
   return {
-    recall_at_k: relevant.size === 0 ? (top.length === 0 ? 1 : 0) : hits / relevant.size,
-    precision_at_k: top.length === 0 ? (relevant.size === 0 ? 1 : 0) : hits / top.length,
-    reciprocal_rank: relevant.size === 0 ? 1 : reciprocalRank(top, relevant),
-    ndcg_at_k: ndcgAtK(top, relevant, k),
+    has_relevant: hasRelevant,
+    recall_at_k: hasRelevant ? hits / relevant.size : null,
+    // Standard Precision@K counts unfilled positions as non-relevant. This prevents a search that
+    // returns one correct result for K=10 from reporting precision=1.0.
+    precision_at_k: hasRelevant ? hits / k : null,
+    reciprocal_rank: hasRelevant ? reciprocalRank(top, relevant) : null,
+    ndcg_at_k: hasRelevant ? ndcgAtK(top, relevant, k) : null,
+    empty_success: hasRelevant ? null : top.length === 0,
     forbidden_hits: forbiddenHits,
   }
 }
 
 function average(values) {
-  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+  const numeric = values.filter(Number.isFinite)
+  return numeric.length ? numeric.reduce((sum, value) => sum + value, 0) / numeric.length : null
 }
 
 export function summarize(rows) {
+  const positive = rows.filter(row => row.metrics.has_relevant)
+  const negative = rows.filter(row => !row.metrics.has_relevant)
   return {
     cases: rows.length,
-    mean_recall_at_k: average(rows.map(row => row.metrics.recall_at_k)),
-    mean_precision_at_k: average(rows.map(row => row.metrics.precision_at_k)),
-    mrr: average(rows.map(row => row.metrics.reciprocal_rank)),
-    mean_ndcg_at_k: average(rows.map(row => row.metrics.ndcg_at_k)),
+    positive_cases: positive.length,
+    negative_cases: negative.length,
+    mean_recall_at_k: average(positive.map(row => row.metrics.recall_at_k)),
+    mean_precision_at_k: average(positive.map(row => row.metrics.precision_at_k)),
+    mrr: average(positive.map(row => row.metrics.reciprocal_rank)),
+    mean_ndcg_at_k: average(positive.map(row => row.metrics.ndcg_at_k)),
+    negative_empty_success_rate: average(negative.map(row => row.metrics.empty_success ? 1 : 0)),
     p50_latency_ms: percentile(rows.map(row => row.latency_ms), 0.50),
     p95_latency_ms: percentile(rows.map(row => row.latency_ms), 0.95),
     forbidden_hits: rows.reduce((sum, row) => sum + row.metrics.forbidden_hits.length, 0),
