@@ -19,6 +19,7 @@ import {
   README_SUFFIX,
   readmeBlobKey,
   READMES_MANIFEST_KEY,
+  README_SYNC_STATUS_FILE,
 } from '../src/object-keys.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -77,7 +78,13 @@ export function prepareDataGeneration({
     }
   }
 
-  const readmes = { schema: 1, generation: pointer, repos: {} }
+  const syncStatusPath = path.resolve(root, README_SYNC_STATUS_FILE)
+  const syncStatus = fs.existsSync(syncStatusPath)
+    ? fs.readJsonSync(syncStatusPath)
+    : { repos: {} }
+  const syncRepos = syncStatus?.repos && typeof syncStatus.repos === 'object' ? syncStatus.repos : {}
+
+  const readmes = { schema: 2, generation: pointer, repos: {} }
   const starsRoot = path.resolve(root, LOCAL_STARS_DIR)
   if (fs.existsSync(starsRoot)) {
     for (const owner of fs.readdirSync(starsRoot, { withFileTypes: true })) {
@@ -94,8 +101,32 @@ export function prepareDataGeneration({
         const blobTarget = path.resolve(readmeStage, path.basename(blobKey))
         if (!fs.existsSync(blobTarget))
           fs.writeFileSync(blobTarget, bytes)
-        readmes.repos[repo.toLowerCase()] = { repo, sha256, object_key: blobKey }
+        const sync = syncRepos[repo.toLowerCase()] || {}
+        readmes.repos[repo.toLowerCase()] = {
+          repo,
+          sha256,
+          object_key: blobKey,
+          status: sync.status || 'fresh',
+          fetched_at: sync.fetched_at || null,
+          preserved_from_generation: sync.preserved_from_generation || null,
+        }
       }
+    }
+  }
+
+  // A newly starred repository may have valid metadata even when GitHub temporarily refuses its
+  // README. Preserve that fact in the manifest instead of dropping the repository from the evidence
+  // plane or blocking the whole immutable generation.
+  for (const [key, sync] of Object.entries(syncRepos)) {
+    if (readmes.repos[key] || sync?.status !== 'unavailable')
+      continue
+    readmes.repos[key] = {
+      repo: sync.repo || key,
+      sha256: null,
+      object_key: null,
+      status: 'unavailable',
+      fetched_at: null,
+      preserved_from_generation: null,
     }
   }
 
@@ -111,7 +142,8 @@ export function prepareDataGeneration({
     schema: 1,
     generation: pointer,
     files,
-    readme_blobs: Object.keys(readmes.repos).length,
+    readme_blobs: Object.values(readmes.repos).filter(ref => ref.sha256).length,
+    readme_unavailable: Object.values(readmes.repos).filter(ref => ref.status === 'unavailable').length,
   }
   fs.writeJsonSync(path.resolve(stage, GENERATION_MANIFEST_KEY), manifest, { spaces: 2 })
   fs.writeJsonSync(path.resolve(root, 'active-generation.json'), pointer, { spaces: 2 })
