@@ -236,19 +236,38 @@ test('a valid Brave response with a nullable web section is an empty search', as
   assert.equal(result.count, 0)
 })
 
-test('web provider errors and a keyless challenge page produce a visible failure', async () => {
-  await assert.rejects(searchWebTech({ BRAVE_SEARCH_API_KEY: 'fixture', TAVILY_API_KEY: 'fixture' }, { query: 'mcp docs' }, {
-    fetcher: async url => url.includes('duckduckgo') ? new Response('<html>Please complete the challenge</html>') : Response.json({ error: 'quota' }),
-  }), error => error.code === 'search_unavailable' && error.status === 503)
+test('web search requires an explicitly configured provider and performs no keyless request', async () => {
+  let calls = 0
+  await assert.rejects(
+    searchWebTech({}, { query: 'mcp docs' }, {
+      fetcher: async () => {
+        calls++
+        throw new Error('no outbound call expected')
+      },
+    }),
+    error => error.code === 'search_unavailable' && error.status === 503,
+  )
+  assert.equal(calls, 0)
 })
 
-test('keyless HTML distinguishes explicit no-results from an unparseable response', async () => {
-  const result = await searchWebTech({}, { query: 'mcp docs', freshness: 'week' }, {
-    fetcher: async () => new Response('<div class="no-results">No results found</div>'),
-  })
-  assert.equal(result.count, 0)
-  assert.equal(result.provider, 'duckduckgo_html (keyless)')
-  assert.equal(result.freshness_applied, false)
+test('exhausted configured web providers fail visibly without a hidden HTML fallback', async () => {
+  const urls = []
+  await assert.rejects(
+    searchWebTech(
+      { BRAVE_SEARCH_API_KEY: 'fixture', TAVILY_API_KEY: 'fixture' },
+      { query: 'mcp docs' },
+      {
+        fetcher: async (url) => {
+          urls.push(String(url))
+          return new Response(null, { status: 503 })
+        },
+      },
+    ),
+    error => error.code === 'search_unavailable' && error.status === 503,
+  )
+  assert.equal(urls.length, 2)
+  assert.ok(urls.some(url => url.includes('brave.com')))
+  assert.ok(urls.some(url => url.includes('tavily.com')))
 })
 
 test('Tavily receives the requested time window instead of silently dropping freshness', async () => {
