@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -35,6 +36,7 @@ const realFetch = globalThis.fetch
 
 let downloadVectorsFromR2
 let buildRepositoryVectors
+let embeddingText
 
 before(async () => {
   // Env must be set before the import: the module resolves its data root and its endpoints
@@ -45,7 +47,7 @@ before(async () => {
   process.env.CLOUDFLARE_API_TOKEN = 'token'
   process.env.SILICONFLOW_URL = 'https://embeddings.test/v1/embeddings'
   process.env.SILICONFLOW_KEY = 'test-key'
-  ;({ downloadVectorsFromR2, buildRepositoryVectors } = await import('../scripts/vector_pipeline.js'))
+  ;({ downloadVectorsFromR2, buildRepositoryVectors, embeddingText } = await import('../scripts/vector_pipeline.js'))
 })
 
 after(() => {
@@ -363,4 +365,25 @@ test('README evidence participates in embeddings and invalidates only the reposi
   const stable = await buildRepositoryVectors(inputs)
   assert.equal(stable.updatedCount, 0)
   assert.equal(bucket.embeddings.length, 2, 'unchanged README evidence reuses the vector fingerprint')
+})
+
+
+test('legacy metadata-only fingerprints are invalidated by the v2 input profile', async () => {
+  clearLocalPair()
+  const bucket = stubR2({})
+  const inputs = [{ repo: 'acme/profile', description: 'terminal utility' }]
+  await buildRepositoryVectors(inputs)
+  assert.equal(bucket.embeddings.length, 1)
+
+  const fingerprintsPath = path.join(TMP, 'embeddings-fingerprints.json')
+  const fingerprints = JSON.parse(fs.readFileSync(fingerprintsPath, 'utf-8'))
+  const key = 'acme/profile'
+  fingerprints[key].text_hash = createHash('sha256')
+    .update(`BAAI/bge-m3\0${embeddingText(inputs[0])}`)
+    .digest('hex')
+  fs.writeFileSync(fingerprintsPath, JSON.stringify(fingerprints))
+
+  const rebuilt = await buildRepositoryVectors(inputs)
+  assert.equal(rebuilt.updatedCount, 1, 'a v1 fingerprint cannot be relabeled as README-aware v2')
+  assert.equal(bucket.embeddings.length, 2)
 })
