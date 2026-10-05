@@ -53,6 +53,27 @@ export function vectorCountFromBytes(bytes) {
   return Math.floor(bytes / BYTES_PER_VECTOR)
 }
 
+export function vectorNorms(values, recordCount) {
+  if (!(values instanceof Float32Array))
+    throw new Error('vectorNorms needs a Float32Array matrix.')
+  if (!Number.isInteger(recordCount) || recordCount < 0)
+    throw new Error(`vectorNorms needs a non-negative record count, got ${JSON.stringify(recordCount)}.`)
+  if (values.length !== recordCount * DIMS)
+    throw new Error(`Vector matrix has ${values.length} components for ${recordCount} records.`)
+
+  const norms = new Float32Array(recordCount)
+  for (let i = 0; i < recordCount; i++) {
+    let squared = 0
+    const offset = i * DIMS
+    for (let j = 0; j < DIMS; j++) {
+      const value = values[offset + j]
+      squared += value * value
+    }
+    norms[i] = Math.sqrt(squared)
+  }
+  return norms
+}
+
 /**
  * Describes why a pair cannot be used, or `null` when it can.
  *
