@@ -1,4 +1,4 @@
-import { containsTerm, scoreText } from './scoring.js'
+import { containsTerm, evaluateFacetCoverage, scoreText } from './scoring.js'
 // Level-2 (archive / curated / community) candidate resolution for hybrid search.
 //
 // Extracted from src/index.js so the key-space contract between the producer
@@ -52,6 +52,7 @@ export function resolveArchiveCandidates({
   specificSubjects,
   targetCategory,
   queryTokens = [],
+  facets = [],
 }) {
   // getAssetIndex always returns an object (an unreadable asset-index yields empty
   // maps), so these are read directly rather than guarded.
@@ -116,6 +117,7 @@ export function resolveArchiveCandidates({
     resolved.push({
       repo: displayName,
       weight,
+      facetCoverage: evaluateFacetCoverage(pool, facets),
       source: presentation.source,
       badge: presentation.badge,
       tier,
