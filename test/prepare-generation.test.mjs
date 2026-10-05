@@ -59,7 +59,6 @@ test('a partial vector generation is refused', () => {
   }
 })
 
-
 test('README manifest preserves stale and unavailable evidence state without blocking a generation', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-generation-'))
   try {
