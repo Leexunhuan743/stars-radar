@@ -18,33 +18,29 @@ Complete reference for all 15 MCP tools provided by the `Stars Radar` MCP server
 - **Description**: Searches personal curated stars and ingested community repositories using 1024-dimensional `BAAI/bge-m3` vectors fused with an 18-domain public ontology via Reciprocal Rank Fusion (RRF, $k=60$).
 - **Inputs**:
   - `query` (string, required, max 512 characters): Natural language search terms, tech capabilities, or curator keywords.
-  - `explain` (boolean, default: `false`): Include actual matched terms, scoring channels, keyword weight and vector similarity. Vector matches may return `explanation.semantic_evidence` with separate repo similarity and the strongest README chunk heading/snippet/similarity. The top 5 hits also inspect cached R2 README text and may return `explanation.readme_evidence` with literal section snippets. No GitHub request is made for either channel, generated curator headers are excluded, and literal evidence is never fabricated.
+  - `explain` (boolean, default: `false`): Include `ranking` signals plus field-level `provenance` and factual `evidence[]`. README evidence may carry generation, README SHA-256, chunk/section identity, freshness and similarity; similarity remains a ranking signal rather than factual proof. Cached literal README matches become `readme_literal` evidence, generated curator headers are excluded, and no evidence is fabricated.
   - `category` (string, optional): Exact taxonomy filter against your GitHub Lists categories (e.g. `agent-plugins`, `media-players`). Case-insensitive. Call `list_categories` for all valid slugs. This is the **deployer's own** classification and nothing else: a community board's label is never one of these.
   - `source` (enum, optional): Filter by where a hit came from, independent of `category` — `starred`, `curated`, `archive`, `community`, `ranking`, `trending`, `hellogithub`, `breakout`, `skill`, `skill_repo`. The value matches each result's `source` field, so use it to look only at board discoveries (`source=trending`) or only at the archive long tail (`source=archive`).
   - `scope` (enum: `all` | `starred` | `rankings`, default: `all`): Search personal stars, community intelligence, or both.
   - `limit` (number, default: 5, max: 20): Result limit.
   - `min_score` (number, default: 0.25): Score cutoff threshold (0.0–1.0). See calibration guide below.
-- **Output**: Array of repository objects with `relevance_score`, `vector_similarity`, `source`, `source_badge` (`⭐ Starred` | `⚡ Community Ingested`), `reason`, `summary`, `categories`, and `stars`. `categories` lists the deployer's buckets (empty when the hit is not in any of them); `source` says which channel offered it.
+- **Output**: Array of repository objects with factual fields plus a nested `ranking` object. `ranking.score` is the cutoff/sort value; `explain=true` adds ranking channels, vector similarities, facet coverage, field `provenance`, and `evidence[]`. `categories` lists the deployer's buckets; `source` says which channel offered the candidate.
 
 ---
 
 ## Retrieval scores and evaluation
 
 Scores are ranking signals, not correctness probabilities. Vector scores use cosine similarity.
-Combined results add a keyword bonus capped at 0.35 and a final ceiling of 0.98; keyword-only scores
-use `min(1 - 1/(1 + weight/8), 0.95)`. Relevance is the primary sort key; RRF breaks ties,
-with a 1.5 starred boost. `min_score` defaults to 0.25 and changes the cutoff, not a guaranteed accuracy.
+Combined results add a keyword bonus capped at 0.35; multi-facet queries then apply bounded facet-coverage shaping, with a final ceiling of 0.99. Keyword-only scores start from `min(1 - 1/(1 + weight/8), 0.95)`. `ranking.score` is the primary sort key; RRF breaks ties with a 1.5 starred boost. `min_score` defaults to 0.25 and changes the cutoff, not a guaranteed accuracy.
 
 `category` selects personal classifications; `source` selects provenance. The 40% non-starred
 diversity cap applies only to the default mixed view (`scope=all` without a source filter); explicit
 `scope=rankings` or `source=...` requests can fill the requested limit. `explain=true` reports matching evidence. Hyphens, underscores and spaces share
 one lexical form, and short words use boundaries.
 
-Repository vectors use input profile `repo-metadata-readme-chunks-v3`. Each repository gets one metadata vector and up to six selected README section vectors. A README chunk can therefore directly recall a repository even when the feature is absent from short GitHub metadata. Under `explain=true`, `semantic_evidence.readme_chunk` identifies the semantic chunk that contributed the strongest vector evidence; cached literal README snippets remain a separate verification channel.
+Repository vectors use input profile `repo-metadata-readme-chunks-v3`. The semantic hot set covers current Stars plus explicitly curated ingests. Each included repository gets one metadata vector and an adaptive bounded README selection (base 6, up to 12), while the corpus also enforces a global record budget. README-only capabilities can directly recall a repository when their section is selected. Under `explain=true`, the strongest semantic chunk appears as `evidence[]` with `kind="readme_chunk"`; literal README matches use `kind="readme_literal"` as a separate verification channel.
 
-Run `pnpm eval:retrieval` for the synthetic labeled regression corpus. Its deterministic vector
-fixtures test channel behavior; they do not measure real BGE-M3 or production precision/recall. Use
-`pnpm eval:retrieval:real` with a private labeled fixture for real-corpus lexical-vs-hybrid metrics.
+Run `pnpm eval:retrieval` for deterministic synthetic regressions. The `Retrieval Quality` workflow separately restores the production retrieval plane, derives mandatory queries from the real Stars catalog, and enforces ranking plus evidence/provenance metrics. A deployer-supplied private human-labeled fixture can run as an additional gate.
 
 ### `get_repo_readme`
 
@@ -59,7 +55,7 @@ fixtures test channel behavior; they do not measure real BGE-M3 or production pr
 
 - **Inputs**: `repos`, an array of 2–5 distinct `owner/repo` names or GitHub repository URLs.
 - **Optional**: `refresh=true` obtains current GitHub metadata for all candidates, preserving personal notes.
-- **Output**: `repositories` with identical fields, `dimensions`, and a note explaining snapshot limitations. Each repository carries `evidence.source`, `evidence.fetched_at`, `evidence.snapshot_at`, and its URL. A snapshot timestamp is not an upstream fetch timestamp; unknown fetch times and facts are `null`.
+- **Output**: `repositories` with identical fields, `dimensions`, and a note explaining snapshot limitations. Each repository carries `provenance` (field → evidence ID) and `evidence[]` entries containing source, trust, generation and timing metadata. A snapshot timestamp is not an upstream fetch timestamp; unknown fetch times and facts are `null`.
 - Use this after candidate discovery. Compare license, language, maintenance dates, topics and personal reasons; read selected READMEs separately for technical claims. The comparison does not generate a quality score.
 
 ### `list_categories`
