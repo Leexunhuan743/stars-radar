@@ -6,7 +6,8 @@
       "type": "object",
       "properties": {
         "query": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 512
         },
         "explain": {
           "default": false,
@@ -156,7 +157,8 @@
       "type": "object",
       "properties": {
         "query": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 512
         },
         "language": {
           "type": "string"
@@ -236,7 +238,8 @@
       "type": "object",
       "properties": {
         "query": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 256
         },
         "repo": {
           "type": "string"
@@ -271,7 +274,8 @@
       "type": "object",
       "properties": {
         "query": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 512
         },
         "domain": {
           "type": "string"
