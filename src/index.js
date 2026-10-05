@@ -1054,8 +1054,11 @@ async function attachReadmeEvidence(env, results, query) {
           result.evidence.push(...hits.map(hit => buildReadmeEvidence({
             kind: 'readme_literal',
             repo: result.repo,
-            chunkId: `literal:${ref.sha256}:${hit.section_ordinal}`,
+            chunkId: `literal:${ref.sha256}:${hit.section_ordinal}:${hit.section_chunk_ordinal}`,
+            ordinal: hit.section_ordinal,
+            chunkOrdinal: hit.section_chunk_ordinal,
             heading: hit.heading,
+            headingPath: hit.heading_path,
             snippet: hit.snippet,
             keywordWeight: hit.keyword_weight,
             matchedTokens: hit.matched_tokens,
