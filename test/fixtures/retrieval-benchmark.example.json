@@ -4,15 +4,33 @@
     {
       "id": "example-webdav-storage",
       "query": "支持 WebDAV 和 S3 的自托管工具",
-      "relevant": ["owner/replace-with-a-real-repo"],
+      "relevant": [
+        "owner/replace-with-a-real-repo"
+      ],
       "forbidden": [],
-      "options": { "scope": "starred" }
+      "options": {
+        "scope": "starred"
+      }
     },
     {
       "id": "example-memory-query",
       "query": "我收藏过的离线 Markdown 笔记工具",
-      "relevant": ["owner/replace-with-a-real-repo"],
-      "options": { "scope": "starred" }
+      "relevant": [
+        "owner/replace-with-a-real-repo"
+      ],
+      "options": {
+        "scope": "starred"
+      }
     }
-  ]
+  ],
+  "thresholds": {
+    "hybrid_bge_m3": {
+      "min_mean_recall_at_k": 0.7,
+      "min_mrr": 0.6,
+      "min_mean_ndcg_at_k": 0.6,
+      "min_negative_empty_success_rate": 0.8,
+      "max_forbidden_hits": 0,
+      "max_p95_latency_ms": 5000
+    }
+  }
 }
