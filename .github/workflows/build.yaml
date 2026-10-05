@@ -51,7 +51,7 @@ jobs:
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           # The vector bin and its index must travel together: restoring only the
           # binary leaves the committed index in place and the pair disagrees.
-          for obj in embeddings.bin embeddings-index.json embeddings-fingerprints.json; do
+          for obj in embeddings.bin embeddings-index.json embeddings-fingerprints.json embeddings-manifest.json; do
             # Existence is decided by head-object's own answer. Matching text in a
             # failed transfer report also matched credential failures such as
             # InvalidAccessKeyId ("... does not exist ..."), which were then reported
@@ -63,7 +63,7 @@ jobs:
               aws s3 cp "s3://${R2_BUCKET}/${obj}" "${obj}" --endpoint-url "${endpoint}"
             elif grep -q "HeadObject" dl.err && grep -Eq "\(404\)|NoSuchKey" dl.err; then
               echo "${obj} does not exist yet in R2 (first run), continuing with clean index."
-              rm -f embeddings.bin embeddings-index.json embeddings-fingerprints.json dl.err
+              rm -f embeddings.bin embeddings-index.json embeddings-fingerprints.json embeddings-manifest.json dl.err
               break
             else
               echo "::error::Failed to check ${obj} in R2 due to a credential, permission, or network error:"
