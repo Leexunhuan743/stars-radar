@@ -21,8 +21,8 @@ Stars Radar 是一个自托管的开源项目研究助手。它把你的 GitHub 
 - **找回收藏**：按用途、关键词或自然语言搜索自己的 GitHub Stars，分类来自你在 GitHub 上创建的 Lists。
 - **发现项目**：浏览 GitHub Trending、近期增长的仓库、HelloGitHub 推荐和 Agent Skills 榜单，也可以直接搜索 GitHub。
 - **比较候选**：一次比较 2–5 个仓库的简介、许可证、语言、维护日期和个人备注；缺少的信息会保留为未知。
-- **README 章节级语义检索**：每个仓库保留 metadata vector，并为精选 README 章节建立独立 BGE-M3 chunk vectors；功能只写在 README 某一节时也能直接召回。
-- **查看依据**：读取仓库详情、README 和代码片段；`explain=true` 可同时查看语义命中的 README 章节与真实词面片段、数据来源和快照时间。
+- **README 章节级语义检索**：每个语义语料库仓库保留 metadata vector，并为精选 README 章节建立独立 BGE-M3 chunk vectors。长 README 按自适应预算选取高信息量且覆盖全篇的章节，因此被选入索引的 README-only 能力可直接参与召回，但不会宣称每一节都已向量化。
+- **查看依据**：`explain=true` 把 `ranking`（排序信号）、`provenance`（字段到证据 ID）和 `evidence[]`（事实依据）分开返回。README evidence 可定位到 generation、SHA-256、chunk/section 身份和新鲜度；第三方 README、描述、代码与网页片段均标为 `external_untrusted`，只能作为证据，不能当作指令。
 - **保存研究结果**：为仓库点 Star 并记录收藏理由。元数据先参与关键词检索，语义检索在下一次成功的数据更新后可用。
 
 检索排序用于筛选候选，不代表项目质量或结论的可信概率。社区榜单来自第三方，可能暂时不可用；请结合数据时间、README、许可证和代码做判断。
@@ -175,7 +175,7 @@ python scripts/search_stars_cli.py --help
 
 **搜索不到刚收藏的项目？**
 
-通过 Stars Radar 收藏的项目先进入入库日志，通常在一分钟内被其他服务实例的关键词检索读到。语义向量由下一次成功的 CI 构建生成。直接在 GitHub 点 Star 的项目，要等收藏同步完成才会进入本服务。
+通过 Stars Radar 收藏的项目先进入入库日志，通常在一分钟内被其他服务实例的关键词检索读到。语义向量由下一次成功的 CI 构建生成。语义热集只覆盖当前 Stars 与明确收录的 curated 项目；社区榜单和 archive 长尾仍可通过词法/资产索引参与候选生成，但并不承诺全部向量化。直接在 GitHub 点 Star 的项目，要等收藏同步完成才会进入本服务。
 
 **为什么分类和示例不一样？**
 
@@ -183,7 +183,7 @@ python scripts/search_stars_cli.py --help
 
 **数据会公开吗？**
 
-真实检索质量需要用部署者自己的查询和 relevance labels 评估；`pnpm eval:retrieval:gate` 可按私有 fixture 中的 Recall/MRR/NDCG/负查询/延迟阈值阻止回归。`Retrieval Quality` workflow 会在主分支更新后恢复当前 production generation，并在配置了 `RETRIEVAL_BENCHMARK_B64` secret 时执行真实 BGE-M3 gate；未配置时会明确标记为跳过，而不会把合成 fixture 当作生产质量证明。
+检索质量由两层门禁验证：`Retrieval Quality` workflow 会恢复当前 production retrieval plane，并从真实 Stars catalog 派生 exact-identity、个人备注与负查询，强制检查 Recall/MRR/NDCG、Evidence Coverage、Provenance Completeness 和延迟；若额外配置 `RETRIEVAL_BENCHMARK_B64`，还会运行部署者维护的人工 relevance labels 作为第二层 gate。合成 fixture 只用于回归测试，不充当生产质量证明。
 
 生成的数据保存在你的 R2 桶中，不提交到代码仓库；服务接口需要访问密钥。同步管线排除私有仓库。请保持桶为私有，并只把密钥交给受信任的客户端。这是单个账号的个人服务，所有使用同一密钥的客户端共享数据和操作权限。
 
