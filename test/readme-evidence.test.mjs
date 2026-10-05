@@ -3,6 +3,8 @@ import { test } from 'node:test'
 import {
   findReadmeEvidence,
   README_EVIDENCE_SNIPPET,
+  README_VECTOR_MAX_CHUNKS,
+  selectReadmeVectorChunks,
   splitReadmeSections,
 } from '../src/readme-evidence.js'
 
@@ -85,4 +87,17 @@ test('generated Stars Radar archive metadata never masquerades as upstream READM
 
   assert.deepEqual(findReadmeEvidence(archived, 'webdav', {}), [])
   assert.deepEqual(splitReadmeSections(archived).map(section => section.heading), ['Actual README'])
+})
+
+
+test('README vector chunks stay bounded and sample the full document instead of only the opening sections', () => {
+  const markdown = Array.from({ length: 12 }, (_, index) => (
+    `## Section ${index}\n${'feature detail '.repeat(12)} marker-${index}`
+  )).join('\n\n')
+
+  const chunks = selectReadmeVectorChunks(markdown)
+  assert.equal(chunks.length, README_VECTOR_MAX_CHUNKS)
+  assert.equal(chunks[0].heading, 'Section 0')
+  assert.equal(chunks.at(-1).heading, 'Section 11')
+  assert.ok(chunks.some(chunk => /marker-4|marker-5/.test(chunk.text)), 'middle README content should be represented')
 })
