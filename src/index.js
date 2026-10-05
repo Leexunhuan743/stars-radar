@@ -284,6 +284,7 @@ async function handleRequest(req, env, ctx) {
       const catalog = await getCatalog(env)
       const rankings = await getRankings(env)
       const assetIndex = await getAssetIndex(env)
+      const readmes = await getReadmeManifest(env)
       const vectors = await getVectors(env)
       const harvested = await getHarvested(env)
       const dataPlane = dataPlaneStatus()
@@ -301,6 +302,7 @@ async function handleRequest(req, env, ctx) {
         vectorCount: vectors.records?.length || 0,
         repoVectorCount: vectors.records?.filter(record => record.kind === 'repo').length || 0,
         readmeChunkVectorCount: vectors.records?.filter(record => record.kind === 'readme_chunk').length || 0,
+        readmeRefs: Object.keys(readmes.repos || {}).length,
         harvestedIngests: harvested.length,
         dataGeneration: generation.id
           ? { id: generation.id, publishedAt: generation.published_at, commit: generation.commit }
@@ -943,10 +945,11 @@ async function handleRequest(req, env, ctx) {
       { description: TOOL_DEFINITIONS.get_radar_status.description, inputSchema: TOOL_DEFINITIONS.get_radar_status.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_radar_status.readOnly } },
       async () => {
         try {
-          const [generation, catalog, rankings, vectors, harvested] = await Promise.all([
+          const [generation, catalog, rankings, readmes, vectors, harvested] = await Promise.all([
             getDataGeneration(env),
             getCatalog(env),
             getRankings(env),
+            getReadmeManifest(env),
             getVectors(env),
             getHarvested(env),
           ])
@@ -964,6 +967,7 @@ async function handleRequest(req, env, ctx) {
                 vector_db_capacity: vectorRecords.length,
                 repo_vector_count: vectorRecords.filter(record => record.kind === 'repo').length,
                 readme_chunk_vector_count: vectorRecords.filter(record => record.kind === 'readme_chunk').length,
+                readme_refs: Object.keys(readmes.repos || {}).length,
                 vector_dimensions: DIMS,
                 vector_model: EMBEDDING_MODEL,
                 vector_input_profile: vectors.inputProfile || null,
