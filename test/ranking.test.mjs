@@ -9,15 +9,16 @@ import assert from 'node:assert/strict'
 // showed that changing RRF_K or STARRED_BOOST altered 955 and 776 of 966 scenarios
 // while the whole suite stayed green.
 import { test } from 'node:test'
-import { fuseRankings, RRF_K, STARRED_BOOST } from '../src/ranking.js'
+import { fuseRankings, RRF_K, SEMANTIC_SUBJECT_FALLBACK, STARRED_BOOST } from '../src/ranking.js'
 
 test('the tuned constants are what the ranking assumes', () => {
   assert.equal(RRF_K, 60)
   assert.equal(STARRED_BOOST, 1.5)
+  assert.equal(SEMANTIC_SUBJECT_FALLBACK, 0.65)
 })
 
-function fuse({ vectorScores = new Map(), keywordScores = new Map(), repos = {}, specificSubjects = [] } = {}) {
-  return fuseRankings({ vectorScores, keywordScores, repos, specificSubjects })
+function fuse({ vectorScores = new Map(), keywordScores = new Map(), repos = {}, specificSubjects = [], hardSubjects } = {}) {
+  return fuseRankings({ vectorScores, keywordScores, repos, specificSubjects, ...(hardSubjects === undefined ? {} : { hardSubjects }) })
 }
 
 test('a single vector hit scores 1/61, the standard RRF contribution', () => {
@@ -155,4 +156,33 @@ test('missing record fields contribute nothing to the subject pool', () => {
       `a repo with missing metadata must not match the subject "${subject}"`,
     )
   }
+})
+
+
+test('ordinary feature subjects may be rescued by strong README semantics but weak similarity is rejected', () => {
+  const repos = { 'me/storage': { name: 'storage', description: 'self-hosted data service' } }
+
+  const strong = fuse({
+    vectorScores: new Map([['me/storage', 0.81]]),
+    repos,
+    specificSubjects: ['webdav'],
+    hardSubjects: [],
+  })
+  assert.ok(strong.has('me/storage'), 'README embedding can evidence a feature absent from short metadata')
+
+  const weak = fuse({
+    vectorScores: new Map([['me/storage', 0.40]]),
+    repos,
+    specificSubjects: ['webdav'],
+    hardSubjects: [],
+  })
+  assert.equal(weak.has('me/storage'), false, 'semantic fallback remains conservative')
+
+  const hard = fuse({
+    vectorScores: new Map([['me/storage', 0.99]]),
+    repos,
+    specificSubjects: ['antigravity'],
+    hardSubjects: ['antigravity'],
+  })
+  assert.equal(hard.has('me/storage'), false, 'named entities still require literal evidence')
 })
