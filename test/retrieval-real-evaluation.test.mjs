@@ -82,7 +82,6 @@ test('forbidden hits and latency percentiles remain visible in the summary', () 
   assert.equal(summary.mrr, 0.5)
 })
 
-
 test('Precision@K uses K as the denominator and negative success has its own aggregate', () => {
   const positive = evaluateOne(['a/relevant'], ['a/relevant'], [], 10)
   assert.equal(positive.precision_at_k, 0.1)
