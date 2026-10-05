@@ -214,7 +214,7 @@ test('nothing declares the embedding dimension again', () => {
 
   const build = workflows.find(workflow => workflow.name === 'build.yaml').text
   assert.match(build, /node scripts\/verify_vector_pair\.js/)
-  assert.ok(build.indexOf('verify_vector_pair.js') < build.indexOf('Upload to Cloudflare R2'))
+  assert.ok(build.indexOf('verify_vector_pair.js') < build.indexOf('Upload immutable data generation'))
 })
 
 test('embedding validation rejects zero, invalid dimensions and non-Float32 values', () => {
