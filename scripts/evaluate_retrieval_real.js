@@ -132,7 +132,8 @@ export function percentile(values, q) {
   if (!values.length)
     return 0
   const sorted = [...values].sort((a, b) => a - b)
-  return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * q))]
+  const rank = Math.max(1, Math.ceil(q * sorted.length))
+  return sorted[Math.min(sorted.length - 1, rank - 1)]
 }
 
 async function runMode(name, fixture, documents, { lexicalOnly, k }) {
