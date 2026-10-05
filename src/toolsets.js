@@ -1,6 +1,6 @@
 import { TOOL_DEFINITIONS } from './tool-schemas.js'
 
-export const DEFAULT_TOOLSET = 'all'
+export const DEFAULT_TOOLSET = 'research'
 
 const CORE_TOOLS = [
   'search_github_stars',
