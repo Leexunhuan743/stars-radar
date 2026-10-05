@@ -204,3 +204,24 @@ test('rate-limit bindings use independent namespaces and documented one-minute b
   assert.deepEqual(limits.get('EXPENSIVE_RATE_LIMITER').simple, { limit: 60, period: 60 })
   assert.deepEqual(limits.get('WRITE_RATE_LIMITER').simple, { limit: 20, period: 60 })
 })
+
+
+test('GitHub Actions dependencies are pinned to immutable commit SHAs', () => {
+  const workflowDir = path.join(ROOT, '.github', 'workflows')
+  const workflows = fs.readdirSync(workflowDir)
+    .filter(name => /\.ya?ml$/.test(name))
+    .map(name => ({ name, text: fs.readFileSync(path.join(workflowDir, name), 'utf-8') }))
+
+  for (const { name, text } of workflows) {
+    const uses = [...text.matchAll(/uses:\s*([^\s#]+)/g)].map(match => match[1])
+    for (const reference of uses) {
+      const at = reference.lastIndexOf('@')
+      assert.ok(at > 0, `${name}: malformed action reference ${reference}`)
+      assert.match(
+        reference.slice(at + 1),
+        /^[0-9a-f]{40}$/,
+        `${name}: ${reference} must be pinned to a full commit SHA`,
+      )
+    }
+  }
+})
