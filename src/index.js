@@ -397,6 +397,7 @@ async function handleRequest(req, env, ctx) {
       const language = optionalString(url.searchParams.get('language'), { parameter: 'language', maxLength: INPUT_LIMITS.language })
       const minStars = intParam(url.searchParams.get('min_stars'), { parameter: 'min_stars', fallback: 15, min: 0 })
       const sort = enumParam(url.searchParams.get('sort'), { parameter: 'sort', allowed: ['stars', 'updated', 'forks'], fallback: 'stars' })
+      const order = enumParam(url.searchParams.get('order'), { parameter: 'order', allowed: ['desc', 'asc'], fallback: 'desc' })
       const since = optionalString(url.searchParams.get('since'), { parameter: 'since', maxLength: INPUT_LIMITS.dateRange })
       const until = optionalString(url.searchParams.get('until'), { parameter: 'until', maxLength: INPUT_LIMITS.dateRange })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 10, min: 1, max: 30 })
@@ -410,6 +411,7 @@ async function handleRequest(req, env, ctx) {
           language,
           minStars,
           sort,
+          order,
           since,
           until,
           limit,
