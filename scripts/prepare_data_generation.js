@@ -17,8 +17,8 @@ import {
   LOCAL_STARS_DIR,
   RANKINGS_KEY,
   README_SUFFIX,
-  readmeBlobKey,
   README_SYNC_STATUS_FILE,
+  readmeBlobKey,
   READMES_MANIFEST_KEY,
 } from '../src/object-keys.js'
 
