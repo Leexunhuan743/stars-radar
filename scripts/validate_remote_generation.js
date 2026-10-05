@@ -117,9 +117,20 @@ export async function validateRemoteGeneration(generationId, { expectedPointer =
     files[name] = bytes
   }
 
+  const catalog = parseJson(files[CATALOG_KEY], CATALOG_KEY)
+  const assetIndex = parseJson(files[ASSET_INDEX_KEY], ASSET_INDEX_KEY)
+  const requiredSemanticRepos = new Set([
+    ...Object.keys(catalog.repos || {}).map(repo => repo.toLowerCase()),
+    ...(assetIndex.ingest_snapshot?.entries || [])
+      .map(entry => entry?.repo?.toLowerCase())
+      .filter(Boolean),
+  ])
+
   const vectorPresent = VECTOR_FILES.filter(name => files[name])
   if (vectorPresent.length !== 0 && vectorPresent.length !== VECTOR_FILES.length)
     throw new Error(`Generation ${id} has a partial vector set: ${vectorPresent.join(', ')}.`)
+  if (requiredSemanticRepos.size > 0 && vectorPresent.length === 0)
+    throw new Error(`Generation ${id} has ${requiredSemanticRepos.size} semantic repositories but no vector generation.`)
   if (vectorPresent.length === VECTOR_FILES.length) {
     const records = parseJson(files[EMBEDDINGS_INDEX_KEY], EMBEDDINGS_INDEX_KEY)
     validateVectorIndex(records)
@@ -129,6 +140,14 @@ export async function validateRemoteGeneration(generationId, { expectedPointer =
       files[EMBEDDINGS_INDEX_KEY],
       files[EMBEDDINGS_BIN_KEY],
     )
+    const indexedRepos = new Set(
+      records
+        .filter(record => record.kind === 'repo')
+        .map(record => record.repo.toLowerCase()),
+    )
+    const missing = [...requiredSemanticRepos].filter(repo => !indexedRepos.has(repo))
+    if (missing.length > 0)
+      throw new Error(`Generation ${id} vector corpus is missing semantic repositories: ${missing.join(', ')}.`)
   }
 
   const readmes = parseJson(files[READMES_MANIFEST_KEY], READMES_MANIFEST_KEY)
