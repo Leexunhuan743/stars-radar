@@ -95,6 +95,8 @@ Worker secrets 与 Actions secrets 是两套配置，需要分别设置。完整
 
 `wrangler.jsonc` 还配置了两个 Cloudflare Rate Limiting binding：昂贵检索默认 60 次/分钟，写操作默认 20 次/分钟，按认证 key 在当前 Cloudflare location 计数。它们用于保护 embedding、GitHub/Web 探针和写接口，不是精确计费器；如果你的 Cloudflare 账号已经使用示例中的 `namespace_id`，部署前把两个 ID 改成该账号内未占用的正整数。
 
+还可以设置 `MCP_TOOLSET` 控制 **MCP 客户端可见的工具面**：`all`（默认，15 个工具，兼容旧部署）、`research`（13 个只读研究工具，不暴露 capture / star-and-ingest）、`core`（7 个个人库检索/比较/状态工具，不暴露开放世界 GitHub/Web 探针）。该选项只改变 MCP 的工具发现与调用面，REST 路由保持不变；无效值会让 MCP 初始化失败，而不是静默扩大权限。
+
 如果希望数据工作流在更新完成后自动部署 Worker，还需要在 Actions 中设置 `CLOUDFLARE_API_TOKEN`，并授予对应账号的 Worker 部署权限。未设置时，工作流只更新 R2 数据。
 
 ## 连接 AI 助手
