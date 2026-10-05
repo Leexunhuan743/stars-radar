@@ -168,3 +168,42 @@ test('no workflow recursively deletes Worker-owned state prefixes', () => {
     assert.deepEqual(destructive, [], `${name} deletes objects under state/, which has no backup: ${destructive.join(', ')}`)
   }
 })
+
+
+test('Worker deployment validates a complete active generation before wrangler deploy', () => {
+  const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'deploy-worker.yaml'), 'utf-8')
+  const preflight = workflow.indexOf('Validate active v3 data generation before deploy')
+  const deploy = workflow.indexOf('name: Deploy Worker', preflight + 1)
+
+  assert.ok(preflight >= 0, 'deploy workflow must validate the active generation')
+  assert.match(workflow, /node scripts\/validate_remote_generation\.js --active/)
+  assert.ok(deploy > preflight, 'active generation validation must happen before Worker deployment')
+})
+
+test('candidate retrieval quality and remote integrity validation happen before generation activation', () => {
+  const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
+  const privateGate = workflow.indexOf('Enforce private candidate retrieval quality gate')
+  const remoteIntegrity = workflow.indexOf('Validate candidate generation hashes, vectors and README refs')
+  const activation = workflow.indexOf('Activate verified data generation')
+
+  assert.ok(privateGate >= 0 && privateGate < activation, 'private candidate retrieval gate must block activation')
+  assert.ok(remoteIntegrity >= 0 && remoteIntegrity < activation, 'remote generation integrity must block activation')
+  assert.match(workflow, /validate_remote_generation\.js --generation/)
+  assert.match(workflow, /validate_private_benchmark\.js/)
+})
+
+test('state compaction uses the oldest retained generation and retrieval quality has no legacy plane fallback', () => {
+  const build = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
+  const retrieval = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'retrieval-quality.yaml'), 'utf-8')
+
+  assert.match(build, /Build rollback-safe compaction plan from oldest retained generation/)
+  assert.match(build, /GENERATION_RETENTION: 3/)
+  assert.ok(
+    build.indexOf('Build rollback-safe compaction plan from oldest retained generation') > build.indexOf('Activate verified data generation'),
+    'compaction horizon is selected only after the candidate generation becomes active',
+  )
+  assert.match(retrieval, /Rebuild candidate vectors with PR code/)
+  assert.match(retrieval, /node scripts\/build_candidate_vectors\.js/)
+  assert.doesNotMatch(retrieval, /legacy flat production plane/)
+  assert.doesNotMatch(retrieval, /string-only vector index/)
+})
