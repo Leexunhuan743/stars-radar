@@ -13,6 +13,7 @@ export const SEMANTIC_SUBJECT_FALLBACK = 0.65
  */
 export function fuseRankings({
   vectorScores,
+  vectorEvidence = new Map(),
   keywordScores,
   repos,
   specificSubjects,
@@ -23,7 +24,18 @@ export function fuseRankings({
   const sortedVectors = [...vectorScores.entries()].sort((a, b) => b[1] - a[1])
   sortedVectors.forEach(([repo, vScore], rank) => {
     const record = repos[repo] || keywordScores.get(repo)?.item
-    const pool = [repo, record?.name, record?.description, record?.reason, record?.summary, ...(record?.topics || []), ...(record?.categories || [])]
+    const semantic = vectorEvidence.get(repo)
+    const pool = [
+      repo,
+      record?.name,
+      record?.description,
+      record?.reason,
+      record?.summary,
+      ...(record?.topics || []),
+      ...(record?.categories || []),
+      semantic?.readme_chunk?.heading,
+      semantic?.readme_chunk?.text,
+    ]
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
@@ -41,9 +53,11 @@ export function fuseRankings({
       kwWeight: 0,
       source: 'starred',
       badge: '⭐ Starred',
+      vectorEvidence: semantic,
     }
     cur.rrf += 1 / (RRF_K + rank + 1)
     cur.vScore = vScore
+    cur.vectorEvidence = semantic || cur.vectorEvidence
     rrfMap.set(repo, cur)
   })
 
