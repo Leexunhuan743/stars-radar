@@ -13,6 +13,7 @@ import {
   getDataGeneration,
   getHarvested,
   getRankings,
+  getReadmeManifest,
   getVectors,
   JOURNAL_TTL_MS,
   seedHarvested,
@@ -33,7 +34,7 @@ import {
 } from './http.js'
 import { foldIngestEntries } from './ingest-journal.js'
 import { captureGithubDiscovery, searchGithubCode, searchGithubLive, searchWebTech } from './live-probes.js'
-import { readmeKey } from './object-keys.js'
+import { readmeBlobKey } from './object-keys.js'
 import { ProbeRequestError, probeToolFailure } from './probe-errors.js'
 import { staleSources } from './rankings-document.js'
 import { consumePlatformRateLimit, PlatformRateLimitError, rateLimitStatus } from './rate-limit.js'
@@ -1022,6 +1023,7 @@ async function attachReadmeEvidence(env, results, query) {
   const candidates = results
     .slice(0, README_EVIDENCE_MAX_RESULTS)
     .filter(result => result?.explanation && /^[\w.-]+\/[\w.-]+$/.test(result.repo || ''))
+  const manifest = await getReadmeManifest(env)
 
   await Promise.all(candidates.map(async (result) => {
     const evidence = {
@@ -1030,10 +1032,13 @@ async function attachReadmeEvidence(env, results, query) {
       snippets: [],
     }
     try {
-      const object = await env.R2.get(readmeKey(result.repo))
-      if (object) {
-        evidence.status = 'ok'
-        evidence.snippets = findReadmeEvidence(await object.text(), query, defaultIntents)
+      const ref = manifest.repos?.[result.repo.toLowerCase()]
+      if (ref?.sha256) {
+        const object = await env.R2.get(readmeBlobKey(ref.sha256))
+        if (object) {
+          evidence.status = 'ok'
+          evidence.snippets = findReadmeEvidence(await object.text(), query, defaultIntents)
+        }
       }
     }
     catch (error) {
