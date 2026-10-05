@@ -82,20 +82,20 @@ R2 的 S3 凭据需要能读写该桶。这里的 `GH_TOKEN` 在构建时映射�
 
 ```sh
 pnpm exec wrangler secret put MCP_API_KEY
-# 可选但推荐：为写操作单独设置不同密钥
+# 必填：写操作使用独立密钥
 pnpm exec wrangler secret put MCP_WRITE_API_KEY
 pnpm exec wrangler secret put GITHUB_TOKEN
 pnpm exec wrangler secret put SILICONFLOW_KEY
 pnpm deploy
 ```
 
-`MCP_API_KEY` 请使用自己生成的随机读取密钥。可选的 `MCP_WRITE_API_KEY` 建议使用另一枚随机密钥：配置后，读取密钥只能搜索和读取，只有写密钥可以捕获发现或执行 Star/收录；未配置时保持旧版单密钥读写行为。`GITHUB_TOKEN` 使用你的 GitHub 个人令牌。部署完成后，Wrangler 会输出服务地址。
+`MCP_API_KEY` 与 `MCP_WRITE_API_KEY` 都是必填，并且必须使用两枚不同的随机密钥。读取密钥只能搜索和读取；写密钥可读且可执行 capture / Star / 收录。`GITHUB_TOKEN` 使用你的 GitHub 个人令牌。部署完成后，Wrangler 会输出服务地址。
 
-Worker secrets 与 Actions secrets 是两套配置，需要分别设置。完整环境变量示例在 [.env.example](.env.example) 中。请妥善保管访问密钥：若只分发 `MCP_API_KEY` 且同时配置了 `MCP_WRITE_API_KEY`，客户端只能读取个人备注并调用只读检索；只有持有写密钥的客户端才能通过你的 GitHub 令牌执行收藏或写入发现日志。
+Worker secrets 与 Actions secrets 是两套配置，需要分别设置。完整环境变量示例在 [.env.example](.env.example) 中。请妥善保管两个访问密钥：普通客户端只分发 `MCP_API_KEY`；只有明确需要写操作的可信客户端才分发 `MCP_WRITE_API_KEY`。
 
 `wrangler.jsonc` 还配置了两个 Cloudflare Rate Limiting binding：昂贵检索默认 60 次/分钟，写操作默认 20 次/分钟，按认证 key 在当前 Cloudflare location 计数。它们用于保护 embedding、GitHub/Web 探针和写接口，不是精确计费器；如果你的 Cloudflare 账号已经使用示例中的 `namespace_id`，部署前把两个 ID 改成该账号内未占用的正整数。
 
-还可以设置 `MCP_TOOLSET` 控制 **MCP 客户端可见的工具面**：`all`（默认，15 个工具，兼容旧部署）、`research`（13 个只读研究工具，不暴露 capture / star-and-ingest）、`core`（7 个个人库检索/比较/状态工具，不暴露开放世界 GitHub/Web 探针）。该选项只改变 MCP 的工具发现与调用面，REST 路由保持不变；无效值会让 MCP 初始化失败，而不是静默扩大权限。
+`MCP_TOOLSET` 控制 **MCP 客户端可见的工具面**：默认 `research`（全部只读研究工具，不暴露 capture / star-and-ingest）；`core` 只保留个人库检索/比较/状态工具；只有显式设置 `all` 才暴露写工具。该选项只改变 MCP 的工具发现与调用面，REST 路由保持不变；无效值会让 MCP 初始化失败。
 
 如果希望数据工作流在更新完成后自动部署 Worker，还需要在 Actions 中设置 `CLOUDFLARE_API_TOKEN`，并授予对应账号的 Worker 部署权限。未设置时，工作流只更新 R2 数据。
 
@@ -131,7 +131,7 @@ Worker secrets 与 Actions secrets 是两套配置，需要分别设置。完整
 
 ## 在终端使用
 
-命令行客户端仅依赖 Python 标准库。先设置 `WORKER_URL` 和 `MCP_API_KEY`。如果服务启用了独立写密钥且要使用 `--persist` / `--star`，再设置 `MCP_WRITE_API_KEY`。
+命令行客户端仅依赖 Python 标准库。先设置 `WORKER_URL` 和 `MCP_API_KEY`；执行 `--capture` 或 `--star` 时必须另外设置 `MCP_WRITE_API_KEY`。
 
 PowerShell：
 
@@ -147,7 +147,7 @@ Bash / zsh：
 export WORKER_URL="https://stars.example.com"
 export MCP_API_KEY="YOUR_MCP_API_KEY"
 # 仅需要写操作时：
-# export MCP_WRITE_API_KEY="YOUR_MCP_WRITE_API_KEY"
+export MCP_WRITE_API_KEY="YOUR_MCP_WRITE_API_KEY"
 python scripts/search_stars_cli.py "Markdown 笔记工具" --scope starred
 ```
 
