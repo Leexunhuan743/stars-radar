@@ -17,7 +17,6 @@ export const EMBEDDING_MODEL = 'BAAI/bge-m3'
 
 /** What text is embedded into each repository vector. */
 export const EMBEDDING_INPUT_PROFILE = 'repo-metadata-readme-v2'
-export const LEGACY_EMBEDDING_INPUT_PROFILE = 'repo-metadata-v1'
 
 /** Float32 components per vector. */
 export const DIMS = 1024
@@ -89,15 +88,10 @@ export async function vectorManifest(names, indexBytes, binaryBytes) {
 
 export async function verifyVectorManifest(manifest, names, indexBytes, binaryBytes) {
   const expected = await vectorManifest(names, indexBytes, binaryBytes)
-  const contentKeys = Object.keys(expected).filter(key => key !== 'input_profile')
-  if (contentKeys.some(key => manifest?.[key] !== expected[key]))
-    throw new Error('Vector manifest does not match the index and binary contents. Publish one complete generation through CI.')
-
-  // Older deployments have no input_profile. Their content is still safe to serve and the next
-  // data build will regenerate a v2 manifest; reporting the legacy profile avoids pretending those
-  // vectors already include README evidence.
-  if (manifest?.input_profile !== undefined && manifest.input_profile !== EMBEDDING_INPUT_PROFILE)
-    throw new Error(`Unsupported vector input profile ${JSON.stringify(manifest.input_profile)}; rebuild vectors with the current pipeline.`)
-
-  return manifest?.input_profile || LEGACY_EMBEDDING_INPUT_PROFILE
+  if (Object.keys(expected).some(key => manifest?.[key] !== expected[key])) {
+    throw new Error(
+      `Vector manifest does not match the required ${EMBEDDING_INPUT_PROFILE} generation. Rebuild and publish one complete vector generation through CI.`,
+    )
+  }
+  return EMBEDDING_INPUT_PROFILE
 }
