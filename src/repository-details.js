@@ -1,6 +1,6 @@
+import { getReadmeManifest } from './documents.js'
 import { parseFrontmatter } from './frontmatter.js'
 import { BadRequestError } from './http.js'
-import { getReadmeManifest } from './documents.js'
 import { readmeBlobKey } from './object-keys.js'
 
 export class RepositoryRequestError extends Error {
