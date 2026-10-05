@@ -9,6 +9,8 @@ import { after, before, test } from 'node:test'
 const DIMS = 1024
 const BYTES_PER_VECTOR = DIMS * 4
 const PROFILE = 'repo-metadata-readme-chunks-v3'
+const GENERATION_ID = '20261005T081500Z-ceaa138fd814-4242'
+const GENERATION_SHA = 'ceaa138fd814f70ff2a194cf050a789e7e77cf95'
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'vector-pipeline-test-'))
 const R2_VARS = ['R2_ACCOUNT_ID', 'R2_BUCKET', 'CLOUDFLARE_API_TOKEN', 'VECTOR_STORE_ROOT']
@@ -99,7 +101,24 @@ function generationObjects(records, vectorCount = records.length) {
   return {
     'embeddings.bin': binary,
     'embeddings-index.json': index,
+    'embeddings-fingerprints.json': Buffer.from('{}'),
     'embeddings-manifest.json': manifestBytes(records, index, binary),
+  }
+}
+
+function publishedGeneration(records, vectorCount = records.length) {
+  const logical = generationObjects(records, vectorCount)
+  const pointer = Buffer.from(JSON.stringify({
+    schema: 1,
+    id: GENERATION_ID,
+    published_at: '2026-10-05T08:15:00.000Z',
+    commit: GENERATION_SHA,
+  }))
+  return {
+    'active-generation.json': pointer,
+    ...Object.fromEntries(
+      Object.entries(logical).map(([key, value]) => [`generations/${GENERATION_ID}/${key}`, value]),
+    ),
   }
 }
 
@@ -137,7 +156,7 @@ function readLocalGeneration() {
 test('a current structured generation in R2 is restored with its manifest', async () => {
   clearLocalGeneration()
   const records = [repoRecord('owner/one'), repoRecord('Owner/Two')]
-  stubR2(generationObjects(records))
+  stubR2(publishedGeneration(records))
 
   assert.equal(await downloadVectorsFromR2(), true)
 
@@ -150,7 +169,7 @@ test('a current structured generation in R2 is restored with its manifest', asyn
 test('an inconsistent R2 generation is rejected without writing a local baseline', async () => {
   clearLocalGeneration()
   const records = [repoRecord('a/b'), repoRecord('c/d')]
-  stubR2(generationObjects(records, 1))
+  stubR2(publishedGeneration(records, 1))
 
   assert.equal(await downloadVectorsFromR2(), false)
   assert.equal(fs.existsSync(localFiles().bin), false)
@@ -161,8 +180,8 @@ test('an inconsistent R2 generation is rejected without writing a local baseline
 test('a missing manifest makes an R2 baseline unusable', async () => {
   clearLocalGeneration()
   const records = [repoRecord('a/b')]
-  const objects = generationObjects(records)
-  delete objects['embeddings-manifest.json']
+  const objects = publishedGeneration(records)
+  delete objects[`generations/${GENERATION_ID}/embeddings-manifest.json`]
   stubR2(objects)
 
   assert.equal(await downloadVectorsFromR2(), false)
@@ -171,7 +190,7 @@ test('a missing manifest makes an R2 baseline unusable', async () => {
 
 test('an empty binary is not accepted as a reusable R2 generation', async () => {
   clearLocalGeneration()
-  stubR2(generationObjects([]))
+  stubR2(publishedGeneration([]))
   assert.equal(await downloadVectorsFromR2(), false)
   assert.equal(fs.existsSync(localFiles().bin), false)
 })
