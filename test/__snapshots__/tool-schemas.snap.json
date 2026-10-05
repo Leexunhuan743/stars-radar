@@ -14,7 +14,9 @@
           "type": "boolean"
         },
         "category": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
         },
         "source": {
           "type": "string",
@@ -70,7 +72,9 @@
       "type": "object",
       "properties": {
         "repo": {
-          "type": "string"
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
         },
         "include_readme": {
           "default": true,
@@ -100,7 +104,9 @@
           "maxItems": 5,
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 200
           }
         },
         "refresh": {
@@ -161,7 +167,9 @@
           "maxLength": 512
         },
         "language": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         },
         "min_stars": {
           "default": 15,
@@ -187,10 +195,14 @@
           ]
         },
         "since": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         },
         "until": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         },
         "limit": {
           "default": 10,
@@ -216,7 +228,9 @@
       "type": "object",
       "properties": {
         "repo": {
-          "type": "string"
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
         },
         "query": {
           "type": "string",
@@ -242,16 +256,24 @@
           "maxLength": 256
         },
         "repo": {
-          "type": "string"
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
         },
         "language": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         },
         "extension": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
         },
         "limit": {
           "default": 5,
@@ -278,7 +300,9 @@
           "maxLength": 512
         },
         "domain": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
         },
         "freshness": {
           "default": "all",
@@ -313,17 +337,23 @@
       "type": "object",
       "properties": {
         "repo": {
-          "type": "string"
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
         },
         "reason": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 1000
         },
         "categories": {
           "default": [],
           "type": "array",
           "items": {
-            "type": "string"
-          }
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "maxItems": 20
         }
       },
       "required": [
@@ -371,7 +401,9 @@
       "type": "object",
       "properties": {
         "category": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
         },
         "limit": {
           "default": 10,
@@ -402,7 +434,9 @@
       "type": "object",
       "properties": {
         "category": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
         },
         "limit": {
           "default": 25,
@@ -431,7 +465,8 @@
           "maximum": 50
         },
         "cursor": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 2048
         }
       },
       "required": [
