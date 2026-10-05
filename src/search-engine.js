@@ -84,6 +84,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
                   ]
                 : []
               semantic.readme_chunk = {
+                chunk_id: record.id,
                 heading: record.heading,
                 text: record.text,
                 snippet: snippetAround(record.text, [...new Set(terms)]),
