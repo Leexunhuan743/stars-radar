@@ -75,7 +75,6 @@ test('compaction refuses a probe snapshot key outside its owned prefix', () => {
   }
 })
 
-
 test('compaction can use the oldest retained generation as its recovery horizon', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-compaction-'))
   try {
