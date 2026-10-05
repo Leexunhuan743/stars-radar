@@ -117,7 +117,7 @@ test('refresh compares current GitHub facts without losing personal reasons', as
 })
 
 test('frontmatter metadata survives when only a README archive knows the repository', async () => {
-  const env = { R2: { get: async key => {
+  const env = { R2: { get: async (key) => {
     assert.equal(key, `readmes/${README_SHA}.md`)
     return { text: async () => '---\nstars: 42\nlanguage: Go\nreason: useful offline\ncategories: ["research"]\n---\n# Archive' }
   } } }
