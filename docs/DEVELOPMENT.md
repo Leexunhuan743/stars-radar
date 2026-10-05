@@ -87,7 +87,7 @@ Fine-grained token 对 Stars 读取要求 Starring read，点 Star 要求 Starri
 
 ## 首次部署与更新
 
-首次部署步骤见 [README](../README.md#开始使用)。`wrangler.jsonc` 的 Worker 名称和桶名需要按部署环境填写，代码使用固定绑定名 `R2`。绑定配置见 [Cloudflare R2 文档](https://developers.cloudflare.com/r2/get-started/workers-api/)。
+首次部署步骤见 [README](../README.md#开始使用)。`wrangler.jsonc` 的 Worker 名称和桶名需要按部署环境填写，代码使用固定 R2 绑定名 `R2`，并声明 `EXPENSIVE_RATE_LIMITER` 与 `WRITE_RATE_LIMITER` 两个 Rate Limiting binding。R2 配置见 [Cloudflare R2 文档](https://developers.cloudflare.com/r2/get-started/workers-api/)，限流 binding 见 [Cloudflare Rate Limiting API](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)。`namespace_id` 由部署者定义且在同一 Cloudflare 账号内需要保持唯一；示例 ID 若冲突必须替换。
 
 `.github/workflows/build.yaml` 每 6 小时运行，也支持手动触发。Fork 后需要主动启用 Actions 和定时工作流。一次运行依次：
 
@@ -182,7 +182,7 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 ## MCP 工具
 
-Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。不配置 `MCP_WRITE_API_KEY` 时，`MCP_API_KEY` 保持向后兼容的读写权限；配置独立写密钥后，`MCP_API_KEY` 只能读取和检索，`MCP_WRITE_API_KEY` 可读且允许 `capture_github_discovery` 与 `star_and_ingest_repo`。REST 写接口使用相同规则，读 key 调用时返回 `403 write_forbidden`。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
+Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。不配置 `MCP_WRITE_API_KEY` 时，`MCP_API_KEY` 保持向后兼容的读写权限；配置独立写密钥后，`MCP_API_KEY` 只能读取和检索，`MCP_WRITE_API_KEY` 可读且允许 `capture_github_discovery` 与 `star_and_ingest_repo`。REST 写接口使用相同规则，读 key 调用时返回 `403 write_forbidden`。昂贵的向量/GitHub/Web 路径与写路径分别经过平台 Rate Limiting binding；默认预算分别为 60/分钟与 20/分钟，超限返回 `429 rate_limited`。Cloudflare Rate Limiting 是按 location 的保护性、最终一致计数，不应作为精确用量或计费系统；配置了 binding 但 binding 调用异常时服务 fail closed，返回 `503 rate_limiter_unavailable`，避免静默失去成本保护。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
 
 <!-- prettier-ignore -->
 | 工具                    | 用途 / 常用参数                                                              |
@@ -280,6 +280,8 @@ pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 
 | --------------------------- | -------------------------------------------------------------------------- |
 | `401 unauthorized`          | 检查 Bearer 请求头与 Worker 的读取 / 写入密钥                                 |
 | `403 write_forbidden`       | 已启用 `MCP_WRITE_API_KEY`；capture / star / ingest 必须使用写密钥           |
+| `429 rate_limited`          | 当前 Cloudflare location 的该认证 key 已用完对应保护预算；稍后重试             |
+| `503 rate_limiter_unavailable` | 已配置限流 binding 但平台调用异常；检查 Wrangler binding/Cloudflare 状态     |
 | `server_misconfigured`      | 本地检查 `.dev.vars`，线上检查 Worker secrets                              |
 | 没有收藏                    | 检查 `GH_TOKEN` 是否属于你的账号，公开 Stars 是否为空                      |
 | 分类构建失败                | 检查 GraphQL 权限、限流和错误日志，修复后重跑                              |
