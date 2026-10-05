@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { evaluateOne, percentile, summarize } from '../scripts/evaluate_retrieval_real.js'
+import { evaluateOne, percentile, summarize, summarizeByClass } from '../scripts/evaluate_retrieval_real.js'
 
 test('real-benchmark metrics compute recall, precision, reciprocal rank and ndcg from labeled results', () => {
   const metrics = evaluateOne(
@@ -95,4 +95,18 @@ test('Precision@K uses K as the denominator and negative success has its own agg
   assert.equal(report.negative_cases, 2)
   assert.equal(report.mean_precision_at_k, 0.1)
   assert.equal(report.negative_empty_success_rate, 0.5)
+})
+
+
+test('benchmark summaries stay visible per labeled query class', () => {
+  const rows = [
+    { classes: ['readme_only', 'multilingual'], latency_ms: 5, metrics: evaluateOne(['a/relevant'], ['a/relevant'], [], 5) },
+    { classes: ['readme_only'], latency_ms: 7, metrics: evaluateOne([], ['b/relevant'], [], 5) },
+    { classes: ['negative'], latency_ms: 3, metrics: evaluateOne([], [], [], 5) },
+  ]
+  const classes = summarizeByClass(rows)
+  assert.equal(classes.readme_only.cases, 2)
+  assert.equal(classes.readme_only.mean_recall_at_k, 0.5)
+  assert.equal(classes.multilingual.mean_recall_at_k, 1)
+  assert.equal(classes.negative.negative_empty_success_rate, 1)
 })
