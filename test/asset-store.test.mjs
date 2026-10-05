@@ -380,3 +380,39 @@ test('the hot index includes a snapshot of exactly the ingests folded by CI', ()
   assert.equal(snapshot.entries.find(entry => entry.repo.toLowerCase() === 'ingested/tool').reason, 'user ingested it')
   assert.ok(snapshot.entries.every(entry => snapshot.keys.includes(entry.key)))
 })
+
+
+test('a previous generation snapshot preserves compacted ingests after raw objects are deleted', () => {
+  const previousPath = path.join(TMP, 'previous-asset-index.json')
+  const compactedKey = 'state/ingest-journal/compacted-old.jsonl'
+  const entry = {
+    repo: 'Compacted/Tool',
+    description: 'survives raw journal compaction',
+    reason: 'durable curator memory',
+    ingested_at: '2026-02-19T00:00:00Z',
+    key: compactedKey,
+  }
+
+  fs.writeFileSync(previousPath, JSON.stringify({
+    ingest_snapshot: { keys: [compactedKey], entries: [entry] },
+  }))
+
+  try {
+    store.accumulateAssets()
+    const state = readState()
+    const snapshot = readIndex().ingest_snapshot
+
+    assert.equal(state.repos['compacted/tool']?.tier, 'curated')
+    assert.equal(state.repos['compacted/tool']?.reason, 'durable curator memory')
+    assert.equal(snapshot.entries.some(item => item.repo === 'Compacted/Tool'), true)
+    assert.equal(
+      snapshot.keys.includes(compactedKey),
+      false,
+      'a raw key already absent from R2 must fall out of the next snapshot key set',
+    )
+  }
+  finally {
+    fs.rmSync(previousPath, { force: true })
+    store.accumulateAssets()
+  }
+})
