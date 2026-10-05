@@ -3,8 +3,8 @@ import { createMcpHandler } from 'agents/mcp'
 import { z } from 'zod'
 import defaultIntents from '../data/intents.json'
 import { appendIngest } from './append-store.js'
-import { AuthConfigError, authorizeCredential } from './auth.js'
 import { listReadmePage } from './archive-candidates.js'
+import { AuthConfigError, authorizeCredential } from './auth.js'
 import { DocumentUnavailableError } from './document-cache.js'
 import {
   dataPlaneStatus,
