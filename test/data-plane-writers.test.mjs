@@ -123,10 +123,13 @@ test('the README sweep is guarded and immutable generation uploads are read back
   assert.match(build, /--exclude "generations\/\*"/)
   assert.match(build, /--exclude "active-generation\.json"/)
 
-  assert.match(
-    build,
-    /aws s3 cp "s3:\/\/\$\{R2_BUCKET\}\/generations\/\$\{GENERATION_ID\}\/\$\{rel\}"[\s\S]{0,260}?cmp -s "\.generation-stage\/\$\{rel\}" "\$\{verify_dir\}\/\$\{rel\}"/,
-    'every staged generation object must be read back and compared byte-for-byte',
+  const readback = 'aws s3 cp "s3://${R2_BUCKET}/generations/${GENERATION_ID}/${rel}"'
+  const exactCompare = 'cmp -s ".generation-stage/${rel}" "${verify_dir}/${rel}"'
+  assert.ok(build.includes(readback), 'every staged generation object must be read back from R2')
+  assert.ok(build.includes(exactCompare), 'every staged generation object must be compared byte-for-byte')
+  assert.ok(
+    build.indexOf(readback) < build.indexOf(exactCompare),
+    'the remote object must be downloaded before its exact-content comparison',
   )
   assert.ok(
     build.indexOf('Verify immutable generation in R2') < build.indexOf('Activate verified data generation'),
