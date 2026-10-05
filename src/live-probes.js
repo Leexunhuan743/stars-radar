@@ -301,58 +301,9 @@ export async function searchWebTech(env, {
     }
   }
 
-  // 3. Keyless Fallback: DuckDuckGo HTML parser
-  try {
-    const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(fullQuery)}`
-    const resp = await fetcher(ddgUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(6000),
-    })
-    if (resp.ok) {
-      const html = await resp.text()
-      const items = []
-      const regex = /<h2 class="result__title">[\s\S]*?<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g
-      let match = regex.exec(html)
-      while (match !== null && items.length < limit) {
-        let rawUrl = match[1]
-        const mUddg = rawUrl.match(/uddg=([^&]+)/)
-        if (mUddg)
-          rawUrl = decodeURIComponent(mUddg[1])
-        // Skip sponsored/ad results: DuckDuckGo routes ads through its y.js click
-        // tracker carrying ad_domain / ad_type / ad_provider params, instead of the
-        // uddg= organic redirect. They match the same result__a markup but are not
-        // organic web results, so drop them.
-        const isAd = /duckduckgo\.com\/y\.js/.test(rawUrl)
-          || /[?&](?:ad_domain|ad_type|ad_provider)=/.test(rawUrl)
-        if (!isAd) {
-          const title = match[2].replace(/<[^>]+>/g, '').trim()
-          const snippet = match[3].replace(/<[^>]+>/g, '').trim()
-          items.push({
-            rank: items.length + 1,
-            title,
-            url: rawUrl,
-            snippet,
-            source: 'duckduckgo_html',
-          })
-        }
-        match = regex.exec(html)
-      }
-      if (items.length > 0 || /<(?:div|p)[^>]*class=["'][^"']*\bno-results\b/i.test(html)) {
-        return {
-          provider: 'duckduckgo_html (keyless)',
-          freshness_applied: false,
-          query: fullQuery,
-          count: items.length,
-          results: items,
-        }
-      }
-    }
-  }
-  catch (e) {
-    console.warn('DuckDuckGo HTML fallback failed:', e.message)
-  }
-
-  throw new ProbeRequestError('search_unavailable', 'All configured web search providers failed or the keyless response could not be parsed. Configure BRAVE_SEARCH_API_KEY or TAVILY_API_KEY, or retry.', 503)
+  throw new ProbeRequestError(
+    'search_unavailable',
+    'No configured web search provider succeeded. Configure BRAVE_SEARCH_API_KEY or TAVILY_API_KEY and retry.',
+    503,
+  )
 }
