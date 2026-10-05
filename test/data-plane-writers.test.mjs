@@ -216,7 +216,6 @@ test('fork retrieval PRs use a non-secret regression path instead of requiring r
   assert.match(retrieval, /Require strict candidate quality configuration\n\s+if: env\.TRUSTED_QUALITY_EVENT == 'true'/)
 })
 
-
 test('Worker deployment verifies both read and write secret bindings before wrangler deploy', () => {
   const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'deploy-worker.yaml'), 'utf-8')
   const secretCheck = workflow.indexOf('Require production Worker auth secrets before deploy')
