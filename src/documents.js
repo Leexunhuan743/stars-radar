@@ -130,8 +130,8 @@ function buildCaches() {
         }
         if (!manifestObject)
           throw new Error('Vector manifest is missing. Run the CI data build before serving this vector generation.')
-        await verifyVectorManifest(await manifestObject.json(), names, new TextEncoder().encode(indexText), buffer)
-        return { vectors: new Float32Array(buffer), names }
+        const inputProfile = await verifyVectorManifest(await manifestObject.json(), names, new TextEncoder().encode(indexText), buffer)
+        return { vectors: new Float32Array(buffer), names, inputProfile }
       },
     }),
     ingestJournal: createDocumentCache({
