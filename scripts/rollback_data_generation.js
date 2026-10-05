@@ -4,13 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { parseGenerationPointer, validateGenerationId } from '../src/data-generation.js'
-import {
-  ASSET_INDEX_KEY,
-  ASSET_STATE_KEY,
-  CATALOG_KEY,
-  RANKINGS_KEY,
-  READMES_MANIFEST_KEY,
-} from '../src/object-keys.js'
+import { validateRemoteGeneration } from './validate_remote_generation.js'
 
 function required(name) {
   const value = process.env[name]
@@ -65,44 +59,14 @@ export function listGenerations() {
     .reverse()
 }
 
-function readGenerationJson(targetConfig, generationId, name) {
-  const text = s3(
-    targetConfig,
-    's3',
-    'cp',
-    `s3://${targetConfig.bucket}/generations/${generationId}/${name}`,
-    '-',
-  )
-  return JSON.parse(text)
-}
-
-export function validateRollbackTarget(generationId) {
+export async function validateRollbackTarget(generationId) {
   const id = validateGenerationId(generationId)
-  const targetConfig = target()
-  const manifest = readGenerationJson(targetConfig, id, 'generation-manifest.json')
-  if (manifest?.generation?.id !== id)
-    throw new Error(`generation-manifest.json belongs to ${manifest?.generation?.id || 'unknown'}, not ${id}.`)
-
-  for (const name of [CATALOG_KEY, RANKINGS_KEY, ASSET_INDEX_KEY, ASSET_STATE_KEY, READMES_MANIFEST_KEY]) {
-    if (!manifest.files?.[name])
-      throw new Error(`Generation ${id} is missing ${name} in its manifest.`)
-    s3(
-      targetConfig,
-      's3api',
-      'head-object',
-      '--bucket',
-      targetConfig.bucket,
-      '--key',
-      `generations/${id}/${name}`,
-      '--output',
-      'json',
-    )
-  }
-  return parseGenerationPointer(manifest.generation)
+  const report = await validateRemoteGeneration(id)
+  return report.pointer
 }
 
-export function rollbackDataGeneration(generationId) {
-  const pointer = validateRollbackTarget(generationId)
+export async function rollbackDataGeneration(generationId) {
+  const pointer = await validateRollbackTarget(generationId)
   const targetConfig = target()
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-rollback-'))
   try {
@@ -144,7 +108,7 @@ async function main() {
   if (at < 0 || !args[at + 1])
     throw new Error('Usage: node scripts/rollback_data_generation.js --list | --to <generation-id>')
 
-  const pointer = rollbackDataGeneration(args[at + 1])
+  const pointer = await rollbackDataGeneration(args[at + 1])
   console.log(`Active generation rolled back to ${pointer.id} (${pointer.commit}).`)
 }
 
