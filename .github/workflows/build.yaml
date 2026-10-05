@@ -361,3 +361,50 @@ jobs:
             aws s3 rm "s3://${R2_BUCKET}/${prefix}" --recursive --endpoint-url "${endpoint}" --only-show-errors
             echo "✓ removed old generation ${prefix}"
           done
+
+      - name: Garbage collect unreferenced README blobs
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          aws configure set default.region auto
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          work="${RUNNER_TEMP}/readme-gc"
+          rm -rf "${work}"
+          mkdir -p "${work}/manifests"
+          aws s3api list-objects-v2 --bucket "${R2_BUCKET}" --prefix "generations/" --delimiter "/"             --endpoint-url "${endpoint}" --output json > "${work}/generations.json"
+          node --input-type=module - "${work}/generations.json" > "${work}/prefixes.txt" <<'NODE'
+          import fs from 'node:fs'
+          const data = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+          for (const item of data.CommonPrefixes || [])
+            process.stdout.write(item.Prefix + '\n')
+          NODE
+          while IFS= read -r prefix; do
+            [ -n "${prefix}" ] || continue
+            id="${prefix#generations/}"
+            id="${id%/}"
+            aws s3 cp "s3://${R2_BUCKET}/${prefix}readmes.json" "${work}/manifests/${id}.json"               --endpoint-url "${endpoint}" --only-show-errors
+          done < "${work}/prefixes.txt"
+          node --input-type=module - "${work}/manifests" > "${work}/keep.txt" <<'NODE'
+          import fs from 'node:fs'
+          import path from 'node:path'
+          const dir = process.argv[2]
+          const keep = new Set()
+          for (const file of fs.readdirSync(dir)) {
+            const data = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'))
+            for (const ref of Object.values(data.repos || {}))
+              if (ref.object_key) keep.add(ref.object_key)
+          }
+          for (const key of [...keep].sort())
+            process.stdout.write(key + '\n')
+          NODE
+          aws s3 ls "s3://${R2_BUCKET}/readmes/" --recursive --endpoint-url "${endpoint}"             | awk '{print $4}' > "${work}/all.txt"
+          while IFS= read -r key; do
+            [ -n "${key}" ] || continue
+            if ! grep -Fxq "${key}" "${work}/keep.txt"; then
+              aws s3api delete-object --bucket "${R2_BUCKET}" --key "${key}" --endpoint-url "${endpoint}" >/dev/null
+              echo "✓ removed unreferenced README blob ${key}"
+            fi
+          done < "${work}/all.txt"
