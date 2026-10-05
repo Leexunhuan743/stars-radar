@@ -10,29 +10,30 @@ const ROOT = process.env.ASSET_STORE_ROOT
 
 export const COMPACTION_PLAN_FILE = '.data-compaction-plan.json'
 
-function exactPrefixKeys(directory, prefix) {
-  if (!fs.existsSync(directory))
-    return []
-  return fs.readdirSync(directory)
-    .filter(name => name.endsWith('.jsonl'))
-    .map(name => `${prefix}${name}`)
-    .sort()
-}
-
 export function buildCompactionPlan(root = ROOT) {
   const previousIndexPath = path.resolve(root, PREVIOUS_ASSET_INDEX_FILE)
   let ingestKeys = []
+  let probeKeys = []
+
   if (fs.existsSync(previousIndexPath)) {
-    const snapshot = fs.readJsonSync(previousIndexPath).ingest_snapshot || { keys: [] }
-    if (!Array.isArray(snapshot.keys))
+    const previous = fs.readJsonSync(previousIndexPath)
+    const ingestSnapshot = previous.ingest_snapshot || { keys: [] }
+    const probeSnapshot = previous.probe_snapshot || { keys: [] }
+
+    if (!Array.isArray(ingestSnapshot.keys))
       throw new Error(`${PREVIOUS_ASSET_INDEX_FILE} has an invalid ingest_snapshot.keys.`)
-    ingestKeys = [...new Set(snapshot.keys)].sort()
+    if (!Array.isArray(probeSnapshot.keys))
+      throw new Error(`${PREVIOUS_ASSET_INDEX_FILE} has an invalid probe_snapshot.keys.`)
+
+    ingestKeys = [...new Set(ingestSnapshot.keys)].sort()
+    probeKeys = [...new Set(probeSnapshot.keys)].sort()
   }
 
   if (ingestKeys.some(key => !key.startsWith(INGEST_JOURNAL_PREFIX) || !key.endsWith('.jsonl')))
     throw new Error('Refusing compaction: previous ingest snapshot contains a key outside the ingest journal prefix.')
+  if (probeKeys.some(key => !key.startsWith(PROBE_CAPTURE_PREFIX) || !key.endsWith('.jsonl')))
+    throw new Error('Refusing compaction: previous probe snapshot contains a key outside the probe capture prefix.')
 
-  const probeKeys = exactPrefixKeys(path.resolve(root, PROBE_CAPTURE_PREFIX), PROBE_CAPTURE_PREFIX)
   return {
     schema: 1,
     ingest_keys: ingestKeys,
