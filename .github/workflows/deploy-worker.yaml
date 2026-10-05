@@ -4,13 +4,13 @@ on:
   push:
     branches: [master, main]
     paths:
-      - 'src/**'
-      - 'data/intents.json'
-      - 'wrangler.jsonc'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - '.node-version'
-      - '.github/workflows/deploy-worker.yaml'
+      - src/**
+      - data/intents.json
+      - wrangler.jsonc
+      - package.json
+      - pnpm-lock.yaml
+      - .node-version
+      - .github/workflows/deploy-worker.yaml
   workflow_dispatch:
 
 permissions:
