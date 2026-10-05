@@ -108,7 +108,11 @@ test('a code result keeps its snippet, file location and total count', async () 
 
 test('live repository search never writes capture state', async () => {
   let writes = 0
-  const env = environment({ put: async () => { writes++ } })
+  const env = environment({
+    put: async () => {
+      writes++
+    },
+  })
   const result = await searchGithubLive(env, { query: 'terminal' }, {
     fetcher: async () => Response.json({ total_count: 1, items: [{ full_name: 'acme/tool', stargazers_count: 100, description: 'terminal tool' }] }),
   })
@@ -120,7 +124,11 @@ test('live repository search never writes capture state', async () => {
 
 test('explicit discovery capture re-fetches GitHub metadata before writing', async () => {
   const writes = []
-  const env = environment({ put: async (key, body) => { writes.push({ key, body }) } })
+  const env = environment({
+    put: async (key, body) => {
+      writes.push({ key, body })
+    },
+  })
   env.GITHUB_TOKEN = 'fixture-token'
 
   const result = await captureGithubDiscovery(env, { repo: 'acme/tool', query: 'terminal mcp' }, {
@@ -161,14 +169,22 @@ test('capture rejects weak or invalid discoveries and reports write failures', a
   )
 
   let writes = 0
-  const weak = await captureGithubDiscovery(environment({ put: async () => { writes++ } }), { repo: 'acme/tool', query: 'terminal' }, {
+  const weak = await captureGithubDiscovery(environment({
+    put: async () => {
+      writes++
+    },
+  }), { repo: 'acme/tool', query: 'terminal' }, {
     fetcher: async () => Response.json({ full_name: 'acme/tool', stargazers_count: 12, description: 'small tool' }),
   })
   assert.equal(weak.captured, 0)
   assert.equal(writes, 0)
 
   await assert.rejects(
-    captureGithubDiscovery(environment({ put: async () => { throw new Error('R2 offline') } }), { repo: 'acme/tool', query: 'terminal' }, {
+    captureGithubDiscovery(environment({
+      put: async () => {
+        throw new Error('R2 offline')
+      },
+    }), { repo: 'acme/tool', query: 'terminal' }, {
       fetcher: async () => Response.json({ full_name: 'acme/tool', stargazers_count: 100, description: 'terminal tool' }),
     }),
     error => error instanceof ProbeRequestError && error.code === 'capture_failed' && error.status === 503,
