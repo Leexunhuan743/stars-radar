@@ -1025,7 +1025,7 @@ async function researchDocuments(env) {
 async function attachReadmeEvidence(env, results, query) {
   const candidates = results
     .slice(0, README_EVIDENCE_MAX_RESULTS)
-    .filter(result => result?.explanation && /^[\w.-]+\/[\w.-]+$/.test(result.repo || ''))
+    .filter(result => /^[\w.-]+\/[\w.-]+$/.test(result.repo || ''))
   const manifest = await getReadmeManifest(env)
 
   await Promise.all(candidates.map(async (result) => {
@@ -1035,22 +1035,20 @@ async function attachReadmeEvidence(env, results, query) {
       generation: manifest.generation,
     }))
 
-    const evidence = {
-      source: 'cached_readme',
+    const readmeState = {
       status: ref?.status === 'unavailable' ? 'unavailable' : (ref?.status === 'absent' ? 'absent' : 'missing'),
-      manifest_status: ref?.status || null,
-      generation: manifest.generation?.id || null,
+      generation_id: manifest.generation?.id || null,
       readme_sha256: ref?.sha256 || null,
       preserved_from_generation: ref?.preserved_from_generation || null,
-      snippets: [],
+      literal_hits: 0,
     }
     try {
       if (ref?.sha256) {
         const object = await env.R2.get(readmeBlobKey(ref.sha256))
         if (object) {
-          evidence.status = ref.status === 'stale' ? 'stale' : 'ok'
+          readmeState.status = ref.status === 'stale' ? 'stale' : 'ok'
           const hits = findReadmeEvidence(await object.text(), query, defaultIntents)
-          evidence.snippets = hits
+          readmeState.literal_hits = hits.length
           result.evidence.push(...hits.map(hit => buildReadmeEvidence({
             kind: 'readme_literal',
             repo: result.repo,
@@ -1068,10 +1066,10 @@ async function attachReadmeEvidence(env, results, query) {
       }
     }
     catch (error) {
-      evidence.status = 'unavailable'
+      readmeState.status = 'unavailable'
       console.warn(`[README evidence] Could not read ${result.repo}: ${error.message || String(error)}`)
     }
-    result.explanation.readme_evidence = evidence
+    result.evidence_state = { readme: readmeState }
   }))
 
   return results
