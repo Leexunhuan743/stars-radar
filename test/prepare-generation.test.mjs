@@ -33,6 +33,7 @@ test('a generation is staged under logical keys and the pointer is written separ
       'asset-state.json',
       'catalog.json',
       'rankings.json',
+      'readmes.json',
     ])
     assert.equal(fs.existsSync(path.join(stage, 'catalog.json')), true)
     assert.equal(fs.existsSync(path.join(stage, 'generation-manifest.json')), true)
