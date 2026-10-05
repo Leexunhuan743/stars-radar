@@ -120,6 +120,7 @@ test('a warm cache answers without touching the bucket again', async () => {
     catalog: 'unknown',
     rankings: 'unknown',
     assetIndex: 'unknown',
+    readmes: 'unknown',
     vectors: 'unknown',
     ingestJournal: 'unknown',
   })
