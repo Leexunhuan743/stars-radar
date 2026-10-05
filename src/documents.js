@@ -7,7 +7,7 @@
 
 import { ACTIVE_GENERATION_KEY, generationKey, parseGenerationPointer } from './data-generation.js'
 import { createDocumentCache, DOCUMENT_STATUS } from './document-cache.js'
-import { describePairMismatch, validateVectorIndex, verifyVectorManifest } from './embeddings.js'
+import { describePairMismatch, validateVectorIndex, vectorNorms, verifyVectorManifest } from './embeddings.js'
 import { foldIngestEntries, foldJournalFiles } from './ingest-journal.js'
 import {
   ASSET_INDEX_KEY,
@@ -143,7 +143,7 @@ function buildCaches() {
 
   const vectors = generationBoundCache(generation, {
     name: 'embeddings',
-    empty: () => ({ vectors: null, records: null, inputProfile: null }),
+    empty: () => ({ vectors: null, norms: null, records: null, inputProfile: null }),
     read: async (env, active) => {
       if (!active.id)
         return null
@@ -175,7 +175,8 @@ function buildCaches() {
         new TextEncoder().encode(indexText),
         buffer,
       )
-      return { vectors: new Float32Array(buffer), records, inputProfile }
+      const vectors = new Float32Array(buffer)
+      return { vectors, norms: vectorNorms(vectors, records.length), records, inputProfile }
     },
   })
 
