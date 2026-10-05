@@ -1049,11 +1049,11 @@ async function performHybridSearch(env, query, options = {}) {
     getAssetIndex(env),
     getHarvested(env),
   ])
-  let vectors = { values: null, records: null }
+  let vectors = { values: null, norms: null, records: null }
   let queryVector = null
   if (options.scope !== 'rankings') {
     const loaded = await getVectors(env)
-    vectors = { values: loaded.vectors, records: loaded.records }
+    vectors = { values: loaded.vectors, norms: loaded.norms, records: loaded.records }
     if (vectors.values && vectors.records?.length > 0)
       queryVector = await getQueryEmbedding(query, env)
   }
