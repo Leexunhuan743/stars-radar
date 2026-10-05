@@ -93,6 +93,8 @@ pnpm deploy
 
 Worker secrets 与 Actions secrets 是两套配置，需要分别设置。完整环境变量示例在 [.env.example](.env.example) 中。请妥善保管访问密钥：若只分发 `MCP_API_KEY` 且同时配置了 `MCP_WRITE_API_KEY`，客户端只能读取个人备注并调用只读检索；只有持有写密钥的客户端才能通过你的 GitHub 令牌执行收藏或写入发现日志。
 
+`wrangler.jsonc` 还配置了两个 Cloudflare Rate Limiting binding：昂贵检索默认 60 次/分钟，写操作默认 20 次/分钟，按认证 key 在当前 Cloudflare location 计数。它们用于保护 embedding、GitHub/Web 探针和写接口，不是精确计费器；如果你的 Cloudflare 账号已经使用示例中的 `namespace_id`，部署前把两个 ID 改成该账号内未占用的正整数。
+
 如果希望数据工作流在更新完成后自动部署 Worker，还需要在 Actions 中设置 `CLOUDFLARE_API_TOKEN`，并授予对应账号的 Worker 部署权限。未设置时，工作流只更新 R2 数据。
 
 ## 连接 AI 助手
