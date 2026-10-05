@@ -59,6 +59,7 @@ pnpm install --frozen-lockfile
 
 这三处不会自动互相同步。`pnpm build:stars`、收割脚本和 Python 客户端使用当前进程的环境变量；Python 不读取 `.env`。真实配置及其环境专用变体均被忽略，示例文件可以入仓。本地 secret 文件规则见 [Cloudflare 文档](https://developers.cloudflare.com/workers/configuration/secrets/)。
 
+<!-- prettier-ignore -->
 | 名称                                       | 用途                                                    |
 | ------------------------------------------ | ------------------------------------------------------- |
 | `GITHUB_TOKEN`                             | 本地构建和 Worker 的 Stars、Lists、GitHub 搜索及点 Star |
@@ -147,6 +148,7 @@ Bash / zsh 使用 `export WORKER_URL=...` 和 `export MCP_API_KEY=...`。
 
 ## 数据与写入职责
 
+<!-- prettier-ignore -->
 | R2 对象                                   | 内容                                         | 写入者            |
 | ----------------------------------------- | -------------------------------------------- | ----------------- |
 | `catalog.json`                            | 当前公开 Stars、Lists 和元数据               | CI                |
@@ -182,6 +184,7 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。不配置 `MCP_WRITE_API_KEY` 时，`MCP_API_KEY` 保持向后兼容的读写权限；配置独立写密钥后，`MCP_API_KEY` 只能读取和检索，`MCP_WRITE_API_KEY` 可读且允许 `capture_github_discovery` 与 `star_and_ingest_repo`。REST 写接口使用相同规则，读 key 调用时返回 `403 write_forbidden`。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
 
+<!-- prettier-ignore -->
 | 工具                    | 用途 / 常用参数                                                              |
 | ----------------------- | ---------------------------------------------------------------------------- |
 | `get_radar_status`      | 数据规模、状态与工具选择提示                                                 |
@@ -208,6 +211,7 @@ Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。不配置 `MCP_WRITE_A
 
 除 CORS 预检外，所有接口都需要 Bearer 密钥，包括 `/health`。成功返回 `{ "ok": true, "data": ... }`，可能包含 `meta`；失败返回 `ok=false` 和错误上下文。
 
+<!-- prettier-ignore -->
 | 方法 / 路径           | 主要参数或用途                                                             |
 | --------------------- | -------------------------------------------------------------------------- |
 | `GET /health`         | 数据状态、数量、向量模型及社区新鲜度                                       |
@@ -271,6 +275,7 @@ pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 
 
 ## 排查问题
 
+<!-- prettier-ignore -->
 | 现象                        | 检查与处理                                                                 |
 | --------------------------- | -------------------------------------------------------------------------- |
 | `401 unauthorized`          | 检查 Bearer 请求头与 Worker 的读取 / 写入密钥                                 |
