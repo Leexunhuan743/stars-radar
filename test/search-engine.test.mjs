@@ -45,7 +45,7 @@ test('an ingest is searchable by its user reason before any asset-index rebuild'
   assert.equal(result.source, 'curated')
   assert.equal(result.reason, 'chosen for zephyr integration')
   assert.deepEqual(result.categories, ['research'])
-  assert.equal(result.relevance_score, 0.857)
+  assert.equal(result.ranking.score, 0.857)
 })
 
 test('an ingest matching an intent is offered without vectors and does not bypass the subject gate', () => {
@@ -98,13 +98,13 @@ test('a vector for an unstarred repository cannot leak into starred-only search'
   values[DIMS] = 1
   const queryVector = new Float32Array(DIMS)
   queryVector[0] = 1
-  const results = search('terminal', { scope: 'starred' }, {
+  const results = search('terminal', { scope: 'starred', explain: true }, {
     catalog: { repos: { 'me/saved': { description: 'a terminal' } } },
     vectors: { values, records: [repoRecord('me/saved'), repoRecord('other/public')] },
     queryVector,
   })
   assert.deepEqual(results.map(result => result.repo), ['me/saved'])
-  assert.equal(results[0].vector_similarity, 1)
+  assert.equal(results[0].ranking.vector_similarity, 1)
 })
 
 test('a vector and a journal keyword hit keep curated provenance and full metadata', () => {
@@ -112,7 +112,7 @@ test('a vector and a journal keyword hit keep curated provenance and full metada
   values[0] = 1
   const queryVector = new Float32Array(DIMS)
   queryVector[0] = 1
-  const [result] = search('zephyr', {}, {
+  const [result] = search('zephyr', { explain: true }, {
     harvested: [INGESTED],
     vectors: { values, records: [repoRecord(INGESTED.repo)] },
     queryVector,
@@ -120,21 +120,24 @@ test('a vector and a journal keyword hit keep curated provenance and full metada
   assert.equal(result.source, 'curated')
   assert.equal(result.source_badge, '💎 Curated Asset')
   assert.equal(result.reason, INGESTED.reason)
-  assert.equal(result.vector_similarity, 1)
+  assert.equal(result.ranking.vector_similarity, 1)
 })
 
-test('explanations show actual literal evidence and are omitted by default', () => {
+test('explain mode adds ranking details plus provenance and factual evidence', () => {
   const documents = { harvested: [INGESTED] }
-  assert.equal('explanation' in search('zephyr', {}, documents)[0], false)
+  const compact = search('zephyr', {}, documents)[0]
+  assert.equal('channels' in compact.ranking, false)
+  assert.equal('provenance' in compact, false)
+  assert.equal('evidence' in compact, false)
+
   const [result] = search('zephyr', { explain: true }, documents)
-  assert.deepEqual(result.explanation, {
-    channels: ['keyword'],
-    keyword_weight: 48,
-    vector_similarity: null,
-    matched_tokens: ['zephyr'],
-    matched_subjects: ['zephyr'],
-    matched_intents: [],
-  })
+  assert.deepEqual(result.ranking.channels, ['keyword'])
+  assert.equal(result.ranking.keyword_weight, 48)
+  assert.equal(result.ranking.vector_similarity, null)
+  assert.deepEqual(result.ranking.literal_matches.tokens, ['zephyr'])
+  assert.deepEqual(result.ranking.literal_matches.subjects, ['zephyr'])
+  assert.deepEqual(result.ranking.literal_matches.intents, [])
+  assert.equal(result.provenance.reason, result.evidence.find(item => item.kind === 'personal_note').id)
 })
 
 test('Chinese intent evidence includes only the matching terms of the activated domain', () => {
@@ -142,8 +145,8 @@ test('Chinese intent evidence includes only the matching terms of the activated 
     intents: { terminal: ['终端', 'terminal', 'cli'] },
     harvested: [{ ...INGESTED, description: 'terminal application' }],
   })
-  assert.deepEqual(result.explanation.matched_intents, [{ domain: 'terminal', terms: ['terminal'] }])
-  assert.deepEqual(result.explanation.matched_tokens, [])
+  assert.deepEqual(result.ranking.literal_matches.intents, [{ domain: 'terminal', terms: ['terminal'] }])
+  assert.deepEqual(result.ranking.literal_matches.tokens, [])
 })
 
 test('semantic-only matches carry vector evidence without fabricated keyword matches', () => {
@@ -156,10 +159,11 @@ test('semantic-only matches carry vector evidence without fabricated keyword mat
     vectors: { values, records: [repoRecord('me/tool')] },
     queryVector,
   })
-  assert.deepEqual(result.explanation.channels, ['vector'])
-  assert.deepEqual(result.explanation.matched_tokens, [])
-  assert.deepEqual(result.explanation.matched_intents, [])
-  assert.equal(result.explanation.vector_similarity, 1)
+  assert.deepEqual(result.ranking.channels, ['vector'])
+  assert.deepEqual(result.ranking.literal_matches.tokens, [])
+  assert.deepEqual(result.ranking.literal_matches.intents, [])
+  assert.equal(result.ranking.vector_similarity, 1)
+  assert.equal(result.ranking.repo_vector_similarity, 1)
 })
 
 test('GitHub name casing cannot duplicate a starred repo or change its source', () => {
@@ -177,7 +181,7 @@ test('GitHub name casing cannot duplicate a starred repo or change its source', 
   assert.equal(results.length, 1)
   assert.equal(results[0].repo, 'Acme/NovelTool')
   assert.equal(results[0].source, 'starred')
-  assert.deepEqual(results[0].explanation.channels, ['vector', 'keyword'])
+  assert.deepEqual(results[0].ranking.channels, ['vector', 'keyword'])
 })
 
 test('archive recall is explained as archive recall even for a curated source', () => {
@@ -188,9 +192,9 @@ test('archive recall is explained as archive recall even for a curated source', 
     },
   })
   assert.equal(result.source, 'curated')
-  assert.deepEqual(result.explanation.channels, ['archive'])
-  assert.equal(result.explanation.keyword_weight, 5)
-  assert.deepEqual(result.explanation.matched_intents, [{ domain: 'terminal', terms: ['cli'] }])
+  assert.deepEqual(result.ranking.channels, ['archive'])
+  assert.equal(result.ranking.keyword_weight, 5)
+  assert.deepEqual(result.ranking.literal_matches.intents, [{ domain: 'terminal', terms: ['cli'] }])
 })
 
 test('community evidence is collected from its scoring pool, including board language', () => {
@@ -198,8 +202,8 @@ test('community evidence is collected from its scoring pool, including board lan
     rankings: { trending: { overall_daily: [{ repo: 'acme/tool', description: 'a utility', language: 'Rust' }] } },
   })
   assert.equal(result.source, 'trending')
-  assert.deepEqual(result.explanation.matched_tokens, ['rust'])
-  assert.deepEqual(result.explanation.matched_subjects, ['rust'])
+  assert.deepEqual(result.ranking.literal_matches.tokens, ['rust'])
+  assert.deepEqual(result.ranking.literal_matches.subjects, ['rust'])
 })
 
 test('semantic-only ingested matches keep curated source without inventing literal evidence', () => {
@@ -213,8 +217,8 @@ test('semantic-only ingested matches keep curated source without inventing liter
     queryVector,
   })
   assert.equal(result.source, 'curated')
-  assert.deepEqual(result.explanation.channels, ['vector'])
-  assert.deepEqual(result.explanation.matched_tokens, [])
+  assert.deepEqual(result.ranking.channels, ['vector'])
+  assert.deepEqual(result.ranking.literal_matches.tokens, [])
 })
 
 test('explicit community searches are not truncated by mixed-view diversity policy', () => {
@@ -247,8 +251,8 @@ test('a strong semantic vector can recover an ordinary feature absent from short
   })
 
   assert.equal(result.repo, 'me/storage')
-  assert.deepEqual(result.explanation.channels, ['vector'])
-  assert.deepEqual(result.explanation.matched_subjects, [])
+  assert.deepEqual(result.ranking.channels, ['vector'])
+  assert.deepEqual(result.ranking.literal_matches.subjects, [])
 })
 
 test('README chunk vectors can recall a feature absent from repository metadata and expose semantic evidence', () => {
@@ -277,9 +281,11 @@ test('README chunk vectors can recall a feature absent from repository metadata 
   })
 
   assert.equal(result.repo, 'me/storage')
-  assert.equal(result.vector_similarity, 1)
-  assert.equal(result.explanation.semantic_evidence.repo_similarity, null)
-  assert.equal(result.explanation.semantic_evidence.readme_chunk.heading, 'Integrations')
-  assert.match(result.explanation.semantic_evidence.readme_chunk.snippet, /WebDAV/)
-  assert.equal(result.explanation.semantic_evidence.readme_chunk.similarity, 1)
+  assert.equal(result.ranking.vector_similarity, 1)
+  assert.equal(result.ranking.repo_vector_similarity, null)
+  assert.equal(result.ranking.readme_vector_similarity, 1)
+  const evidence = result.evidence.find(item => item.kind === 'readme_chunk')
+  assert.equal(evidence.content.heading, 'Integrations')
+  assert.match(evidence.content.snippet, /WebDAV/)
+  assert.equal(evidence.match.semantic_similarity, 1)
 })
