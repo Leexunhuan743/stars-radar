@@ -34,6 +34,7 @@ import { captureGithubDiscovery, searchGithubCode, searchGithubLive, searchWebTe
 import { readmeKey } from './object-keys.js'
 import { ProbeRequestError, probeToolFailure } from './probe-errors.js'
 import { staleSources } from './rankings-document.js'
+import { consumePlatformRateLimit, PlatformRateLimitError, rateLimitStatus } from './rate-limit.js'
 import { findReadmeEvidence, README_EVIDENCE_MAX_RESULTS } from './readme-evidence.js'
 import { compareRepositories, getRepositoryDetails, RepositoryRequestError } from './repository-details.js'
 import { RESULT_SOURCES } from './result-compiler.js'
@@ -243,6 +244,45 @@ async function handleRequest(req, env, ctx) {
       }) }],
     })
 
+    const checkRateLimit = async (binding, label) => {
+      try {
+        const decision = await consumePlatformRateLimit(binding, apiKey)
+        if (!decision.success) {
+          return {
+            error: 'rate_limited',
+            message: `${label} request budget exceeded for this credential at the current Cloudflare location.`,
+            status: 429,
+          }
+        }
+        return null
+      }
+      catch (error) {
+        if (error instanceof PlatformRateLimitError) {
+          return {
+            error: 'rate_limiter_unavailable',
+            message: `${label} rate limiter is configured but unavailable: ${error.message}`,
+            status: 503,
+          }
+        }
+        throw error
+      }
+    }
+
+    const restRateLimit = async (binding, label) => {
+      const failure = await checkRateLimit(binding, label)
+      return failure ? errorResponse(failure.error, failure.message, failure.status) : null
+    }
+
+    const toolRateLimit = async (binding, label) => {
+      const failure = await checkRateLimit(binding, label)
+      if (!failure)
+        return null
+      return {
+        isError: true,
+        content: [{ type: 'text', text: JSON.stringify(failure) }],
+      }
+    }
+
     // Direct REST API Endpoints
     if (url.pathname === '/health') {
       const catalog = await getCatalog(env)
@@ -265,6 +305,7 @@ async function handleRequest(req, env, ctx) {
         vectorCount: vectors.names?.length || 0,
         harvestedIngests: harvested.length,
         dataPlane: dataPlane.statuses,
+        rateLimits: rateLimitStatus(env),
         // Which community layers are actually from the latest run, and how old the oldest one is.
         // `updatedAt` alone cannot answer that: it moves on every run whether or not a layer
         // refreshed, which is how stale data came to look fresh.
@@ -282,12 +323,22 @@ async function handleRequest(req, env, ctx) {
     if (url.pathname === '/api/repository') {
       const include_readme = booleanParam(url.searchParams.get('include_readme'))
       const refresh = booleanParam(url.searchParams.get('refresh'))
+      if (refresh) {
+        const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+        if (limited)
+          return limited
+      }
       return okResponse(await getRepositoryDetails(env, await researchDocuments(env), url.searchParams.get('repo'), { include_readme, refresh }))
     }
 
     if (url.pathname === '/api/compare') {
       const repos = (url.searchParams.get('repos') || '').split(',')
       const refresh = booleanParam(url.searchParams.get('refresh'))
+      if (refresh) {
+        const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+        if (limited)
+          return limited
+      }
       return okResponse(await compareRepositories(env, await researchDocuments(env), repos, { refresh }))
     }
 
@@ -303,6 +354,11 @@ async function handleRequest(req, env, ctx) {
       const source = enumParam(url.searchParams.get('source'), { parameter: 'source', allowed: RESULT_SOURCES, fallback: undefined })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 10, min: 1, max: 20 })
       const explain = booleanParam(url.searchParams.get('explain'))
+      if (scope !== 'rankings') {
+        const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+        if (limited)
+          return limited
+      }
       const results = await performHybridSearch(env, q, { category, source, scope, limit, explain })
       return okResponse(results, { pretty: true })
     }
@@ -334,6 +390,9 @@ async function handleRequest(req, env, ctx) {
       const since = optionalString(url.searchParams.get('since'))
       const until = optionalString(url.searchParams.get('until'))
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 10, min: 1, max: 30 })
+      const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+      if (limited)
+        return limited
       let result
       try {
         result = await searchGithubLive(env, {
@@ -359,6 +418,9 @@ async function handleRequest(req, env, ctx) {
     if (url.pathname === '/api/capture' && req.method === 'POST') {
       if (!canWrite)
         return writeForbidden()
+      const limited = await restRateLimit(env.WRITE_RATE_LIMITER, 'write')
+      if (limited)
+        return limited
       try {
         const body = z.object(TOOL_DEFINITIONS.capture_github_discovery.inputSchema).parse(await readJsonBody(req, { limit: INGEST_BODY_LIMIT }))
         return okResponse(await captureGithubDiscovery(env, body), { pretty: true })
@@ -379,6 +441,9 @@ async function handleRequest(req, env, ctx) {
       const extension = optionalString(url.searchParams.get('extension'))
       const path = optionalString(url.searchParams.get('path'))
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 5, min: 1, max: 15 })
+      const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+      if (limited)
+        return limited
       const result = await searchGithubCode(env, {
         query: q,
         repo,
@@ -395,6 +460,9 @@ async function handleRequest(req, env, ctx) {
       const domain = optionalString(url.searchParams.get('domain'))
       const freshness = enumParam(url.searchParams.get('freshness'), { parameter: 'freshness', allowed: ['all', 'day', 'week', 'month', 'year'], fallback: 'all' })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 5, min: 1, max: 10 })
+      const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+      if (limited)
+        return limited
       const result = await searchWebTech(env, {
         query: q,
         domain,
@@ -407,6 +475,9 @@ async function handleRequest(req, env, ctx) {
     if (url.pathname === '/api/ingest' && req.method === 'POST') {
       if (!canWrite)
         return writeForbidden()
+      const limited = await restRateLimit(env.WRITE_RATE_LIMITER, 'write')
+      if (limited)
+        return limited
       try {
         const body = z.object(TOOL_DEFINITIONS.star_and_ingest_repo.inputSchema).parse(await readJsonBody(req, { limit: INGEST_BODY_LIMIT }))
         const result = await starAndIngestRepo(env, body)
@@ -450,6 +521,11 @@ async function handleRequest(req, env, ctx) {
       { description: TOOL_DEFINITIONS.search_github_stars.description, inputSchema: TOOL_DEFINITIONS.search_github_stars.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_stars.readOnly } },
       async ({ query, category, source, scope = 'all', limit = 5, min_score = 0.25, explain = false }) => {
         try {
+          if (scope !== 'rankings') {
+            const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+            if (limited)
+              return limited
+          }
           const results = await performHybridSearch(env, query, { category, source, scope, limit, min_score, explain })
           return {
             content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
@@ -468,6 +544,11 @@ async function handleRequest(req, env, ctx) {
       { description: TOOL_DEFINITIONS.get_repo_readme.description, inputSchema: TOOL_DEFINITIONS.get_repo_readme.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_repo_readme.readOnly } },
       async ({ repo, include_readme = true, refresh = false }) => {
         try {
+          if (refresh) {
+            const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+            if (limited)
+              return limited
+          }
           const result = await getRepositoryDetails(env, await researchDocuments(env), repo, { include_readme, refresh })
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
         }
@@ -482,6 +563,11 @@ async function handleRequest(req, env, ctx) {
       { description: TOOL_DEFINITIONS.compare_repositories.description, inputSchema: TOOL_DEFINITIONS.compare_repositories.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.compare_repositories.readOnly } },
       async ({ repos, refresh = false }) => {
         try {
+          if (refresh) {
+            const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+            if (limited)
+              return limited
+          }
           const result = await compareRepositories(env, await researchDocuments(env), repos, { refresh })
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
         }
@@ -540,6 +626,9 @@ async function handleRequest(req, env, ctx) {
       { description: TOOL_DEFINITIONS.search_github_live.description, inputSchema: TOOL_DEFINITIONS.search_github_live.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_live.readOnly } },
       async ({ query, language, min_stars = 15, sort = 'stars', order = 'desc', since, until, limit = 10 }) => {
         try {
+          const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+          if (limited)
+            return limited
           const result = await searchGithubLive(env, { query, language, minStars: min_stars, sort, order, since, until, limit })
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
@@ -561,6 +650,9 @@ async function handleRequest(req, env, ctx) {
       async ({ repo, query }) => {
         if (!canWrite)
           return writeToolFailure()
+        const limited = await toolRateLimit(env.WRITE_RATE_LIMITER, 'write')
+        if (limited)
+          return limited
         try {
           const result = await captureGithubDiscovery(env, { repo, query })
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -577,6 +669,9 @@ async function handleRequest(req, env, ctx) {
       { description: TOOL_DEFINITIONS.search_github_code.description, inputSchema: TOOL_DEFINITIONS.search_github_code.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_code.readOnly } },
       async ({ query, repo, language, extension, path: filePath, limit = 5 }) => {
         try {
+          const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+          if (limited)
+            return limited
           const result = await searchGithubCode(env, { query, repo, language, extension, path: filePath, limit })
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
@@ -597,6 +692,9 @@ async function handleRequest(req, env, ctx) {
       { description: TOOL_DEFINITIONS.search_web_tech.description, inputSchema: TOOL_DEFINITIONS.search_web_tech.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_web_tech.readOnly } },
       async ({ query, domain, freshness = 'all', limit = 5 }) => {
         try {
+          const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+          if (limited)
+            return limited
           const result = await searchWebTech(env, { query, domain, freshness, limit })
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
@@ -618,6 +716,9 @@ async function handleRequest(req, env, ctx) {
       async ({ repo, reason, categories = DEFAULT_INGEST_CATEGORIES }) => {
         if (!canWrite)
           return writeToolFailure()
+        const limited = await toolRateLimit(env.WRITE_RATE_LIMITER, 'write')
+        if (limited)
+          return limited
         try {
           const result = await starAndIngestRepo(env, { repo, reason, categories })
           return {
@@ -827,6 +928,7 @@ async function handleRequest(req, env, ctx) {
                 vector_dimensions: DIMS,
                 vector_model: EMBEDDING_MODEL,
                 vector_input_profile: vectors.inputProfile || null,
+                rate_limits: rateLimitStatus(env),
                 intent_domains: Object.keys(defaultIntents || {}).length,
                 community_layers: {
                   trending_categories: Object.keys(rankings.trending || {}).length,
