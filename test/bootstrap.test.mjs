@@ -16,13 +16,13 @@ function fixture({ starred = [], graphqlFailure = false, readmeFailure = false }
   const stub = path.join(directory, 'stub.mjs')
   fs.writeFileSync(stub, `
     const starred = ${JSON.stringify(starred)};
-    globalThis.fetch = async (input) => {
+    globalThis.fetch = async (input, init = {}) => {
       const url = String(input);
       if (url.includes('/user/starred')) return Response.json(starred);
       if (url.endsWith('/graphql')) return Response.json(${graphqlFailure ? '{ errors: [{ message: "denied" }] }' : '{ data: { viewer: { lists: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }'});
       if (url.endsWith('/readme')) return new Response(${readmeFailure ? '"denied", { status: 403 }' : '"# Fixture README", { headers: { "content-type": "text/plain" } }'});
       if (url.includes('/embeddings')) {
-        const body = JSON.parse(arguments[1]?.body || '{}');
+        const body = JSON.parse(init.body || '{}');
         const inputs = Array.isArray(body.input) ? body.input : [body.input];
         return Response.json({
           data: inputs.map((_, index) => ({ index, embedding: [1, ...Array(1023).fill(0)] })),
