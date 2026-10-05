@@ -3,8 +3,13 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { ACTIVE_GENERATION_KEY, generationKey } from '../src/data-generation.js'
-import { isReadmeKey, LOCAL_STARS_DIR } from '../src/object-keys.js'
-import { GENERATION_MANIFEST_KEY, GENERATION_STAGE_DIR, prepareDataGeneration } from './prepare_data_generation.js'
+import { README_BLOB_PREFIX } from '../src/object-keys.js'
+import {
+  GENERATION_MANIFEST_KEY,
+  GENERATION_STAGE_DIR,
+  prepareDataGeneration,
+  README_CONTENT_STAGE_DIR,
+} from './prepare_data_generation.js'
 import { verifyVectorPair } from './verify_vector_pair.js'
 
 const LOCAL_GENERATION_ID = '20261005T000000Z-0000000-0'
@@ -38,14 +43,10 @@ export async function seedLocalR2(bucket, root) {
   if (!objects.some(([key]) => key.endsWith(`/${GENERATION_MANIFEST_KEY}`)))
     throw new Error('Local generation staging did not produce generation-manifest.json.')
 
-  const stars = path.join(root, LOCAL_STARS_DIR)
-  for (const owner of await fs.readdir(stars, { withFileTypes: true })) {
-    if (!owner.isDirectory())
-      continue
-    for (const file of await fs.readdir(path.join(stars, owner.name), { withFileTypes: true })) {
-      if (file.isFile() && isReadmeKey(file.name))
-        objects.push([`${owner.name}/${file.name}`, `${LOCAL_STARS_DIR}/${owner.name}/${file.name}`])
-    }
+  const readmeStage = path.join(root, README_CONTENT_STAGE_DIR)
+  for (const file of await fs.readdir(readmeStage, { withFileTypes: true })) {
+    if (file.isFile() && file.name.endsWith('.md'))
+      objects.push([`${README_BLOB_PREFIX}${file.name}`, path.join(README_CONTENT_STAGE_DIR, file.name)])
   }
 
   const payloads = await Promise.all(objects.map(async ([key, file]) => ({
