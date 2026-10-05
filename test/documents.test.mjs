@@ -19,6 +19,7 @@ import {
   resetDocumentCaches,
   seedRankings,
 } from '../src/documents.js'
+import { createGenerationPointer, ACTIVE_GENERATION_KEY, generationKey } from '../src/data-generation.js'
 import { vectorManifest } from '../src/embeddings.js'
 import { INGEST_JOURNAL_PREFIX } from '../src/object-keys.js'
 
@@ -53,6 +54,19 @@ function bucket(objects = {}, { listFails = false } = {}) {
 }
 
 const CATALOG = JSON.stringify({ repos: { 'a/b': { repo: 'a/b' } }, categories: [], totalRepos: 1 })
+const GENERATION_ID = '20261005T071500Z-ceaa138fd814-12345'
+const GENERATION_SHA = 'ceaa138fd814f70ff2a194cf050a789e7e77cf95'
+
+function published(objects = {}) {
+  const result = {
+    [ACTIVE_GENERATION_KEY]: JSON.stringify(
+      createGenerationPointer(GENERATION_ID, GENERATION_SHA, '2026-10-05T07:15:00.000Z'),
+    ),
+  }
+  for (const [key, value] of Object.entries(objects))
+    result[key.startsWith('state/') ? key : generationKey(GENERATION_ID, key)] = value
+  return result
+}
 
 function repoRecord(repo) {
   return { id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' }
@@ -72,12 +86,13 @@ test('an absent document is served as the documented placeholder', async () => {
   assert.deepEqual(await getHarvested(env), [])
   assert.deepEqual(await getVectors(env), { vectors: null, records: null })
   const { statuses, degraded } = dataPlaneStatus()
+  assert.equal(statuses.generation, 'missing', 'a fresh install has no active generation yet')
   assert.equal(statuses.catalog, 'missing', 'an absent document is a first run, not a fault')
   assert.equal(degraded, false, 'nothing is published yet, so nothing is degraded')
 })
 
 test('an unreadable document is reported as unavailable instead of empty', async () => {
-  const env = { R2: bucket({ 'catalog.json': new Error('R2 unreachable') }) }
+  const env = { R2: bucket(published({ 'catalog.json': new Error('R2 unreachable') })) }
 
   await assert.rejects(getCatalog(env), /Could not read catalog\.json/, 'a failed read must not look like an empty catalogue')
   const { statuses, degraded } = dataPlaneStatus()
@@ -87,16 +102,21 @@ test('an unreadable document is reported as unavailable instead of empty', async
 
 test('a warm cache answers without touching the bucket again', async () => {
   // The whole reason these loaders exist: a request must not pay an R2 round trip per document.
-  const env = { R2: bucket({ 'catalog.json': CATALOG }) }
+  const env = { R2: bucket(published({ 'catalog.json': CATALOG })) }
   await getCatalog(env)
   await getCatalog(env)
-  assert.deepEqual(env.R2.reads, ['catalog.json'], 'the second read must come from the cache')
+  assert.deepEqual(
+    env.R2.reads,
+    [ACTIVE_GENERATION_KEY, generationKey(GENERATION_ID, 'catalog.json')],
+    'the second read must come from the generation-bound cache',
+  )
   assert.equal(dataPlaneStatus().statuses.catalog, 'fresh')
 
   // How long a cached document survives, and what happens when it expires, is
   // test/document-cache.test.mjs's subject; this module only has to wire the loaders up.
   resetDocumentCaches()
   assert.deepEqual(dataPlaneStatus().statuses, {
+    generation: 'unknown',
     catalog: 'unknown',
     rankings: 'unknown',
     assetIndex: 'unknown',
