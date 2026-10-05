@@ -69,8 +69,12 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
     : (ingest?.categories?.length ? 'ingest_journal' : asset?.categories?.length ? 'asset_index' : null)
   let body = null
   let readmeSource = null
+  let readmeStatus = null
+  let readmePreservedFromGeneration = null
   if (include_readme) {
     const ref = readmes.repos?.[(record?.repo || name).toLowerCase()]
+    readmeStatus = ref?.status || null
+    readmePreservedFromGeneration = ref?.preserved_from_generation || null
     const object = ref?.sha256 ? await env.R2.get(readmeBlobKey(ref.sha256)) : null
     if (object) {
       const parsed = parseFrontmatter(await object.text())
@@ -132,6 +136,12 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
     if (response.ok) {
       body = await response.text()
       readmeSource = 'github'
+      readmeStatus = 'live'
+      readmePreservedFromGeneration = null
+    }
+    else if (response.status === 404) {
+      readmeStatus = 'absent'
+      readmePreservedFromGeneration = null
     }
   }
   const projected = project(record)
@@ -188,6 +198,8 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
   if (include_readme) {
     result.readme_available = body !== null
     result.readme_source = readmeSource
+    result.readme_status = readmeStatus || (body !== null ? 'unknown' : 'missing')
+    result.readme_preserved_from_generation = readmePreservedFromGeneration
     result.readme_trust = body !== null ? EVIDENCE_TRUST.EXTERNAL_UNTRUSTED : null
     result.truncated = body !== null && body.length > 50000
     result.readme = body === null ? null : `<untrusted_content source="github_readme">\n${body.trim().slice(0, 50000)}\n</untrusted_content>`
