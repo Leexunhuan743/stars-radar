@@ -81,7 +81,6 @@ test('relevance falls back to each channel alone and never goes negative', () =>
   assert.equal(relevanceScore({}), 0, 'no signal at all scores zero rather than NaN')
 })
 
-
 test('multi-facet coverage shapes final relevance without changing single-facet queries', () => {
   const base = relevanceScore({ vScore: 0, kwWeight: 20 })
   const single = relevanceScore({
