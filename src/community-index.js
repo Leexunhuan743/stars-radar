@@ -27,7 +27,13 @@ export function buildCommunityIndex({ rankings, harvested } = {}) {
         ...(previous?.source_channels || []),
         ...(source ? [source] : []),
       ])]
-      byRepo.set(key, { ...(previous || {}), ...item, source_channels: sourceChannels })
+      const normalized = {
+        ...item,
+        // HelloGitHub names its prose field description_zh; consumers use one stable description
+        // field regardless of which community feed supplied the record.
+        description: item.description ?? item.description_zh ?? previous?.description,
+      }
+      byRepo.set(key, { ...(previous || {}), ...normalized, source_channels: sourceChannels })
     }
   }
 
