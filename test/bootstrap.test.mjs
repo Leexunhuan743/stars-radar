@@ -137,3 +137,33 @@ test('README download failure degrades the evidence plane without blocking repos
     setup.clean()
   }
 })
+
+test('compacted curator entries remain in candidate vectors after their raw journal keys are gone', () => {
+  const setup = fixture({ starred: [] })
+  try {
+    fs.writeFileSync(path.join(setup.directory, 'previous-asset-index.json'), JSON.stringify({
+      ingest_snapshot: {
+        keys: ['state/ingest-journal/already-compacted.jsonl'],
+        entries: [{
+          repo: 'curated/tool',
+          reason: 'retained curator evidence',
+          ingested_at: '2026-10-01T00:00:00Z',
+          key: 'state/ingest-journal/already-compacted.jsonl',
+        }],
+      },
+      probe_snapshot: { keys: [], entries: [] },
+    }))
+
+    const result = setup.run('index.js')
+    assert.equal(result.status, 0, result.stderr)
+
+    const records = JSON.parse(fs.readFileSync(path.join(setup.directory, 'embeddings-index.json'), 'utf8'))
+    assert.ok(
+      records.some(record => record.id === 'repo:curated/tool'),
+      'the active generation ingest snapshot remains part of the semantic corpus after raw compaction',
+    )
+  }
+  finally {
+    setup.clean()
+  }
+})
