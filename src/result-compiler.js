@@ -6,7 +6,7 @@
 // primary sort key inverted, relevance_score zeroed, and the `_rrf` tie-breaker removed.
 // The Worker imports this via src/index.js; test/result-compiler.test.mjs imports it
 // directly, so there is one source of truth rather than a drifting replica.
-import { buildReadmeEvidence } from './evidence.js'
+import { buildReadmeEvidence, EVIDENCE_TRUST } from './evidence.js'
 import { applyCommunityCap, relevanceScore } from './relevance.js'
 
 /**
@@ -94,8 +94,11 @@ export function compileResults({
       stars: info.stars,
       categories: info.categories || [],
       reason: info.reason || undefined,
+      reason_trust: info.reason ? EVIDENCE_TRUST.USER_TRUSTED : undefined,
       summary: info.summary || undefined,
+      summary_trust: info.summary ? EVIDENCE_TRUST.USER_TRUSTED : undefined,
       description: info.description || undefined,
+      description_trust: info.description ? EVIDENCE_TRUST.EXTERNAL_UNTRUSTED : undefined,
       relevance_score: relevance,
       vector_similarity: stats.vScore ? Number(stats.vScore.toFixed(4)) : undefined,
       ...(sourceChannels.length > 0 ? { source_channels: sourceChannels } : {}),
