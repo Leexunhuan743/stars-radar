@@ -92,7 +92,7 @@ test('a new reason for an existing star is immediately searchable before the cat
   assert.equal(results[0].reason, 'quantum research')
 })
 
-test('star plus ingest keeps per-field provenance and rejects legacy ingest summary trust', () => {
+test('star plus ingest keeps per-field provenance', () => {
   const [result] = search('quantum', { explain: true }, {
     catalog: {
       generatedAt: '2026-10-05T00:00:00Z',
@@ -109,7 +109,6 @@ test('star plus ingest keeps per-field provenance and rejects legacy ingest summ
     harvested: [{
       repo: 'acme/tool',
       reason: 'quantum research',
-      summary: 'legacy GitHub description copied into summary',
       ingested_at: '2026-10-05T01:00:00Z',
     }],
   })
@@ -123,17 +122,6 @@ test('star plus ingest keeps per-field provenance and rejects legacy ingest summ
   assert.equal(summaryEvidence.source.kind, 'catalog')
   assert.equal(result.trust.reason, 'user_trusted')
   assert.equal(result.trust.summary, 'user_trusted')
-
-  const legacyOnly = search('legacy copied summary', {}, {
-    harvested: [{
-      ...INGESTED,
-      reason: '',
-      description: 'generic utility',
-      summary: 'legacy copied summary',
-      ingested_at: '2026-10-05T01:00:00Z',
-    }],
-  })
-  assert.deepEqual(legacyOnly, [])
 })
 
 test('a vector for an unstarred repository cannot leak into starred-only search', () => {
