@@ -17,6 +17,7 @@ import {
   EMBEDDINGS_MANIFEST_KEY,
   INGEST_JOURNAL_PREFIX,
   RANKINGS_KEY,
+  READMES_MANIFEST_KEY,
 } from './object-keys.js'
 import { emptyRankings } from './rankings-document.js'
 
@@ -141,6 +142,12 @@ function buildCaches() {
     empty: () => ({ repos: {}, intent_inverted: {}, starredCount: 0, totalRepos: 0 }),
   })
 
+  const readmes = generationBoundCache(generation, {
+    name: READMES_MANIFEST_KEY,
+    read: (env, active) => readGenerationJson(env, active, READMES_MANIFEST_KEY),
+    empty: () => ({ schema: 1, repos: {} }),
+  })
+
   const vectors = generationBoundCache(generation, {
     name: 'embeddings',
     empty: () => ({ vectors: null, norms: null, records: null, inputProfile: null }),
@@ -187,7 +194,7 @@ function buildCaches() {
     ttlMs: JOURNAL_TTL_MS,
   })
 
-  return { generation, catalog, rankings, assetIndex, vectors, ingestJournal }
+  return { generation, catalog, rankings, assetIndex, readmes, vectors, ingestJournal }
 }
 
 let caches = buildCaches()
@@ -210,6 +217,10 @@ export function getAssetIndex(env) {
 
 export function getVectors(env) {
   return caches.vectors.load(env)
+}
+
+export function getReadmeManifest(env) {
+  return caches.readmes.load(env)
 }
 
 export function getHarvested(env) {
