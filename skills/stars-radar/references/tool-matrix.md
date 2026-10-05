@@ -157,14 +157,14 @@ fixtures test channel behavior; they do not measure real BGE-M3 or production pr
 
 ### `search_web_tech`
 
-- **Description**: Searches technical documentation, framework changelogs, error discussions, and technical teardowns with multi-provider routing (Brave / Tavily / keyless DuckDuckGo fallback). Enforces timeout protection (8s for API providers, 6s for DuckDuckGo) to prevent Worker hanging.
+- **Description**: Searches technical documentation, framework changelogs, error discussions, and technical teardowns through configured Brave / Tavily APIs. API calls are timeout-bounded.
 - **Inputs**:
   - `query` (string, required, max 512 characters): Technical query.
   - `domain` (string, optional): Target domain filter (e.g. `developers.cloudflare.com`).
   - `freshness` (enum: `day` | `week` | `month` | `year` | `all`, default: `all`).
   - `limit` (number, default: 5, max: 10).
-- **Output**: Object with `provider`, `query`, `count`, `results` and `freshness_applied`. Each result has `title`, `url`, and `snippet`. Brave/Tavily apply requested freshness; the keyless fallback reports `freshness_applied=false`.
-- **Failures**: Exhausted providers or an unparseable keyless page produce MCP `isError` / REST 503. A valid empty result list is successful. Repository and code probes also report upstream failures explicitly; GitHub rate-limit hints are returned as `retry_after_seconds` when known.
+- **Output**: Object with `provider`, `query`, `count`, `results` and `freshness_applied`. Each result has `title`, `url`, and `snippet`. Provider responses report whether the requested freshness filter was actually applied.
+- **Failures**: No configured provider or exhausted configured providers produce MCP `isError` / REST 503. A valid empty API result list is successful. Repository and code probes also report upstream failures explicitly; GitHub rate-limit hints are returned as `retry_after_seconds` when known.
 
 ### `star_and_ingest_repo`
 
