@@ -5,6 +5,8 @@ import { explainTextMatch, matchesSubjectGate, scoreText } from './scoring.js'
 export const README_EVIDENCE_MAX_RESULTS = 5
 export const README_EVIDENCE_MAX_CHUNK = 1200
 export const README_EVIDENCE_SNIPPET = 360
+export const README_VECTOR_MAX_CHUNKS = 6
+export const README_VECTOR_MIN_CHARS = 80
 
 function cleanMarkdown(text) {
   return String(text || '')
@@ -89,7 +91,7 @@ export function splitReadmeSections(markdown) {
   return sections
 }
 
-function snippetAround(text, terms, maxLength = README_EVIDENCE_SNIPPET) {
+export function snippetAround(text, terms = [], maxLength = README_EVIDENCE_SNIPPET) {
   if (text.length <= maxLength)
     return text
 
@@ -107,6 +109,48 @@ function snippetAround(text, terms, maxLength = README_EVIDENCE_SNIPPET) {
   const prefix = start > 0 ? '…' : ''
   const suffix = end < text.length ? '…' : ''
   return prefix + text.slice(start, end).trim() + suffix
+}
+
+export function selectReadmeVectorChunks(markdown, { limit = README_VECTOR_MAX_CHUNKS } = {}) {
+  if (!markdown || limit <= 0)
+    return []
+
+  const sections = splitReadmeSections(markdown)
+    .filter(section => section.text.length >= README_VECTOR_MIN_CHARS)
+    .map((section, index) => ({ ...section, index }))
+
+  if (sections.length <= limit)
+    return sections.map(({ index, ...section }) => section)
+
+  // Sample across the full README instead of taking only the introduction. This keeps the vector
+  // budget bounded while still giving late sections such as integrations, APIs and architecture a
+  // chance to participate in retrieval.
+  const selected = []
+  const used = new Set()
+  for (let slot = 0; slot < limit; slot++) {
+    const index = Math.round(slot * (sections.length - 1) / Math.max(1, limit - 1))
+    if (used.has(index))
+      continue
+    used.add(index)
+    selected.push(sections[index])
+  }
+
+  // Rounding can theoretically collapse two slots for very small inputs; fill any remaining budget
+  // with the longest unselected chunks because they usually carry the richest feature description.
+  if (selected.length < limit) {
+    for (const section of [...sections].sort((a, b) => b.text.length - a.text.length || a.index - b.index)) {
+      if (used.has(section.index))
+        continue
+      used.add(section.index)
+      selected.push(section)
+      if (selected.length >= limit)
+        break
+    }
+  }
+
+  return selected
+    .sort((a, b) => a.index - b.index)
+    .map(({ index, ...section }) => section)
 }
 
 export function findReadmeEvidence(markdown, query, intents, { limit = 2 } = {}) {
