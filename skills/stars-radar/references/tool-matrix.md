@@ -189,7 +189,6 @@ pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 
 
 The report compares lexical and real BGE-M3 hybrid retrieval and includes Recall@K, Precision@K, MRR, NDCG@K, forbidden hits, and P50/P95 latency.
 
-
 ## Authentication and write boundaries
 
 By default, a deployment with only `MCP_API_KEY` preserves the legacy single-key read/write model.
