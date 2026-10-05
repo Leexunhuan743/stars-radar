@@ -91,6 +91,14 @@ test('structured vector indexes reject strings, duplicate repo records and malfo
     () => validateVectorIndex([{ id: 'readme:a/b:x', repo: 'a/b', kind: 'readme_chunk', heading: 'Features' }]),
     /missing text/,
   )
+  assert.throws(
+    () => validateVectorIndex([{ ...repoRecord('a/b'), id: 'repo:wrong' }]),
+    /canonical id/,
+  )
+  assert.throws(
+    () => validateVectorIndex([chunkRecord('a/b')]),
+    /no matching repo metadata record/,
+  )
   assert.deepEqual(
     validateVectorIndex([repoRecord('a/b'), chunkRecord('a/b')]),
     { recordCount: 2, repoCount: 1 },
