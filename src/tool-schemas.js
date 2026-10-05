@@ -140,7 +140,7 @@ export const TOOL_DEFINITIONS = {
   search_web_tech: {
     name: 'search_web_tech',
     readOnly: true,
-    description: 'Search the broader technical web for official documentation, framework changelogs, StackOverflow error discussions, and technical teardowns. Multi-provider with zero-key fallback.',
+    description: 'Search the broader technical web for official documentation, framework changelogs, StackOverflow error discussions, and technical teardowns through configured Brave or Tavily providers.',
     inputSchema: {
       query: z.string().max(INPUT_LIMITS.query).describe('Technical search query (max 512 characters; e.g. "Cloudflare Workers vector dot product Float32Array performance")'),
       domain: z.string().min(1).max(INPUT_LIMITS.domain).optional().describe('Optional domain filter to restrict search (e.g. "developers.cloudflare.com", "stackoverflow.com")'),
