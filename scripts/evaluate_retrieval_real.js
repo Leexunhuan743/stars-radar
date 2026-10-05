@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import process from 'node:process'
 import { performance } from 'node:perf_hooks'
+import process from 'node:process'
 import { DIMS, EMBEDDING_MODEL, isEmbedding } from '../src/embeddings.js'
 import { foldJournalFiles } from '../src/ingest-journal.js'
 import { INGEST_JOURNAL_PREFIX } from '../src/object-keys.js'
