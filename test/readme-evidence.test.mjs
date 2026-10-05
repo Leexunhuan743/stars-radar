@@ -63,3 +63,27 @@ test('missing README or disabled limits produce no evidence', () => {
   assert.deepEqual(findReadmeEvidence('# Features\nWebDAV', '', INTENTS), [])
   assert.deepEqual(findReadmeEvidence('# Features\nWebDAV', 'webdav', INTENTS, { limit: 0 }), [])
 })
+
+
+test('generated Stars Radar archive metadata never masquerades as upstream README evidence', () => {
+  const archived = [
+    '---',
+    'repo: acme/tool',
+    'reason: selected because it supports WebDAV',
+    'description: WebDAV storage helper',
+    '---',
+    '# acme/tool',
+    '> **分类 (Categories)**: `storage`',
+    '> **推荐理由 (Reason)**: selected because it supports WebDAV',
+    '> **功能概述 (Summary)**: storage helper',
+    '> **项目简介 (Description)**: WebDAV storage helper',
+    '',
+    '---',
+    '',
+    '# Actual README',
+    'A generic local utility with no protocol claims.',
+  ].join('\n')
+
+  assert.deepEqual(findReadmeEvidence(archived, 'webdav', {}), [])
+  assert.deepEqual(splitReadmeSections(archived).map(section => section.heading), ['Actual README'])
+})
