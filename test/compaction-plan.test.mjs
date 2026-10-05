@@ -22,7 +22,8 @@ test('compaction deletes only previous snapshotted ingests and probes actually d
       },
     }))
 
-    assert.deepEqual(buildCompactionPlan(root), {
+    const plan = buildCompactionPlan(root)
+    assert.deepEqual(plan, {
       schema: 1,
       ingest_keys: [
         'state/ingest-journal/old-a.jsonl',
@@ -30,6 +31,11 @@ test('compaction deletes only previous snapshotted ingests and probes actually d
       ],
       probe_keys: ['state/probe-captures/probe-a.jsonl'],
     })
+    assert.equal(
+      [...plan.ingest_keys, ...plan.probe_keys].includes('state/probe-captures/arrived-after-download.jsonl'),
+      false,
+      'a capture written after the build downloaded its local snapshot is never part of the deletion plan',
+    )
   }
   finally {
     fs.rmSync(root, { recursive: true, force: true })
