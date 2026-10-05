@@ -408,3 +408,15 @@ test('corroborating source channels are exposed without changing the primary sou
   assert.equal(result.source, 'trending')
   assert.deepEqual(result.source_channels, ['trending', 'hellogithub', 'breakout'])
 })
+
+
+test('source filtering matches corroborating channels without rewriting the primary source', () => {
+  const stats = vectorEntry({ source: 'trending', kwWeight: 20 })
+  stats.sourceChannels = ['trending', 'hellogithub']
+  const rrfMap = new Map([['acme/tool', stats]])
+
+  const [result] = compile({ rrfMap, targetSource: 'hellogithub' })
+  assert.equal(result.repo, 'acme/tool')
+  assert.equal(result.source, 'trending')
+  assert.deepEqual(result.source_channels, ['trending', 'hellogithub'])
+})
