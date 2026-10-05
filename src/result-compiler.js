@@ -78,6 +78,8 @@ export function compileResults({
 
     const resultRepo = info.repo || repoName
     const resultSourceKind = isUserStarred ? 'catalog' : source === 'curated' ? 'ingest_journal' : source
+    const fieldOrigin = field => info.fieldOrigins?.[field] || null
+    const defaultSnapshotAt = isUserStarred ? catalogSnapshotAt : rankingSnapshotAt
     const factualEvidence = []
     const provenance = {}
     if (explain) {
@@ -109,28 +111,30 @@ export function compileResults({
         provenance.description = descriptionEvidence.id
       }
 
-      const noteFields = ['reason', 'summary'].filter(field => info[field])
-      if (noteFields.length > 0) {
-        const noteEvidence = buildRepositoryEvidence({
-          kind: 'personal_note',
+      for (const field of ['reason', 'summary'].filter(field => info[field])) {
+        const origin = fieldOrigin(field)
+        const trusted = origin?.trust === EVIDENCE_TRUST.USER_TRUSTED
+        const fieldEvidence = buildRepositoryEvidence({
+          kind: trusted ? 'personal_note' : 'community_text',
           repo: resultRepo,
-          source: resultSourceKind,
-          trust: EVIDENCE_TRUST.USER_TRUSTED,
-          snapshotAt: isUserStarred ? catalogSnapshotAt : rankingSnapshotAt,
-          fields: noteFields,
+          source: origin?.source || resultSourceKind,
+          trust: trusted ? EVIDENCE_TRUST.USER_TRUSTED : EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
+          snapshotAt: origin?.snapshotAt ?? defaultSnapshotAt,
+          identity: `${field}:${origin?.source || resultSourceKind}:${origin?.snapshotAt || defaultSnapshotAt || 'unknown'}`,
+          fields: [field],
         })
-        factualEvidence.push(noteEvidence)
-        for (const field of noteFields)
-          provenance[field] = noteEvidence.id
+        factualEvidence.push(fieldEvidence)
+        provenance[field] = fieldEvidence.id
       }
 
       if ((info.categories || []).length > 0) {
+        const origin = fieldOrigin('categories')
         const categoryEvidence = buildRepositoryEvidence({
           kind: 'user_taxonomy',
           repo: resultRepo,
-          source: isUserStarred ? 'github_lists' : source === 'curated' ? 'ingest_journal' : 'asset_index',
-          trust: EVIDENCE_TRUST.USER_TRUSTED,
-          snapshotAt: isUserStarred ? catalogSnapshotAt : rankingSnapshotAt,
+          source: origin?.source || (isUserStarred ? 'github_lists' : source === 'curated' ? 'ingest_journal' : 'asset_index'),
+          trust: origin?.trust || EVIDENCE_TRUST.USER_TRUSTED,
+          snapshotAt: origin?.snapshotAt ?? defaultSnapshotAt,
           fields: ['categories'],
         })
         factualEvidence.push(categoryEvidence)
@@ -160,9 +164,9 @@ export function compileResults({
     ]
     const trust = {}
     if (info.reason)
-      trust.reason = EVIDENCE_TRUST.USER_TRUSTED
+      trust.reason = fieldOrigin('reason')?.trust || EVIDENCE_TRUST.EXTERNAL_UNTRUSTED
     if (info.summary)
-      trust.summary = EVIDENCE_TRUST.USER_TRUSTED
+      trust.summary = fieldOrigin('summary')?.trust || EVIDENCE_TRUST.EXTERNAL_UNTRUSTED
     if (info.description)
       trust.description = EVIDENCE_TRUST.EXTERNAL_UNTRUSTED
 
