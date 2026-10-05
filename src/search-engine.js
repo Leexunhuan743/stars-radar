@@ -27,12 +27,10 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
     return [name.toLowerCase(), { ...record, repo: record.repo || name, fieldOrigins }]
   }))
 
-  // Ingest owns only fields the user actually supplied. Historical ingest rows may still contain
-  // `summary` copied from GitHub's repository description; treating that as a personal note would
-  // cross the trust boundary. Keep description external and reason/categories user-authored.
+  // Current ingest records own only explicit user fields. Description remains external metadata;
+  // reason and taxonomy carry user-trusted provenance.
   const curated = harvested.map(item => ({
     ...item,
-    summary: '',
     fieldOrigins: {
       ...(item.reason
         ? { reason: { source: 'ingest_journal', snapshotAt: item.ingested_at || null, trust: EVIDENCE_TRUST.USER_TRUSTED } }
