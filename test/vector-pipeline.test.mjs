@@ -21,7 +21,9 @@ let buildRepositoryVectors
 let embeddingText
 let repositoryVectorRows
 
-const repoRecord = repo => ({ id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' })
+function repoRecord(repo) {
+  return { id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' }
+}
 
 before(async () => {
   process.env.VECTOR_STORE_ROOT = TMP
