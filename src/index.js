@@ -1037,16 +1037,18 @@ async function attachReadmeEvidence(env, results, query) {
 
     const evidence = {
       source: 'cached_readme',
-      status: 'missing',
+      status: ref?.status === 'unavailable' ? 'unavailable' : (ref?.status === 'absent' ? 'absent' : 'missing'),
+      manifest_status: ref?.status || null,
       generation: manifest.generation?.id || null,
       readme_sha256: ref?.sha256 || null,
+      preserved_from_generation: ref?.preserved_from_generation || null,
       snippets: [],
     }
     try {
       if (ref?.sha256) {
         const object = await env.R2.get(readmeBlobKey(ref.sha256))
         if (object) {
-          evidence.status = 'ok'
+          evidence.status = ref.status === 'stale' ? 'stale' : 'ok'
           const hits = findReadmeEvidence(await object.text(), query, defaultIntents)
           evidence.snippets = hits
           result.evidence.push(...hits.map(hit => buildReadmeEvidence({
