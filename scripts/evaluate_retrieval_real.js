@@ -4,7 +4,15 @@ import { performance } from 'node:perf_hooks'
 import process from 'node:process'
 import { DIMS, EMBEDDING_MODEL, isEmbedding } from '../src/embeddings.js'
 import { foldJournalFiles } from '../src/ingest-journal.js'
-import { INGEST_JOURNAL_PREFIX } from '../src/object-keys.js'
+import {
+  ASSET_INDEX_KEY,
+  CATALOG_KEY,
+  EMBEDDINGS_BIN_KEY,
+  EMBEDDINGS_INDEX_KEY,
+  INGEST_JOURNAL_PREFIX,
+  LOCAL_RANKINGS_DIR,
+  RANKINGS_KEY,
+} from '../src/object-keys.js'
 import { searchDocuments } from '../src/search-engine.js'
 
 const defaultIntents = JSON.parse(fs.readFileSync(new URL('../data/intents.json', import.meta.url), 'utf-8'))
@@ -45,10 +53,10 @@ function loadHarvested(root) {
 }
 
 function loadVectors(root) {
-  const namesPath = path.resolve(root, 'embeddings-index.json')
-  const binPath = path.resolve(root, 'embeddings.bin')
+  const namesPath = path.resolve(root, EMBEDDINGS_INDEX_KEY)
+  const binPath = path.resolve(root, EMBEDDINGS_BIN_KEY)
   if (!fs.existsSync(namesPath) || !fs.existsSync(binPath))
-    throw new Error('Real benchmark needs embeddings-index.json and embeddings.bin from the target data plane.')
+    throw new Error(`Real benchmark needs ${EMBEDDINGS_INDEX_KEY} and ${EMBEDDINGS_BIN_KEY} from the target data plane.`)
   const names = JSON.parse(fs.readFileSync(namesPath, 'utf-8'))
   const bytes = fs.readFileSync(binPath)
   if (bytes.byteLength !== names.length * DIMS * 4)
@@ -186,9 +194,9 @@ export async function main() {
   if (!Array.isArray(fixture?.cases) || fixture.cases.length === 0)
     throw new Error('Benchmark fixture must contain a non-empty cases array.')
 
-  const catalog = readJson(path.join(root, 'catalog.json'), { repos: {} })
-  const rankings = readJson(path.join(root, 'rankings', 'rankings.json'), {})
-  const assetIndex = readJson(path.join(root, 'asset-index.json'), { repos: {}, intent_inverted: {} })
+  const catalog = readJson(path.join(root, CATALOG_KEY), { repos: {} })
+  const rankings = readJson(path.join(root, LOCAL_RANKINGS_DIR, RANKINGS_KEY), {})
+  const assetIndex = readJson(path.join(root, ASSET_INDEX_KEY), { repos: {}, intent_inverted: {} })
   const harvested = loadHarvested(root)
   const vectors = lexicalOnly ? { values: null, names: null } : loadVectors(root)
   const documents = { catalog, rankings, assetIndex, harvested, vectors, intents: defaultIntents }
