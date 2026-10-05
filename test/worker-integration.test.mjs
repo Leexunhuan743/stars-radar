@@ -37,14 +37,18 @@ test('the actual Worker serves authenticated research routes and registers usabl
     const writeArtifact = async (key, content) => fs.writeFileSync(path.join(directory, key), typeof content === 'string' ? content : new Uint8Array(content))
     await writeArtifact('catalog.json', JSON.stringify({ repos, totalRepos: 2, categories: [], generatedAt: '2026-10-03T00:00:00Z' }))
     await writeArtifact('asset-index.json', JSON.stringify({ repos: {}, intent_inverted: {}, totalRepos: 0 }))
-    const names = Object.keys(repos)
-    const index = new TextEncoder().encode(JSON.stringify(names))
-    const binary = new Float32Array(DIMS * names.length)
+    const records = Object.keys(repos).map(repo => ({
+      id: `repo:${repo.toLowerCase()}`,
+      repo,
+      kind: 'repo',
+    }))
+    const index = new TextEncoder().encode(JSON.stringify(records))
+    const binary = new Float32Array(DIMS * records.length)
     binary[0] = 1
     binary[DIMS] = 1
     await writeArtifact('embeddings-index.json', index)
     await writeArtifact('embeddings.bin', binary.buffer)
-    await writeArtifact('embeddings-manifest.json', JSON.stringify(await vectorManifest(names, index, binary)))
+    await writeArtifact('embeddings-manifest.json', JSON.stringify(await vectorManifest(records, index, binary)))
     fs.mkdirSync(path.join(directory, 'rankings'))
     fs.writeFileSync(path.join(directory, 'rankings', 'rankings.json'), '{}')
     fs.mkdirSync(path.join(directory, 'stars', 'fixture'), { recursive: true })
@@ -70,6 +74,8 @@ test('the actual Worker serves authenticated research routes and registers usabl
     assert.equal(health.ok, true)
     assert.equal(health.data.totalStarred, 2, 'temporary R2 data must be loaded before any candidate lookup')
     assert.equal(health.data.vectorCount, 2)
+    assert.equal(health.data.repoVectorCount, 2)
+    assert.equal(health.data.readmeChunkVectorCount, 0)
     assert.deepEqual(health.data.rateLimits, {
       expensive_requests: false,
       write_requests: false,
