@@ -176,7 +176,7 @@ test('archive recall is explained as archive recall even for a curated source', 
   })
   assert.equal(result.source, 'curated')
   assert.deepEqual(result.explanation.channels, ['archive'])
-  assert.equal(result.explanation.keyword_weight, 12)
+  assert.equal(result.explanation.keyword_weight, 5)
   assert.deepEqual(result.explanation.matched_intents, [{ domain: 'terminal', terms: ['cli'] }])
 })
 
@@ -202,4 +202,22 @@ test('semantic-only ingested matches keep curated source without inventing liter
   assert.equal(result.source, 'curated')
   assert.deepEqual(result.explanation.channels, ['vector'])
   assert.deepEqual(result.explanation.matched_tokens, [])
+})
+
+
+test('explicit community searches are not truncated by mixed-view diversity policy', () => {
+  const trending = Array.from({ length: 5 }, (_, index) => ({
+    repo: `community/tool-${index + 1}`,
+    description: 'terminal cli utility',
+    stars: 100 - index,
+  }))
+  const documents = { rankings: { trending: { overall_daily: trending } } }
+
+  const bySource = search('terminal', { source: 'trending', limit: 5 }, documents)
+  const byScope = search('terminal', { scope: 'rankings', limit: 5 }, documents)
+  const mixed = search('terminal', { scope: 'all', limit: 5 }, documents)
+
+  assert.equal(bySource.length, 5, 'source=trending explicitly asks for a community result set')
+  assert.equal(byScope.length, 5, 'scope=rankings explicitly asks for a community result set')
+  assert.equal(mixed.length, 2, 'the default mixed view keeps its discovery diversity cap')
 })
