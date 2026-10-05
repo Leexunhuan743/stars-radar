@@ -382,6 +382,9 @@ test('README chunks are separate records and do not force the repo metadata vect
   assert.equal(records[0].kind, 'repo')
   assert.equal(records[1].kind, 'readme_chunk')
   assert.equal(records[1].heading, 'Features')
+  assert.match(records[1].readme_sha256, /^[0-9a-f]{64}$/)
+  assert.match(records[1].content_sha256, /^[0-9a-f]{64}$/)
+  assert.equal(records[1].ordinal, 0)
   assert.match(records[1].text, /S3-compatible storage/)
 
   const stable = await buildRepositoryVectors(inputs)
