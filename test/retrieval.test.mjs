@@ -80,3 +80,28 @@ test('relevance falls back to each channel alone and never goes negative', () =>
   assert.equal(relevanceScore({ vScore: 0, kwWeight: 12 }), 0.6, 'keyword-only uses the non-linear mapping')
   assert.equal(relevanceScore({}), 0, 'no signal at all scores zero rather than NaN')
 })
+
+
+test('multi-facet coverage shapes final relevance without changing single-facet queries', () => {
+  const base = relevanceScore({ vScore: 0, kwWeight: 20 })
+  const single = relevanceScore({
+    vScore: 0,
+    kwWeight: 20,
+    facetCoverage: { matched: 1, total: 1, ratio: 1, matched_facets: ['one'] },
+  })
+  const sparse = relevanceScore({
+    vScore: 0,
+    kwWeight: 20,
+    facetCoverage: { matched: 1, total: 4, ratio: 0.25, matched_facets: ['one'] },
+  })
+  const complete = relevanceScore({
+    vScore: 0,
+    kwWeight: 20,
+    facetCoverage: { matched: 4, total: 4, ratio: 1, matched_facets: ['one', 'two', 'three', 'four'] },
+  })
+
+  assert.equal(single, base, 'single-facet relevance keeps the pre-facet calibration')
+  assert.ok(sparse < base, 'covering only one of several requested facets is discounted')
+  assert.ok(complete > base, 'covering all requested facets receives a bounded final-ranking lift')
+  assert.ok(complete <= 0.99)
+})
