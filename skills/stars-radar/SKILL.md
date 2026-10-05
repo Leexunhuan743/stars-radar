@@ -2,7 +2,7 @@
 name: stars-radar
 description: "Search, retrieve, and harvest GitHub repositories, source code snippets, tech docs, and AI Agent Skills through your own deployed Stars Radar MCP server and local CLI. Use when the user asks to search GitHub stars, find open-source tools, inspect real-world code snippets, track GitHub trending/breakout repos, harvest agent skills into the 1024D vector database, or one-click star and ingest repos. Do not use for general non-technical web browsing or managing non-GitHub resources."
 metadata:
-  version: "1.0.0"
+  version: "2.0.0"
   author: "Stars Radar Contributors"
   category: "developer-intelligence"
 ---
