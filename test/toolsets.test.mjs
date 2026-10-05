@@ -55,7 +55,6 @@ test('every toolset only references declared tools', () => {
   assert.deepEqual(validateToolsetCoverage(), [])
 })
 
-
 test('research automatically exposes every declared read-only tool and no write tool', () => {
   const research = resolveToolset('research')
   for (const [name, definition] of Object.entries(TOOL_DEFINITIONS))
