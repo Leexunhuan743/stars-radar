@@ -27,6 +27,7 @@ import {
   optionalString,
   PayloadTooLargeError,
   readJsonBody,
+  stringParam,
 } from './http.js'
 import { foldIngestEntries } from './ingest-journal.js'
 import { captureGithubDiscovery, searchGithubCode, searchGithubLive, searchWebTech } from './live-probes.js'
@@ -274,7 +275,7 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/search') {
-      const q = url.searchParams.get('q') || ''
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: 512 })
       const category = optionalString(url.searchParams.get('category'))
       const scope = enumParam(url.searchParams.get('scope'), { parameter: 'scope', allowed: ['all', 'starred', 'rankings'], fallback: 'all' })
       const source = enumParam(url.searchParams.get('source'), { parameter: 'source', allowed: RESULT_SOURCES, fallback: undefined })
@@ -304,7 +305,7 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/live') {
-      const q = url.searchParams.get('q') || ''
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: 512 })
       const language = optionalString(url.searchParams.get('language'))
       const minStars = intParam(url.searchParams.get('min_stars'), { parameter: 'min_stars', fallback: 15, min: 0 })
       const sort = enumParam(url.searchParams.get('sort'), { parameter: 'sort', allowed: ['stars', 'updated', 'forks'], fallback: 'stars' })
@@ -348,7 +349,7 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/code') {
-      const q = url.searchParams.get('q') || ''
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: 256 })
       const repo = optionalString(url.searchParams.get('repo'))
       const language = optionalString(url.searchParams.get('language'))
       const extension = optionalString(url.searchParams.get('extension'))
@@ -366,7 +367,7 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/web') {
-      const q = url.searchParams.get('q') || ''
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: 512 })
       const domain = optionalString(url.searchParams.get('domain'))
       const freshness = enumParam(url.searchParams.get('freshness'), { parameter: 'freshness', allowed: ['all', 'day', 'week', 'month', 'year'], fallback: 'all' })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 5, min: 1, max: 10 })
