@@ -113,6 +113,19 @@ export function bindReadmeEvidence(evidence, { ref, generation } = {}) {
   }
 }
 
+export function bindResultReadmeEvidence(results, manifest = {}) {
+  for (const result of results || []) {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(result?.repo || ''))
+      continue
+    const ref = manifest.repos?.[result.repo.toLowerCase()]
+    result.evidence = (result.evidence || []).map(item => bindReadmeEvidence(item, {
+      ref,
+      generation: manifest.generation,
+    }))
+  }
+  return results
+}
+
 export function buildRepositoryEvidence({
   kind,
   repo,
