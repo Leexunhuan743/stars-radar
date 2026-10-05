@@ -72,10 +72,11 @@ pnpm exec wrangler r2 bucket create your-radar-bucket
 | `R2_BUCKET` | 上一步创建的桶名 |
 | `R2_ACCESS_KEY_ID` | R2 S3 访问密钥 ID |
 | `R2_SECRET_ACCESS_KEY` | R2 S3 访问密钥 |
+| `RETRIEVAL_BENCHMARK_B64` | 私有人工标注检索 benchmark 的 base64；用于候选 generation activation 与 PR retrieval gate |
 
 R2 的 S3 凭据需要能读写该桶。这里的 `GH_TOKEN` 在构建时映射为 `GITHUB_TOKEN`，GitHub 自动提供的工作流令牌不能代替你的个人令牌来同步个人收藏。
 
-在 **Actions** 中启用工作流，然后手动运行 **Update Repos Info**。第一次运行会从你的账号生成收藏目录、README 和检索索引。以后工作流每 6 小时运行一次。catalog、榜单、资产索引、向量以及 README 引用表会作为同一个不可变 generation 发布；README 正文按 SHA-256 存为 `readmes/<sha256>.md` 内容寻址对象。只有 generation 与引用到的 README blobs 都上传成功并完成回读校验后才切换 `active-generation.json`。默认保留最近三个 generations，可用 `pnpm data:rollback -- --list` / `pnpm data:rollback -- --to <generation-id>` 回滚。
+在 **Actions** 中启用工作流，然后手动运行 **Update Repos Info**。第一次运行会从你的账号生成收藏目录、README 和检索索引。以后工作流每 6 小时运行一次。catalog、榜单、资产索引、candidate vectors 以及 README 引用表会作为同一个不可变 generation 发布；activation 前必须先通过 private human-labeled retrieval gate，并对 generation manifest hashes、vector manifest/index/bin 与所有 README blob SHA-256 做完整性校验。只有全部通过才切换 `active-generation.json`。默认保留最近三个 generations，state compaction 与同一 recovery horizon 对齐。Worker 自动部署在真正 `wrangler deploy` 前也会验证 active generation；没有合法 generation 时直接 fail closed。
 
 ### 4. 配置服务并部署
 
@@ -183,7 +184,7 @@ python scripts/search_stars_cli.py --help
 
 **数据会公开吗？**
 
-检索质量由两层门禁验证：`Retrieval Quality` workflow 会恢复当前 production retrieval plane，并从真实 Stars catalog 派生 exact-identity、个人备注与负查询，强制检查 Recall/MRR/NDCG、Evidence Coverage、Provenance Completeness 和延迟；若额外配置 `RETRIEVAL_BENCHMARK_B64`，还会运行部署者维护的人工 relevance labels 作为第二层 gate。合成 fixture 只用于回归测试，不充当生产质量证明。
+检索验证分成两层，但二者职责不同：production-derived exact-identity/个人备注/负查询只作为 regression smoke；真正的 Retrieval Quality Closure 依赖必填的 `RETRIEVAL_BENCHMARK_B64` 人工 relevance labels，并要求 README-only、多条件、多语言、negative、community 等 class-level thresholds。workflow 会先恢复 production corpus，再用当前候选代码重新生成 candidate vectors，随后才跑 derived smoke 与 private quality gate；scheduled data build 也在 generation activation 前执行同样的候选门禁。
 
 生成的数据保存在你的 R2 桶中，不提交到代码仓库；服务接口需要访问密钥。同步管线排除私有仓库。请保持桶为私有，并只把密钥交给受信任的客户端。这是单个账号的个人服务，所有使用同一密钥的客户端共享数据和操作权限。
 
