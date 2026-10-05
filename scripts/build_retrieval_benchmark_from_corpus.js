@@ -139,6 +139,8 @@ export function deriveBenchmark(catalog, { maxExact = 24, maxNotes = 24 } = {}) 
         min_mean_recall_at_k: 0.85,
         min_mrr: 0.8,
         min_mean_ndcg_at_k: 0.8,
+        min_evidence_coverage_rate: 0.95,
+        min_provenance_completeness_rate: 0.95,
         min_negative_empty_success_rate: 1,
         max_forbidden_hits: 0,
         max_p95_latency_ms: 5000,
