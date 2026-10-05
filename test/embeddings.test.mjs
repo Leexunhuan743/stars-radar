@@ -15,7 +15,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { verifyVectorPair } from '../scripts/verify_vector_pair.js'
-import { BYTES_PER_VECTOR, describePairMismatch, DIMS, EMBEDDING_INPUT_PROFILE, EMBEDDING_MODEL, expectedPairBytes, isEmbedding, LEGACY_EMBEDDING_INPUT_PROFILE, vectorCountFromBytes, vectorManifest, verifyVectorManifest } from '../src/embeddings.js'
+import { BYTES_PER_VECTOR, describePairMismatch, DIMS, EMBEDDING_INPUT_PROFILE, EMBEDDING_MODEL, expectedPairBytes, isEmbedding, vectorCountFromBytes, vectorManifest, verifyVectorManifest } from '../src/embeddings.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -34,6 +34,7 @@ function writePair(root, { names, bytes, catalogueRepos = 3 }) {
     const binary = fs.readFileSync(path.join(root, 'embeddings.bin'))
     fs.writeFileSync(path.join(root, 'embeddings-manifest.json'), JSON.stringify({
       model: 'BAAI/bge-m3',
+      input_profile: 'repo-metadata-readme-v2',
       dimensions: 1024,
       count: names.length,
       index_sha256: createHash('sha256').update(index).digest('hex'),
@@ -197,7 +198,7 @@ test('the CI gate requires vectors for journal ingests even when the star catalo
   finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
-test('vector manifests report whether README evidence is present without rejecting safe legacy generations', async () => {
+test('vector manifests require the current README-aware input profile exactly', async () => {
   const names = ['a/b']
   const index = Buffer.from(JSON.stringify(names))
   const binary = Buffer.alloc(BYTES_PER_VECTOR)
@@ -206,16 +207,15 @@ test('vector manifests report whether README evidence is present without rejecti
   assert.equal(current.input_profile, EMBEDDING_INPUT_PROFILE)
   assert.equal(await verifyVectorManifest(current, names, index, binary), EMBEDDING_INPUT_PROFILE)
 
-  const legacy = { ...current }
-  delete legacy.input_profile
-  assert.equal(
-    await verifyVectorManifest(legacy, names, index, binary),
-    LEGACY_EMBEDDING_INPUT_PROFILE,
-    'old manifests remain readable but are never mislabeled as README-aware',
+  const missingProfile = { ...current }
+  delete missingProfile.input_profile
+  await assert.rejects(
+    verifyVectorManifest(missingProfile, names, index, binary),
+    /required repo-metadata-readme-v2 generation/,
   )
 
   await assert.rejects(
-    verifyVectorManifest({ ...current, input_profile: 'unknown-v9' }, names, index, binary),
-    /Unsupported vector input profile/,
+    verifyVectorManifest({ ...current, input_profile: 'repo-metadata-v1' }, names, index, binary),
+    /required repo-metadata-readme-v2 generation/,
   )
 })
