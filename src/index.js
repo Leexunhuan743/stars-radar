@@ -1173,7 +1173,6 @@ async function starAndIngestRepo(env, { repo, reason, categories = DEFAULT_INGES
     language: repoData.language || '',
     categories,
     reason: reason || `Ingested via Stars Radar on ${new Date().toISOString().slice(0, 10)}`,
-    summary: repoData.description || '',
     topics: repoData.topics || [],
     created_at: repoData.created_at,
     pushed_at: repoData.pushed_at,
