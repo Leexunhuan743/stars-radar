@@ -18,8 +18,8 @@ import {
   RANKINGS_KEY,
   README_SUFFIX,
   readmeBlobKey,
-  READMES_MANIFEST_KEY,
   README_SYNC_STATUS_FILE,
+  READMES_MANIFEST_KEY,
 } from '../src/object-keys.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
