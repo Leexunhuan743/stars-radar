@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 // one, a stale document pinned for the whole TTL, and a vector pair whose halves disagree being
 // reported as "no vectors yet".
 import { test } from 'node:test'
+import { ACTIVE_GENERATION_KEY, createGenerationPointer, generationKey } from '../src/data-generation.js'
 import { DOCUMENT_TTL_MS } from '../src/document-cache.js'
 import {
   dataPlaneStatus,
@@ -19,7 +20,6 @@ import {
   resetDocumentCaches,
   seedRankings,
 } from '../src/documents.js'
-import { createGenerationPointer, ACTIVE_GENERATION_KEY, generationKey } from '../src/data-generation.js'
 import { vectorManifest } from '../src/embeddings.js'
 import { INGEST_JOURNAL_PREFIX } from '../src/object-keys.js'
 
