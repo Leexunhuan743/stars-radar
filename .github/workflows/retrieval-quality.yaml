@@ -15,8 +15,10 @@ on:
       - src/evidence.js
       - data/intents.json
       - scripts/vector_pipeline.js
+      - scripts/build_candidate_vectors.js
       - scripts/evaluate_retrieval_real.js
       - scripts/build_retrieval_benchmark_from_corpus.js
+      - scripts/validate_private_benchmark.js
       - .github/workflows/retrieval-quality.yaml
   workflow_dispatch:
 
@@ -50,137 +52,112 @@ jobs:
             - recursive: true
               args: [--frozen-lockfile, --strict-peer-dependencies]
 
-      - name: Validate retrieval gate configuration
+      - name: Require strict candidate quality configuration
         run: |
           test -n "${SILICONFLOW_KEY}" || { echo "::error::SILICONFLOW_KEY is required"; exit 1; }
           test -n "${R2_ACCOUNT_ID}" || { echo "::error::R2_ACCOUNT_ID is required"; exit 1; }
           test -n "${R2_BUCKET}" || { echo "::error::R2_BUCKET is required"; exit 1; }
           test -n "${AWS_ACCESS_KEY_ID}" || { echo "::error::R2_ACCESS_KEY_ID is required"; exit 1; }
           test -n "${AWS_SECRET_ACCESS_KEY}" || { echo "::error::R2_SECRET_ACCESS_KEY is required"; exit 1; }
+          test -n "${RETRIEVAL_BENCHMARK_B64}" || { echo "::error::RETRIEVAL_BENCHMARK_B64 is required for Retrieval Quality Closure"; exit 1; }
 
-      - name: Restore active production retrieval plane
+      - name: Validate active production generation
+        run: node scripts/validate_remote_generation.js --active
+
+      - name: Restore production corpus and vector baseline
         run: |
           aws configure set default.region auto
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          mkdir -p rankings data
-          if aws s3api head-object --bucket "${R2_BUCKET}" --key "active-generation.json" --endpoint-url "${endpoint}" >/dev/null 2>active.err; then
-            aws s3 cp "s3://${R2_BUCKET}/active-generation.json" "${RUNNER_TEMP}/active-generation.json" --endpoint-url "${endpoint}"
-            active=$(node --input-type=module -e 'import fs from "node:fs"; import { parseGenerationPointer } from "./src/data-generation.js"; console.log(parseGenerationPointer(JSON.parse(fs.readFileSync(process.argv[1],"utf8"))).id)' "${RUNNER_TEMP}/active-generation.json")
-            prefix="generations/${active}/"
-            echo "Evaluating immutable production generation ${active}"
-          elif grep -q "HeadObject" active.err && grep -Eq "\\(404\\)|NoSuchKey" active.err; then
-            prefix=""
-            echo "No v2 generation is active yet; evaluating the current legacy flat production plane before first migration."
-          else
-            echo "::error::Could not resolve the production retrieval plane:"
-            cat active.err
-            exit 1
-          fi
-          rm -f active.err
+          mkdir -p rankings data stars
+
+          aws s3 cp "s3://${R2_BUCKET}/active-generation.json" "${RUNNER_TEMP}/active-generation.json" --endpoint-url "${endpoint}"
+          active=$(node --input-type=module -e 'import fs from "node:fs"; import { parseGenerationPointer } from "./src/data-generation.js"; console.log(parseGenerationPointer(JSON.parse(fs.readFileSync(process.argv[1],"utf8"))).id)' "${RUNNER_TEMP}/active-generation.json")
+          prefix="generations/${active}/"
+          echo "Building candidate vectors from production generation ${active}"
+
           for spec in \
             "catalog.json:catalog.json" \
             "rankings.json:rankings/rankings.json" \
             "asset-index.json:asset-index.json" \
+            "readmes.json:${RUNNER_TEMP}/readmes.json" \
             "embeddings.bin:embeddings.bin" \
-            "embeddings-index.json:embeddings-index.json"; do
+            "embeddings-index.json:embeddings-index.json" \
+            "embeddings-fingerprints.json:embeddings-fingerprints.json" \
+            "embeddings-manifest.json:embeddings-manifest.json"; do
             key="${spec%%:*}"
             local_path="${spec##*:}"
-            aws s3 cp "s3://${R2_BUCKET}/${prefix}${key}" "${local_path}" --endpoint-url "${endpoint}"
+            aws s3 cp "s3://${R2_BUCKET}/${prefix}${key}" "${local_path}" --endpoint-url "${endpoint}" --only-show-errors
           done
 
-          # Before the first immutable-v2 generation is activated, the live flat plane may still
-          # carry the pre-v2 string-only vector index. The binary order is already authoritative;
-          # normalize only the index shape for this migration gate, while keeping the evaluator
-          # itself strict about the v2 structured-record contract.
-          if [ -z "${prefix}" ]; then
-            node --input-type=module - <<'NODE'
+          node --input-type=module - "${RUNNER_TEMP}/readmes.json" > "${RUNNER_TEMP}/readmes.tsv" <<'NODE'
           import fs from 'node:fs'
-          const file = 'embeddings-index.json'
-          const index = JSON.parse(fs.readFileSync(file, 'utf8'))
-          if (Array.isArray(index) && index.every(item => typeof item === 'string')) {
-            const records = index.map((repo) => ({
-              id: `repo:${repo.toLowerCase()}`,
-              repo,
-              kind: 'repo',
-            }))
-            fs.writeFileSync(file, `${JSON.stringify(records, null, 2)}\n`)
-            console.log(`Normalized ${records.length} legacy vector index entries for the migration-only gate.`)
+          const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+          for (const ref of Object.values(manifest.repos || {})) {
+            if (ref.object_key)
+              process.stdout.write(`${ref.object_key}\tstars/${ref.repo}.md\n`)
           }
           NODE
-          fi
 
-      - name: Derive mandatory production benchmark
+          export endpoint R2_BUCKET
+          xargs -0 -r -P 16 -n 2 bash -c '
+            key="$1"; local_path="$2"
+            mkdir -p "$(dirname "$local_path")"
+            aws s3 cp "s3://${R2_BUCKET}/${key}" "$local_path" --endpoint-url "${endpoint}" --only-show-errors
+          ' _ < <(awk -F '\t' '{printf "%s%c%s%c",$1,0,$2,0}' "${RUNNER_TEMP}/readmes.tsv")
+
+      - name: Rebuild candidate vectors with PR code
+        run: |
+          node scripts/build_candidate_vectors.js
+          node scripts/verify_vector_pair.js
+
+      - name: Derive production regression benchmark
         run: node scripts/build_retrieval_benchmark_from_corpus.js --output data/retrieval-benchmark.derived.json
 
-      - name: Enforce production-derived retrieval gate
+      - name: Enforce production-derived regression smoke gate
         run: |
           pnpm eval:retrieval:gate -- \
             --fixture data/retrieval-benchmark.derived.json \
-            --output retrieval-quality-derived-report.json
+            --output retrieval-regression-derived-report.json
 
-      - name: Detect private benchmark configuration
-        id: private
-        run: |
-          if [ -n "${RETRIEVAL_BENCHMARK_B64}" ]; then
-            echo "enabled=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "enabled=false" >> "${GITHUB_OUTPUT}"
-            echo "::notice::RETRIEVAL_BENCHMARK_B64 is not configured; mandatory production-derived gate ran, optional human-labeled gate was skipped."
-          fi
-
-      - name: Materialize private benchmark
-        if: steps.private.outputs.enabled == 'true'
+      - name: Materialize private human-labeled benchmark
         run: |
           printf '%s' "${RETRIEVAL_BENCHMARK_B64}" | base64 --decode > data/retrieval-benchmark.private.json
-          node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("data/retrieval-benchmark.private.json"));if(!Array.isArray(x.cases)||!x.cases.length||!x.thresholds)throw new Error("benchmark must contain non-empty cases and thresholds")'
+          node scripts/validate_private_benchmark.js data/retrieval-benchmark.private.json
 
-      - name: Enforce private human-labeled retrieval gate
-        if: steps.private.outputs.enabled == 'true'
+      - name: Enforce private candidate retrieval quality gate
         run: |
           pnpm eval:retrieval:gate -- \
             --fixture data/retrieval-benchmark.private.json \
             --output retrieval-quality-private-report.json
 
-      - name: Summarize retrieval quality
+      - name: Summarize retrieval gates
         if: always()
         run: |
           node --input-type=module - <<'NODE' >> "${GITHUB_STEP_SUMMARY}"
           import fs from 'node:fs'
-
           const paths = [
-            ['Production-derived', 'retrieval-quality-derived-report.json'],
-            ['Private human-labeled', 'retrieval-quality-private-report.json'],
+            ['Production-derived regression smoke', 'retrieval-regression-derived-report.json'],
+            ['Private human-labeled candidate quality', 'retrieval-quality-private-report.json'],
           ]
-          console.log('### Retrieval Quality')
+          console.log('### Retrieval Gates')
           console.log('')
-          console.log('| Dataset / mode / class | Recall@K | Precision@K | MRR | NDCG@K | Evidence | Provenance | Facets | Negative empty | Forbidden | p95 ms |')
-          console.log('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+          console.log('| Dataset / mode / class | Recall@K | MRR | NDCG@K | Evidence | Provenance | Facets | Negative empty | Forbidden | p95 ms |')
+          console.log('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
           const format = value => Number.isFinite(value) ? Number(value).toFixed(3) : '—'
-          const row = (label, summary) => {
-            console.log(`| ${label} | ${format(summary.mean_recall_at_k)} | ${format(summary.mean_precision_at_k)} | ${format(summary.mrr)} | ${format(summary.mean_ndcg_at_k)} | ${format(summary.evidence_coverage_rate)} | ${format(summary.provenance_completeness_rate)} | ${format(summary.facet_satisfaction_rate)} | ${format(summary.negative_empty_success_rate)} | ${summary.forbidden_hits ?? '—'} | ${format(summary.p95_latency_ms)} |`)
-          }
-
           for (const [label, file] of paths) {
-            if (!fs.existsSync(file))
+            if (!fs.existsSync(file)) {
+              console.log('')
+              console.log(`❌ ${label} report was not produced.`)
               continue
+            }
             const report = JSON.parse(fs.readFileSync(file, 'utf8'))
             for (const mode of report.reports || []) {
-              row(`${label} / ${mode.mode}`, mode.summary)
-              for (const [name, summary] of Object.entries(mode.classes || {}))
-                row(`${label} / ${mode.mode} / ${name}`, summary)
+              const rows = [[mode.mode, mode.summary], ...Object.entries(mode.classes || {}).map(([name, summary]) => [`${mode.mode} / ${name}`, summary])]
+              for (const [name, summary] of rows) {
+                console.log(`| ${label} / ${name} | ${format(summary.mean_recall_at_k)} | ${format(summary.mrr)} | ${format(summary.mean_ndcg_at_k)} | ${format(summary.evidence_coverage_rate)} | ${format(summary.provenance_completeness_rate)} | ${format(summary.facet_satisfaction_rate)} | ${format(summary.negative_empty_success_rate)} | ${summary.forbidden_hits ?? '—'} | ${format(summary.p95_latency_ms)} |`)
+              }
             }
             console.log('')
-            console.log(report.quality_gate?.passed
-              ? `✅ ${label} thresholds passed.`
-              : `❌ ${label} thresholds failed.`)
-          }
-
-          if (!fs.existsSync('retrieval-quality-derived-report.json')) {
-            console.log('')
-            console.log('❌ Mandatory production-derived report was not produced.')
-          }
-          if (!fs.existsSync('retrieval-quality-private-report.json')) {
-            console.log('')
-            console.log('ℹ️ Optional private human-labeled benchmark is not configured or did not run.')
+            console.log(report.quality_gate?.passed ? `✅ ${label} passed.` : `❌ ${label} failed.`)
           }
           NODE
