@@ -28,7 +28,7 @@ WORKER_URL = os.environ.get("WORKER_URL")
 # NEVER hardcode a fallback key here. The worker is protected by MCP_API_KEY;
 # read it from the environment so the key never lands in source control or logs.
 API_KEY = os.environ.get("MCP_API_KEY")
-WRITE_API_KEY = os.environ.get("MCP_WRITE_API_KEY") or API_KEY
+WRITE_API_KEY = os.environ.get("MCP_WRITE_API_KEY")
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def require_api_config():
@@ -43,6 +43,16 @@ def require_api_config():
         sys.stderr.write("[Stars Radar] ERROR: MCP_API_KEY environment variable is required.\n")
         sys.stderr.write("  Set it before running, e.g. (PowerShell): $env:MCP_API_KEY=\"...\" ; python scripts/search_stars_cli.py ...\n")
         sys.exit(2)
+
+def require_write_config():
+    require_api_config()
+    if not WRITE_API_KEY:
+        sys.stderr.write("[Stars Radar] ERROR: MCP_WRITE_API_KEY is required for write operations.\n")
+        sys.exit(2)
+    if WRITE_API_KEY == API_KEY:
+        sys.stderr.write("[Stars Radar] ERROR: MCP_WRITE_API_KEY must differ from MCP_API_KEY.\n")
+        sys.exit(2)
+
 
 class ApiError(Exception):
     """The Worker answered with a failure envelope, or could not be reached at all.
@@ -92,7 +102,7 @@ def fetch_json(endpoint, params=None):
 
 def post_json(endpoint, body):
     """POST one authenticated JSON command and return its success payload."""
-    require_api_config()
+    require_write_config()
     url = f"{WORKER_URL}{endpoint}"
     headers = {
         **HEADERS,
