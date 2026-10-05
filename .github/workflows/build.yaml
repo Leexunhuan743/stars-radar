@@ -80,9 +80,19 @@ jobs:
           aws configure set default.region auto
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           prefix="generations/${ACTIVE_GENERATION_ID}"
-          for obj in embeddings.bin embeddings-index.json embeddings-fingerprints.json embeddings-manifest.json; do
-            aws s3 cp "s3://${R2_BUCKET}/${prefix}/${obj}" "${obj}" --endpoint-url "${endpoint}"
-          done
+          if aws s3api head-object --bucket "${R2_BUCKET}" --key "${prefix}/embeddings-manifest.json" \
+            --endpoint-url "${endpoint}" >/dev/null 2>vector-head.err; then
+            for obj in embeddings.bin embeddings-index.json embeddings-fingerprints.json embeddings-manifest.json; do
+              aws s3 cp "s3://${R2_BUCKET}/${prefix}/${obj}" "${obj}" --endpoint-url "${endpoint}"
+            done
+          elif grep -q "HeadObject" vector-head.err && grep -Eq "\(404\)|NoSuchKey" vector-head.err; then
+            echo "Active generation ${ACTIVE_GENERATION_ID} has no vector set (empty semantic corpus)."
+          else
+            echo "::error::Could not inspect the active generation vector set:"
+            cat vector-head.err
+            exit 1
+          fi
+          rm -f vector-head.err
 
       - name: Download the ingest journal from R2
         env:
@@ -309,16 +319,22 @@ jobs:
         run: |
           aws configure set default.region auto
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          verify_dir="${RUNNER_TEMP}/generation-verify"
+          rm -rf "${verify_dir}"
+          mkdir -p "${verify_dir}"
           failed=0
           while IFS= read -r rel; do
-            expected=$(stat -c %s ".generation-stage/${rel}")
-            actual=$(aws s3api head-object --bucket "${R2_BUCKET}" \
-              --key "generations/${GENERATION_ID}/${rel}" \
-              --endpoint-url "${endpoint}" --query ContentLength --output text 2>/dev/null || echo missing)
-            if [ "${actual}" = "${expected}" ]; then
-              echo "✓ generations/${GENERATION_ID}/${rel}: ${actual} bytes"
+            mkdir -p "${verify_dir}/$(dirname "${rel}")"
+            if ! aws s3 cp "s3://${R2_BUCKET}/generations/${GENERATION_ID}/${rel}" \
+              "${verify_dir}/${rel}" --endpoint-url "${endpoint}" --only-show-errors; then
+              echo "::error::Could not read generations/${GENERATION_ID}/${rel} back from R2"
+              failed=1
+              continue
+            fi
+            if cmp -s ".generation-stage/${rel}" "${verify_dir}/${rel}"; then
+              echo "✓ generations/${GENERATION_ID}/${rel}: exact content verified"
             else
-              echo "::error::${rel} is ${expected} bytes locally but ${actual} in R2"
+              echo "::error::generations/${GENERATION_ID}/${rel} differs from the staged artifact"
               failed=1
             fi
           done < <(find .generation-stage -type f -printf '%P\n' | sort)
