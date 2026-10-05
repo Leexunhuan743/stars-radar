@@ -549,7 +549,7 @@ async function handleRequest(req, env, ctx) {
     )
     const registerTool = (name, config, handler) => {
       if (activeToolset.tools.has(name))
-        server['registerTool'](name, config, handler)
+        server.registerTool(name, config, handler)
     }
     registerTool(
       TOOL_DEFINITIONS.search_github_stars.name,
