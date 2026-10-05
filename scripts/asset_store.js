@@ -57,15 +57,37 @@ const INTENTS = fs.readJsonSync(path.resolve(PROJECT_ROOT, 'data/intents.json'))
 const ALL_INTENT_WORDS = Array.from(new Set(Object.values(INTENTS).flat()))
 
 // 读取探针捕获的 JSONL (Worker 侧写, CI 合并)。桶前缀与本地目录名相同: CI 按同一相对路径下载。
+function previousProbeSnapshot() {
+  if (!fs.existsSync(PREVIOUS_INDEX_PATH))
+    return { keys: [] }
+  const snapshot = fs.readJsonSync(PREVIOUS_INDEX_PATH).probe_snapshot || { keys: [] }
+  if (!Array.isArray(snapshot.keys))
+    throw new Error('previous-asset-index.json has an invalid probe_snapshot.')
+  return snapshot
+}
+
 function readProbeCaptures() {
   const probesDir = path.resolve(PROJECT_ROOT, PROBE_CAPTURE_PREFIX)
   if (!fs.existsSync(probesDir))
-    return []
+    return { captures: [], keys: [] }
+
+  const previousKeys = new Set(previousProbeSnapshot().keys)
+  const files = fs.readdirSync(probesDir)
+    .filter(name => name.endsWith('.jsonl'))
+    .map(name => ({
+      key: `${PROBE_CAPTURE_PREFIX}${name}`,
+      file: path.join(probesDir, name),
+      name,
+    }))
   const captures = []
-  for (const f of fs.readdirSync(probesDir)) {
-    if (!f.endsWith('.jsonl'))
+
+  // Effects of previous keys are already accumulated in asset-state.json. Only parse the raw tail
+  // that the previous active generation had not seen; this both bounds work and lets old keys be
+  // deleted one generation later without losing discovery history.
+  for (const item of files) {
+    if (previousKeys.has(item.key))
       continue
-    const lines = fs.readFileSync(path.join(probesDir, f), 'utf-8').split(/\r?\n/)
+    const lines = fs.readFileSync(item.file, 'utf-8').split(/\r?\n/)
     for (const line of lines) {
       if (!line.trim())
         continue
@@ -73,11 +95,11 @@ function readProbeCaptures() {
         captures.push(JSON.parse(line))
       }
       catch (error) {
-        throw new Error(`Could not read probe capture ${f}: ${error.message}`)
+        throw new Error(`Could not read probe capture ${item.name}: ${error.message}`)
       }
     }
   }
-  return captures
+  return { captures, keys: files.map(item => item.key).sort() }
 }
 
 function loadStarred(assetMap) {
@@ -297,7 +319,7 @@ function loadIngestJournal(assetMap) {
 
 // 从探针 JSONL 捕获 discovered (仅元数据, 需跨查询确认晋升)
 function loadProbes(assetMap) {
-  const captures = readProbeCaptures()
+  const { captures, keys } = readProbeCaptures()
   const now = new Date().toISOString()
   const weekKey = isoWeek(new Date())
   for (const c of captures) {
@@ -331,6 +353,7 @@ function loadProbes(assetMap) {
       },
     }))
   }
+  return { keys }
 }
 
 // 跨查询确认晋升: discovered -> community
@@ -456,7 +479,7 @@ export function accumulateAssets() {
   const demoted = starredNow ? demoteUnstarred(assetMap, starredNow) : 0
   loadRankings(assetMap)
   const ingestSnapshot = loadIngestJournal(assetMap)
-  loadProbes(assetMap)
+  const probeSnapshot = loadProbes(assetMap)
   promoteDiscovered(assetMap)
   pruneDiscovered(assetMap)
 
@@ -465,7 +488,11 @@ export function accumulateAssets() {
   fs.writeJsonSync(STATE_PATH, state, { spaces: 2 })
 
   // 4. 派生热集索引 (Worker 载内存)
-  const index = { ...buildAssetIndex(assetMap), ingest_snapshot: ingestSnapshot }
+  const index = {
+    ...buildAssetIndex(assetMap),
+    ingest_snapshot: ingestSnapshot,
+    probe_snapshot: probeSnapshot,
+  }
   fs.writeJsonSync(INDEX_PATH, index, { spaces: 2 })
 
   // 5. 元数据
