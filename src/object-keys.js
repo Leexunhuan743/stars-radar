@@ -34,6 +34,7 @@ export const README_SUFFIX = '.md'
 /** Local staging directories the pipeline reads and writes before syncing to the bucket. */
 export const LOCAL_STARS_DIR = 'stars'
 export const LOCAL_RANKINGS_DIR = 'rankings'
+export const PREVIOUS_ASSET_INDEX_FILE = `previous-${ASSET_INDEX_KEY}`
 
 export function isReadmeKey(key) {
   return typeof key === 'string' && key.endsWith(README_SUFFIX)
