@@ -2,6 +2,8 @@
 MCP_API_KEY=replace_with_a_random_read_key
 # Optional but recommended: when set, MCP_API_KEY becomes read-only and this key is required for writes.
 MCP_WRITE_API_KEY=replace_with_a_different_random_write_key
+# Optional MCP exposure profile: all, research, or core.
+MCP_TOOLSET=all
 GITHUB_TOKEN=replace_with_your_github_token
 SILICONFLOW_KEY=replace_with_your_siliconflow_key
 # Optional web search providers:
