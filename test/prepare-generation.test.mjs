@@ -74,6 +74,12 @@ test('README manifest preserves stale and unavailable evidence state without blo
           source_pushed_at: '2026-10-04T07:00:00Z',
           preserved_from_generation: '20261004T080000Z-ceaa138fd814-1',
         },
+        'acme/absent': {
+          repo: 'acme/absent',
+          status: 'absent',
+          upstream_pushed_at: '2026-10-05T07:00:00Z',
+          source_pushed_at: '2026-10-05T07:00:00Z',
+        },
         'acme/unavailable': {
           repo: 'acme/unavailable',
           status: 'unavailable',
@@ -94,9 +100,13 @@ test('README manifest preserves stale and unavailable evidence state without blo
     assert.equal(readmes.repos['acme/cached'].upstream_pushed_at, '2026-10-05T07:00:00Z')
     assert.equal(readmes.repos['acme/cached'].source_pushed_at, '2026-10-04T07:00:00Z')
     assert.match(readmes.repos['acme/cached'].sha256, /^[0-9a-f]{64}$/)
+    assert.equal(readmes.repos['acme/absent'].status, 'absent')
+    assert.equal(readmes.repos['acme/absent'].sha256, null)
+    assert.equal(readmes.repos['acme/absent'].object_key, null)
     assert.equal(readmes.repos['acme/unavailable'].status, 'unavailable')
     assert.equal(readmes.repos['acme/unavailable'].sha256, null)
     assert.equal(manifest.readme_blobs, 1)
+    assert.equal(manifest.readme_absent, 1)
     assert.equal(manifest.readme_unavailable, 1)
   }
   finally {
