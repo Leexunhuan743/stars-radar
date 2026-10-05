@@ -40,7 +40,7 @@ import { compareRepositories, getRepositoryDetails, RepositoryRequestError } fro
 import { RESULT_SOURCES } from './result-compiler.js'
 import { retryUntilAcceptable } from './retry.js'
 import { searchDocuments } from './search-engine.js'
-import { DEFAULT_INGEST_CATEGORIES, TOOL_DEFINITIONS } from './tool-schemas.js'
+import { DEFAULT_INGEST_CATEGORIES, INPUT_LIMITS, TOOL_DEFINITIONS } from './tool-schemas.js'
 
 const SILICONFLOW_URL = 'https://api.siliconflow.cn/v1/embeddings'
 
@@ -328,11 +328,12 @@ async function handleRequest(req, env, ctx) {
         if (limited)
           return limited
       }
-      return okResponse(await getRepositoryDetails(env, await researchDocuments(env), url.searchParams.get('repo'), { include_readme, refresh }))
+      const repo = stringParam(url.searchParams.get('repo'), { parameter: 'repo', minLength: 3, maxLength: INPUT_LIMITS.repo })
+      return okResponse(await getRepositoryDetails(env, await researchDocuments(env), repo, { include_readme, refresh }))
     }
 
     if (url.pathname === '/api/compare') {
-      const repos = (url.searchParams.get('repos') || '').split(',')
+      const repos = stringParam(url.searchParams.get('repos'), { parameter: 'repos', minLength: 1, maxLength: (INPUT_LIMITS.repo * 5) + 4 }).split(',')
       const refresh = booleanParam(url.searchParams.get('refresh'))
       if (refresh) {
         const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
@@ -348,8 +349,8 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/search') {
-      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: 512 })
-      const category = optionalString(url.searchParams.get('category'))
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: INPUT_LIMITS.query })
+      const category = optionalString(url.searchParams.get('category'), { parameter: 'category', maxLength: INPUT_LIMITS.category })
       const scope = enumParam(url.searchParams.get('scope'), { parameter: 'scope', allowed: ['all', 'starred', 'rankings'], fallback: 'all' })
       const source = enumParam(url.searchParams.get('source'), { parameter: 'source', allowed: RESULT_SOURCES, fallback: undefined })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 10, min: 1, max: 20 })
@@ -365,7 +366,11 @@ async function handleRequest(req, env, ctx) {
 
     if (url.pathname === '/api/trending') {
       const rankings = await getRankings(env)
-      const cat = url.searchParams.get('category') || 'overall_daily'
+      const cat = enumParam(url.searchParams.get('category'), {
+        parameter: 'category',
+        allowed: ['overall_daily', 'overall_weekly', 'rust_weekly', 'python_weekly', 'typescript_weekly', 'go_weekly', 'cpp_weekly', 'csharp_weekly', 'breakout_weekly'],
+        fallback: 'overall_daily',
+      })
       const list = cat === 'breakout_weekly' ? (rankings.breakoutWeekly || []) : (rankings.trending?.[cat] || [])
       return okResponse(list, { meta: communityFreshness(rankings) })
     }
@@ -383,12 +388,12 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/live') {
-      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: 512 })
-      const language = optionalString(url.searchParams.get('language'))
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: INPUT_LIMITS.query })
+      const language = optionalString(url.searchParams.get('language'), { parameter: 'language', maxLength: INPUT_LIMITS.language })
       const minStars = intParam(url.searchParams.get('min_stars'), { parameter: 'min_stars', fallback: 15, min: 0 })
       const sort = enumParam(url.searchParams.get('sort'), { parameter: 'sort', allowed: ['stars', 'updated', 'forks'], fallback: 'stars' })
-      const since = optionalString(url.searchParams.get('since'))
-      const until = optionalString(url.searchParams.get('until'))
+      const since = optionalString(url.searchParams.get('since'), { parameter: 'since', maxLength: INPUT_LIMITS.dateRange })
+      const until = optionalString(url.searchParams.get('until'), { parameter: 'until', maxLength: INPUT_LIMITS.dateRange })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 10, min: 1, max: 30 })
       const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
       if (limited)
@@ -435,11 +440,11 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/code') {
-      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: 256 })
-      const repo = optionalString(url.searchParams.get('repo'))
-      const language = optionalString(url.searchParams.get('language'))
-      const extension = optionalString(url.searchParams.get('extension'))
-      const path = optionalString(url.searchParams.get('path'))
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: INPUT_LIMITS.codeQuery })
+      const repo = optionalString(url.searchParams.get('repo'), { parameter: 'repo', maxLength: INPUT_LIMITS.repo })
+      const language = optionalString(url.searchParams.get('language'), { parameter: 'language', maxLength: INPUT_LIMITS.language })
+      const extension = optionalString(url.searchParams.get('extension'), { parameter: 'extension', maxLength: INPUT_LIMITS.extension })
+      const path = optionalString(url.searchParams.get('path'), { parameter: 'path', maxLength: INPUT_LIMITS.path })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 5, min: 1, max: 15 })
       const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
       if (limited)
@@ -456,8 +461,8 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/web') {
-      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: 512 })
-      const domain = optionalString(url.searchParams.get('domain'))
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: INPUT_LIMITS.query })
+      const domain = optionalString(url.searchParams.get('domain'), { parameter: 'domain', maxLength: INPUT_LIMITS.domain })
       const freshness = enumParam(url.searchParams.get('freshness'), { parameter: 'freshness', allowed: ['all', 'day', 'week', 'month', 'year'], fallback: 'all' })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 5, min: 1, max: 10 })
       const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
