@@ -256,6 +256,7 @@ async function handleRequest(req, env, ctx) {
         name: 'Stars Radar',
         version: '1.0.0',
         vectorModel: EMBEDDING_MODEL,
+        vectorInputProfile: vectors.inputProfile || null,
         vectorDimensions: DIMS,
         totalStarred: catalog.totalRepos || Object.keys(catalog.repos || {}).length,
         totalAssets: assetIndex.totalRepos || Object.keys(assetIndex.repos || {}).length,
@@ -823,6 +824,7 @@ async function handleRequest(req, env, ctx) {
                 vector_db_capacity: vectorNames.length,
                 vector_dimensions: DIMS,
                 vector_model: EMBEDDING_MODEL,
+                vector_input_profile: vectors.inputProfile || null,
                 intent_domains: Object.keys(defaultIntents || {}).length,
                 community_layers: {
                   trending_categories: Object.keys(rankings.trending || {}).length,
