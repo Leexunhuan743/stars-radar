@@ -68,6 +68,8 @@ export function buildReadmeEvidence({
       readme_sha256: ref?.sha256 || readmeSha256 || null,
       object_key: ref?.object_key || null,
       status: ref?.status || null,
+      upstream_pushed_at: ref?.upstream_pushed_at || null,
+      source_pushed_at: ref?.source_pushed_at || null,
       preserved_from_generation: ref?.preserved_from_generation || null,
       content_sha256: contentSha256 || null,
       ordinal: Number.isInteger(ordinal) ? ordinal : null,
@@ -100,6 +102,8 @@ export function bindReadmeEvidence(evidence, { ref, generation } = {}) {
       readme_sha256: ref?.sha256 || evidence.content?.readme_sha256 || null,
       object_key: ref?.object_key || evidence.content?.object_key || null,
       status: ref?.status || evidence.content?.status || null,
+      upstream_pushed_at: ref?.upstream_pushed_at || evidence.content?.upstream_pushed_at || null,
+      source_pushed_at: ref?.source_pushed_at || evidence.content?.source_pushed_at || null,
       preserved_from_generation: ref?.preserved_from_generation || evidence.content?.preserved_from_generation || null,
     },
   }
