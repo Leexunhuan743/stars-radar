@@ -96,6 +96,22 @@ export function compileResults({
               keyword_weight: stats.kwWeight,
               ...(stats.scoringSource ? { scoring_source: stats.scoringSource } : {}),
               vector_similarity: stats.vScore > 0 ? Number(stats.vScore.toFixed(4)) : null,
+              ...(stats.vectorEvidence
+                ? {
+                    semantic_evidence: {
+                      repo_similarity: stats.vectorEvidence.repo_similarity > 0
+                        ? Number(stats.vectorEvidence.repo_similarity.toFixed(4))
+                        : null,
+                      readme_chunk: stats.vectorEvidence.readme_chunk
+                        ? {
+                            heading: stats.vectorEvidence.readme_chunk.heading,
+                            snippet: stats.vectorEvidence.readme_chunk.snippet,
+                            similarity: Number(stats.vectorEvidence.readme_chunk.similarity.toFixed(4)),
+                          }
+                        : null,
+                    },
+                  }
+                : {}),
               matched_tokens: stats.evidence?.matched_tokens || [],
               matched_subjects: stats.evidence?.matched_subjects || [],
               matched_intents: stats.evidence?.matched_intents || [],
