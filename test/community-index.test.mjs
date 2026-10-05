@@ -58,3 +58,14 @@ test('records without a repository name are skipped rather than keyed undefined'
   })
   assert.deepEqual([...index.keys()].sort(), ['ok/one', 'ok/two'])
 })
+
+
+test('HelloGitHub prose is normalized to the shared description field', () => {
+  const index = buildCommunityIndex({
+    rankings: {
+      helloGitHub: [{ repo: 'hello/pick', description_zh: '中文精选描述', issue: '123' }],
+    },
+  })
+  assert.equal(index.get('hello/pick').description, '中文精选描述')
+  assert.deepEqual(index.get('hello/pick').source_channels, ['hellogithub'])
+})
