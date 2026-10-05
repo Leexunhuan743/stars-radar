@@ -4,6 +4,7 @@ import {
   findReadmeEvidence,
   README_EVIDENCE_SNIPPET,
   README_VECTOR_MAX_CHUNKS,
+  readmeVectorBudget,
   selectReadmeVectorChunks,
   splitReadmeSections,
 } from '../src/readme-evidence.js'
@@ -89,14 +90,33 @@ test('generated Stars Radar archive metadata never masquerades as upstream READM
   assert.deepEqual(splitReadmeSections(archived).map(section => section.heading), ['Actual README'])
 })
 
-test('README vector chunks stay bounded and sample the full document instead of only the opening sections', () => {
+test('README vector chunks use an adaptive bounded budget and retain source identity', () => {
   const markdown = Array.from({ length: 12 }, (_, index) => (
     `## Section ${index}\n${'feature detail '.repeat(12)} marker-${index}`
   )).join('\n\n')
 
+  const sections = splitReadmeSections(markdown)
+  assert.equal(readmeVectorBudget(sections), 10)
   const chunks = selectReadmeVectorChunks(markdown)
-  assert.equal(chunks.length, README_VECTOR_MAX_CHUNKS)
-  assert.equal(chunks[0].heading, 'Section 0')
-  assert.equal(chunks.at(-1).heading, 'Section 11')
+  assert.equal(chunks.length, 10)
+  assert.ok(chunks.length <= README_VECTOR_MAX_CHUNKS)
+  assert.equal(chunks[0].section_ordinal, 0)
+  assert.equal(chunks.at(-1).section_ordinal, 11)
+  assert.ok(chunks.every(chunk => Array.isArray(chunk.heading_path) && chunk.heading_path.length > 0))
   assert.ok(chunks.some(chunk => /marker-4|marker-5/.test(chunk.text)), 'middle README content should be represented')
+})
+
+test('short high-value README sections survive the generic minimum-length filter', () => {
+  const markdown = [
+    '# Tool',
+    'A generic project description that is intentionally long enough to qualify as ordinary context.',
+    '## Requirements',
+    'Node 22 and Linux.',
+    '## Compatibility',
+    'Works with S3.',
+  ].join('\n\n')
+
+  const chunks = selectReadmeVectorChunks(markdown)
+  assert.ok(chunks.some(chunk => chunk.heading === 'Requirements'))
+  assert.ok(chunks.some(chunk => chunk.heading === 'Compatibility'))
 })
