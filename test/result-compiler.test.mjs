@@ -396,3 +396,15 @@ test('community diversity cap is opt-in so explicit result sets can fill the req
   assert.equal(uncapped.length, 5, 'an explicit community view may fill the requested limit')
   assert.equal(capped.length, 2, 'the default mixed view still applies ceil(limit*0.4)')
 })
+
+
+test('corroborating source channels are exposed without changing the primary source', () => {
+  const stats = vectorEntry({ source: 'trending', kwWeight: 20 })
+  stats.sourceChannels = ['trending', 'hellogithub', 'breakout']
+  const [result] = compile({
+    rrfMap: new Map([['acme/tool', stats]]),
+  })
+
+  assert.equal(result.source, 'trending')
+  assert.deepEqual(result.source_channels, ['trending', 'hellogithub', 'breakout'])
+})
