@@ -170,6 +170,7 @@ stars.opml
 asset-index.json
 asset-meta.json
 previous-asset-index.json
+previous-readmes.json
 .data-compaction-plan.json
 .readme-sync-status.json
 active-generation.json
