@@ -151,6 +151,21 @@ export function summarize(rows) {
   }
 }
 
+export function summarizeByClass(rows) {
+  const groups = new Map()
+  for (const row of rows) {
+    const classes = Array.isArray(row.classes) && row.classes.length > 0 ? row.classes : ['uncategorized']
+    for (const className of classes) {
+      if (!groups.has(className))
+        groups.set(className, [])
+      groups.get(className).push(row)
+    }
+  }
+  return Object.fromEntries([...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([className, classRows]) => [className, summarize(classRows)]))
+}
+
 const THRESHOLD_RULES = {
   min_mean_recall_at_k: { metric: 'mean_recall_at_k', direction: 'min' },
   min_mean_precision_at_k: { metric: 'mean_precision_at_k', direction: 'min' },
@@ -167,6 +182,34 @@ export function evaluateThresholds(reports, thresholds) {
 
   const failures = []
   let checked = 0
+
+  const checkMetricSet = (label, summary, expected) => {
+    if (!expected || typeof expected !== 'object' || Array.isArray(expected)) {
+      failures.push(`${label}: thresholds must be an object`)
+      return
+    }
+    for (const [name, limit] of Object.entries(expected)) {
+      const rule = THRESHOLD_RULES[name]
+      if (!rule) {
+        failures.push(`${label}: unknown threshold ${name}`)
+        continue
+      }
+      if (!Number.isFinite(limit)) {
+        failures.push(`${label}: ${name} must be numeric`)
+        continue
+      }
+      const actual = summary?.[rule.metric]
+      checked++
+      if (!Number.isFinite(actual)) {
+        failures.push(`${label}: ${rule.metric} is unavailable but ${name}=${limit} is required`)
+        continue
+      }
+      const passed = rule.direction === 'min' ? actual >= limit : actual <= limit
+      if (!passed)
+        failures.push(`${label}: ${rule.metric}=${actual} violates ${name}=${limit}`)
+    }
+  }
+
   for (const report of reports) {
     const expected = thresholds[report.mode]
     if (!expected)
@@ -176,25 +219,23 @@ export function evaluateThresholds(reports, thresholds) {
       continue
     }
 
-    for (const [name, limit] of Object.entries(expected)) {
-      const rule = THRESHOLD_RULES[name]
-      if (!rule) {
-        failures.push(`${report.mode}: unknown threshold ${name}`)
-        continue
+    const { classes, ...modeThresholds } = expected
+    checkMetricSet(report.mode, report.summary, modeThresholds)
+
+    if (classes !== undefined) {
+      if (!classes || typeof classes !== 'object' || Array.isArray(classes)) {
+        failures.push(`${report.mode}.classes: thresholds must be an object`)
       }
-      if (!Number.isFinite(limit)) {
-        failures.push(`${report.mode}: ${name} must be numeric`)
-        continue
+      else {
+        for (const [className, classThresholds] of Object.entries(classes)) {
+          const classSummary = report.classes?.[className]
+          if (!classSummary) {
+            failures.push(`${report.mode}.classes.${className}: benchmark contains no cases for this required class`)
+            continue
+          }
+          checkMetricSet(`${report.mode}.classes.${className}`, classSummary, classThresholds)
+        }
       }
-      const actual = report.summary[rule.metric]
-      checked++
-      if (!Number.isFinite(actual)) {
-        failures.push(`${report.mode}: ${rule.metric} is unavailable but ${name}=${limit} is required`)
-        continue
-      }
-      const passed = rule.direction === 'min' ? actual >= limit : actual <= limit
-      if (!passed)
-        failures.push(`${report.mode}: ${rule.metric}=${actual} violates ${name}=${limit}`)
     }
   }
 
@@ -229,12 +270,20 @@ async function runMode(name, fixture, documents, { lexicalOnly, k }) {
     rows.push({
       id: scenario.id,
       query: scenario.query,
+      classes: Array.isArray(scenario.classes)
+        ? scenario.classes
+        : (scenario.class ? [scenario.class] : ['uncategorized']),
       returned,
       metrics: evaluateOne(returned, scenario.relevant || [], scenario.forbidden || [], k),
       latency_ms: Number((performance.now() - started).toFixed(1)),
     })
   }
-  return { mode: name, summary: summarize(rows), cases: rows }
+  return {
+    mode: name,
+    summary: summarize(rows),
+    classes: summarizeByClass(rows),
+    cases: rows,
+  }
 }
 
 export async function main() {
