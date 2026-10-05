@@ -108,6 +108,8 @@ export function prepareDataGeneration({
           object_key: blobKey,
           status: sync.status || 'fresh',
           fetched_at: sync.fetched_at || null,
+          upstream_pushed_at: sync.upstream_pushed_at || null,
+          source_pushed_at: sync.source_pushed_at || null,
           preserved_from_generation: sync.preserved_from_generation || null,
         }
       }
@@ -126,6 +128,8 @@ export function prepareDataGeneration({
       object_key: null,
       status: 'unavailable',
       fetched_at: null,
+      upstream_pushed_at: sync.upstream_pushed_at || null,
+      source_pushed_at: sync.source_pushed_at || null,
       preserved_from_generation: null,
     }
   }
