@@ -183,10 +183,11 @@ test('results expose ranking separately from factual fields and explain adds pro
   assert.ok(result.provenance.categories)
   assert.deepEqual(
     result.evidence.map(item => item.kind).sort(),
-    ['personal_note', 'repository_metadata', 'user_taxonomy'],
+    ['personal_note', 'repository_description', 'repository_metadata', 'user_taxonomy'],
   )
   assert.equal(result.evidence.find(item => item.kind === 'personal_note').trust, 'user_trusted')
-  assert.equal(result.evidence.find(item => item.kind === 'repository_metadata').trust, 'external_untrusted')
+  assert.equal(result.evidence.find(item => item.kind === 'repository_metadata').trust, 'external_structured')
+  assert.equal(result.evidence.find(item => item.kind === 'repository_description').trust, 'external_untrusted')
 })
 
 test('targetCategory matches the record categories case-insensitively', () => {
