@@ -12,7 +12,7 @@ import { ACTIVE_GENERATION_KEY } from '../src/data-generation.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-function fixture({ starred = [], graphqlFailure = false, readmeFailure = false } = {}) {
+function fixture({ starred = [], graphqlFailure = false, readmeFailure = false, readmeAbsent = false } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-bootstrap-'))
   const stub = path.join(directory, 'stub.mjs')
   fs.writeFileSync(stub, `
@@ -21,7 +21,7 @@ function fixture({ starred = [], graphqlFailure = false, readmeFailure = false }
       const url = String(input);
       if (url.includes('/user/starred')) return Response.json(starred);
       if (url.endsWith('/graphql')) return Response.json(${graphqlFailure ? '{ errors: [{ message: "denied" }] }' : '{ data: { viewer: { lists: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }'});
-      if (url.endsWith('/readme')) return new Response(${readmeFailure ? '"denied", { status: 403 }' : '"# Fixture README", { headers: { "content-type": "text/plain" } }'});
+      if (url.endsWith('/readme')) return new Response(${readmeFailure ? '"denied", { status: 403 }' : readmeAbsent ? 'null, { status: 404 }' : '"# Fixture README", { headers: { "content-type": "text/plain" } }'});
       if (url.includes('/embeddings')) {
         const body = JSON.parse(init.body || '{}');
         const inputs = Array.isArray(body.input) ? body.input : [body.input];
@@ -162,6 +162,46 @@ test('compacted curator entries remain in candidate vectors after their raw jour
       records.some(record => record.id === 'repo:curated/tool'),
       'the active generation ingest snapshot remains part of the semantic corpus after raw compaction',
     )
+  }
+  finally {
+    setup.clean()
+  }
+})
+
+test('README absence is reused without inventing a generated README blob', () => {
+  const setup = fixture({
+    starred: [{
+      full_name: 'fixture/tool',
+      name: 'tool',
+      owner: { login: 'fixture' },
+      stargazers_count: 1,
+      pushed_at: '2026-10-01T00:00:00Z',
+    }],
+    readmeAbsent: true,
+  })
+  try {
+    const first = setup.run('index.js')
+    assert.equal(first.status, 0, first.stderr)
+    assert.equal(fs.existsSync(path.join(setup.directory, 'stars', 'fixture', 'tool.md')), false)
+    let status = JSON.parse(fs.readFileSync(path.join(setup.directory, '.readme-sync-status.json'), 'utf8'))
+    assert.equal(status.repos['fixture/tool'].status, 'absent')
+
+    fs.writeFileSync(path.join(setup.directory, 'previous-readmes.json'), JSON.stringify({
+      schema: 2,
+      repos: {
+        'fixture/tool': {
+          repo: 'fixture/tool',
+          status: 'absent',
+          source_pushed_at: '2026-10-01T00:00:00Z',
+        },
+      },
+    }))
+
+    const second = setup.run('index.js')
+    assert.equal(second.status, 0, second.stderr)
+    assert.match(second.stdout, /Repos needing README download: 0 \/ 1/)
+    status = JSON.parse(fs.readFileSync(path.join(setup.directory, '.readme-sync-status.json'), 'utf8'))
+    assert.equal(status.repos['fixture/tool'].status, 'absent')
   }
   finally {
     setup.clean()
