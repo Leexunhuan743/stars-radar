@@ -60,7 +60,7 @@ export function vectorCountFromBytes(bytes) {
  * it as an unavailable document (which ends up in `/health`), the pipeline as a refused baseline,
  * and the CI step as a failed run. All three are reporting one fact.
  *
- * @param {{ names: string[], bytes: number }} pair
+ * @param {{ records: object[], bytes: number }} pair
  * @returns {string|null} why the pair is unusable, or `null` when it is usable.
  */
 export function describePairMismatch({ records, bytes }) {
@@ -96,8 +96,6 @@ export function validateVectorIndex(records) {
     if (record.kind === 'repo') {
       if (record.id !== `repo:${repoKey}`)
         throw new Error(`Repo vector record ${record.id} must use canonical id repo:${repoKey}.`)
-      if (repoRecords.has(repoKey))
-        throw new Error(`Vector index contains multiple repo records for ${record.repo}.`)
       repoRecords.add(repoKey)
       continue
     }
