@@ -24,7 +24,7 @@ export const EMBEDDINGS_FINGERPRINTS_KEY = 'embeddings-fingerprints.json'
 export const EMBEDDINGS_MANIFEST_KEY = 'embeddings-manifest.json'
 export const EMBEDDINGS_BIN_KEY = 'embeddings.bin'
 
-/** Worker-owned append-only prefixes; the scheduled build only ever reads these. */
+/** Worker-owned append-only prefixes; builds fold them and later compact only exact snapshotted keys. */
 export const INGEST_JOURNAL_PREFIX = 'state/ingest-journal/'
 export const PROBE_CAPTURE_PREFIX = 'state/probe-captures/'
 
