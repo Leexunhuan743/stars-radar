@@ -3,6 +3,20 @@ name: Retrieval Quality
 on:
   push:
     branches: [master, main]
+  pull_request:
+    paths:
+      - src/search-engine.js
+      - src/scoring.js
+      - src/ranking.js
+      - src/query-analysis.js
+      - src/readme-evidence.js
+      - src/result-compiler.js
+      - src/embeddings.js
+      - src/evidence.js
+      - data/intents.json
+      - scripts/vector_pipeline.js
+      - scripts/evaluate_retrieval_real.js
+      - .github/workflows/retrieval-quality.yaml
   workflow_dispatch:
 
 permissions:
@@ -72,3 +86,32 @@ jobs:
       - name: Enforce real retrieval quality thresholds
         if: steps.config.outputs.enabled == 'true'
         run: pnpm eval:retrieval:gate -- --output retrieval-quality-report.json
+
+
+      - name: Summarize retrieval quality
+        if: steps.config.outputs.enabled == 'true' && always()
+        run: |
+          if [ ! -f retrieval-quality-report.json ]; then
+            echo "### Retrieval Quality" >> "${GITHUB_STEP_SUMMARY}"
+            echo "No report was produced because evaluation did not complete." >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          node --input-type=module - <<'NODE' >> "${GITHUB_STEP_SUMMARY}"
+          import fs from 'node:fs'
+          const report = JSON.parse(fs.readFileSync('retrieval-quality-report.json', 'utf8'))
+          console.log('### Retrieval Quality')
+          console.log('')
+          console.log('| Mode / class | Recall@K | Precision@K | MRR | NDCG@K | Negative empty | Forbidden | p95 ms |')
+          console.log('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+          const row = (label, summary) => {
+            const f = value => Number.isFinite(value) ? Number(value).toFixed(3) : '—'
+            console.log(`| ${label} | ${f(summary.mean_recall_at_k)} | ${f(summary.mean_precision_at_k)} | ${f(summary.mrr)} | ${f(summary.mean_ndcg_at_k)} | ${f(summary.negative_empty_success_rate)} | ${summary.forbidden_hits ?? '—'} | ${f(summary.p95_latency_ms)} |`)
+          }
+          for (const mode of report.reports || []) {
+            row(mode.mode, mode.summary)
+            for (const [name, summary] of Object.entries(mode.classes || {}))
+              row(`${mode.mode} / ${name}`, summary)
+          }
+          console.log('')
+          console.log(report.quality_gate?.passed ? '✅ Configured thresholds passed.' : '❌ One or more configured thresholds failed.')
+          NODE
