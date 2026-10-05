@@ -5,7 +5,7 @@ import { getCatalog, getHarvested, getRankings } from './documents.js'
 import { buildRepositoryQuery } from './github-query.js'
 import { enrichLiveResults } from './live-results.js'
 import { PROBE_CAPTURE_PREFIX } from './object-keys.js'
-import { buildProbeCaptures, PROBE_MAX_CAPTURES, PROBE_MIN_STARS } from './probe-capture.js'
+import { buildProbeCaptures, PROBE_MIN_STARS } from './probe-capture.js'
 import { githubFailure, ProbeRequestError, readGithubSearch, requestProbe } from './probe-errors.js'
 
 export async function searchGithubLive(env, {
