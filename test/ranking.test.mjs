@@ -158,7 +158,6 @@ test('missing record fields contribute nothing to the subject pool', () => {
   }
 })
 
-
 test('ordinary feature subjects may be rescued by strong README semantics but weak similarity is rejected', () => {
   const repos = { 'me/storage': { name: 'storage', description: 'self-hosted data service' } }
 
