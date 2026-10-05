@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import process from 'node:process'
-import { DIMS, EMBEDDING_MODEL, isEmbedding } from '../src/embeddings.js'
+import { DIMS, EMBEDDING_MODEL, isEmbedding, validateVectorIndex } from '../src/embeddings.js'
 import { foldJournalFiles } from '../src/ingest-journal.js'
 import {
   ASSET_INDEX_KEY,
@@ -53,16 +53,17 @@ function loadHarvested(root) {
 }
 
 function loadVectors(root) {
-  const namesPath = path.resolve(root, EMBEDDINGS_INDEX_KEY)
+  const indexPath = path.resolve(root, EMBEDDINGS_INDEX_KEY)
   const binPath = path.resolve(root, EMBEDDINGS_BIN_KEY)
-  if (!fs.existsSync(namesPath) || !fs.existsSync(binPath))
+  if (!fs.existsSync(indexPath) || !fs.existsSync(binPath))
     throw new Error(`Real benchmark needs ${EMBEDDINGS_INDEX_KEY} and ${EMBEDDINGS_BIN_KEY} from the target data plane.`)
-  const names = JSON.parse(fs.readFileSync(namesPath, 'utf-8'))
+  const records = JSON.parse(fs.readFileSync(indexPath, 'utf-8'))
+  validateVectorIndex(records)
   const bytes = fs.readFileSync(binPath)
-  if (bytes.byteLength !== names.length * DIMS * 4)
-    throw new Error(`Vector pair mismatch: ${names.length} names but ${bytes.byteLength} bytes.`)
+  if (bytes.byteLength !== records.length * DIMS * 4)
+    throw new Error(`Vector pair mismatch: ${records.length} records but ${bytes.byteLength} bytes.`)
   const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-  return { names, values: new Float32Array(copy) }
+  return { records, values: new Float32Array(copy) }
 }
 
 async function embedQuery(query) {
@@ -198,11 +199,11 @@ export async function main() {
   const rankings = readJson(path.join(root, LOCAL_RANKINGS_DIR, RANKINGS_KEY), {})
   const assetIndex = readJson(path.join(root, ASSET_INDEX_KEY), { repos: {}, intent_inverted: {} })
   const harvested = loadHarvested(root)
-  const vectors = lexicalOnly ? { values: null, names: null } : loadVectors(root)
+  const vectors = lexicalOnly ? { values: null, records: null } : loadVectors(root)
   const documents = { catalog, rankings, assetIndex, harvested, vectors, intents: defaultIntents }
 
   const reports = []
-  reports.push(await runMode('lexical', fixture, { ...documents, vectors: { values: null, names: null } }, { lexicalOnly: true, k }))
+  reports.push(await runMode('lexical', fixture, { ...documents, vectors: { values: null, records: null } }, { lexicalOnly: true, k }))
   if (!lexicalOnly)
     reports.push(await runMode('hybrid_bge_m3', fixture, documents, { lexicalOnly: false, k }))
 
@@ -214,7 +215,9 @@ export async function main() {
     corpus: {
       catalog_repos: Object.keys(catalog.repos || {}).length,
       asset_repos: Object.keys(assetIndex.repos || {}).length,
-      vector_count: vectors.names?.length || 0,
+      vector_count: vectors.records?.length || 0,
+      repo_vector_count: vectors.records?.filter(record => record.kind === 'repo').length || 0,
+      readme_chunk_vector_count: vectors.records?.filter(record => record.kind === 'readme_chunk').length || 0,
       harvested: harvested.length,
     },
     reports,
