@@ -84,7 +84,7 @@ test('an absent document is served as the documented placeholder', async () => {
   const rankings = await getRankings(env)
   assert.deepEqual(Object.keys(rankings).sort(), ['agentSkillRepos', 'agentSkills', 'breakoutWeekly', 'helloGitHub', 'topStarred', 'trending'])
   assert.deepEqual(await getHarvested(env), [])
-  assert.deepEqual(await getVectors(env), { vectors: null, records: null })
+  assert.deepEqual(await getVectors(env), { vectors: null, records: null, inputProfile: null })
   const { statuses, degraded } = dataPlaneStatus()
   assert.equal(statuses.generation, 'missing', 'a fresh install has no active generation yet')
   assert.equal(statuses.catalog, 'missing', 'an absent document is a first run, not a fault')
