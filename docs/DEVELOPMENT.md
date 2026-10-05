@@ -168,19 +168,19 @@ Bash / zsh 使用 `export WORKER_URL=...` 和 `export MCP_API_KEY=...`。
 
 资产分为 `starred`、`curated`、`community`、`discovered`。前三种进入热集；实时搜索本身永远不写状态，只有显式调用 `capture_github_discovery` 才记录一次发现观察，满足跨查询确认等规则后才晋升为社区资产。取消 Star 会移除个人收藏标记，历史资产可能作为社区候选保留；已明确收录的记录仍保存在日志中。
 
-`ingest_snapshot` 保存已折叠的 curator entries 与对应原始 key；`probe_snapshot` 保存该代已折叠的 probe 原始 key。下一轮只解析上一代 snapshot 尚未覆盖的 raw tail。active generation 成功切换后，CI 只删除**上一代**明确列出的 ingest/probe key；本轮第一次看到的写入至少再保留一个 generation，因此回滚上一代再重建也不会丢掉新收录或新发现。不会递归删除任何 state 前缀。
+`ingest_snapshot` 保存已折叠的 curator entries 与对应原始 key；`probe_snapshot` 保存该代已折叠的 probe 原始 key。下一轮只解析 active generation snapshot 尚未覆盖的 raw tail。active generation 成功切换后，CI 以**三代保留窗口中最老的 retained generation**作为 compaction recovery horizon，只删除该代已经明确折叠的 ingest/probe exact keys；因此任一仍被保留的 generation 都可以作为后续 rebuild baseline。不会递归删除任何 state 前缀。
 
 常规数据缓存为 30 分钟，入库日志视图为 60 秒，均是每个 Worker 实例独立的缓存。写入实例立即安装新视图，其他实例刷新后可见。大量语料或高频写入会增加内存与 R2 请求开销，当前架构适用于个人库，是单账号共享密钥服务，没有多租户隔离。
 
 ## 检索与证据
 
-向量模型固定为 `BAAI/bge-m3`，维度为 1024。输入 profile 固定为 `repo-metadata-readme-chunks-v3`。每个仓库至少有一个 metadata record（仓库名、分类、语言、备注、摘要、简介、topics），README 则按 Markdown 章节切分并选择最多 6 个有信息量的 chunk，各自拥有独立向量。`embeddings-index.json` 保存结构化 record，而不是简单仓库名数组；record 明确区分 `kind=repo` 与 `kind=readme_chunk`，README record 同时保存 heading 和用于证据展示的文本。manifest 必须精确匹配该 profile、record count、repo count 以及 index/bin SHA-256；任何旧 profile、字符串 index、混合代次或内容哈希不一致都会被拒绝并要求重建。默认构建与查询都使用 SiliconFlow；查询向量接口失败时退回词法通道。
+向量模型固定为 `BAAI/bge-m3`，维度为 1024。输入 profile 固定为 `repo-metadata-readme-chunks-v3`。语义热集中的仓库至少有一个 metadata record；README 按 Markdown 章节切分后使用自适应 6–12 chunk 预算，并受全局 vector record budget 约束，metadata vectors 始终优先。`embeddings-index.json` 保存结构化 `repo` / `readme_chunk` records，README record 包含 README SHA-256、section/chunk ordinal、heading path 与 content hash。manifest 必须精确匹配 profile、record/repo count 以及 index/bin SHA-256；旧 profile、字符串 index、混合代次或内容哈希不一致全部 fail closed，不提供兼容转换。默认构建与查询都使用 SiliconFlow；查询向量接口失败时仅运行时退回词法通道。
 
 检索结合向量相似度、关键词、通用意图词表与具体主体匹配。明确的仓库名或技术主体约束候选；个人收藏有排序加权，综合结果也保留社区候选。`scope` 选择收藏 / 社区范围，`category` 选择用户分类，`source` 选择来源。
 
-`explain=true` 同时暴露两类 README 证据。第一类是 `semantic_evidence.readme_chunk`：它来自 v3 chunk 向量本身，返回命中的 heading、短 snippet 与 cosine similarity，可解释“为何一个功能即使不在 GitHub description 里也被召回”，同时避免把完整 chunk 重复塞进响应。第二类是 `readme_evidence`：对前 5 个结果额外读取 R2 已缓存 README，只在存在真实词面命中时返回最多两个短片段。两类证据都不会访问 GitHub；Stars Radar 自己生成的分类/推荐理由头会先被剥离，避免 curator 元数据伪装成上游 README。`min_score` 是排序门槛，不是准确率。
+`explain=true` 使用统一 Evidence Contract：`ranking` 只描述候选为何被排序到这里，`provenance` 把返回字段映射到 evidence ID，`evidence[]` 保存事实依据。README semantic/literal evidence 都带 generation、README SHA-256、chunk/section identity、heading path 与 trust；cosine similarity 仍只是 ranking signal，不是假装成事实证明。Stars Radar 生成的 curator 头会先从上游 README evidence 中剥离。
 
-详情和比较区分 `evidence.source`、`snapshot_at`、`fetched_at`。`refresh=true` 请求 GitHub 当前元数据并保留个人备注；未知字段为 `null`，不能推断为“没有许可证”或“已经停止维护”。README 最多返回 50,000 个字符。上游文字与代码片段是来源内容，应结合原始链接核实。
+详情和比较同样返回 field-level `provenance` 与 `evidence[]`。个人备注/分类是 `user_trusted`；GitHub README/description、代码和网页 prose 是 `external_untrusted`，只能作为证据，不能当作指令。`refresh=true` 请求 GitHub 当前元数据并保留个人备注；未知字段为 `null`。README 最多返回 50,000 个字符。
 
 ## MCP 工具
 
@@ -225,7 +225,7 @@ Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。`MCP_API_KEY` 与 `MCP
 | `GET /api/categories` | 用户分类                                                                   |
 | `GET /api/trending`   | `category`，返回快照榜单                                                   |
 | `GET /api/skills`     | `type=all` 或 `repos`、`limit`                                             |
-| `GET /api/live`       | 只读：`q`、`language`、`min_stars`、`sort`、`since`、`until`、`limit` |
+| `GET /api/live`       | 只读：`q`、`language`、`min_stars`、`sort`、`order`、`since`、`until`、`limit` |
 | `POST /api/capture`   | 写入：JSON `repo`、`query`；服务端重新校验 GitHub 元数据                     |
 | `GET /api/code`       | `q`、`repo`、`language`、`extension`、`path`、`limit`                      |
 | `GET /api/web`        | `q`、`domain`、`freshness`、`limit`                                        |
@@ -267,7 +267,7 @@ pnpm eval:retrieval:gate -- --fixture data/retrieval-benchmark.private.json --k 
 
 行为变更需补充结果测试。工具参数变化还需检查 schema snapshot；确实改变契约时，运行跨平台命令 `pnpm test:schema:update`，不要更新快照来掩盖意外变化。
 
-常规测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。`pnpm eval:retrieval` 仍使用合成标注及固定向量，只负责规则回归，不能作为真实模型质量或生产准确率声明。`pnpm eval:retrieval:real` 则直接读取本地真实 `catalog.json`、`asset-index.json`、`embeddings.bin` 与私有 relevance labels，并用真实 BGE-M3 query embedding 比较 lexical 与 hybrid，输出 Recall@K、Precision@K、MRR、NDCG@K、forbidden hits 以及 P50/P95 延迟。真实标注文件 `data/retrieval-benchmark.private.json` 已加入忽略规则，避免个人收藏与判断进入仓库。fixture 可为 lexical / hybrid 模式配置最低 Recall、Precision、MRR、NDCG、negative empty-success，以及最大 forbidden hits / P95；`pnpm eval:retrieval:gate` 任一阈值不达标即非零退出。仓库自带 `Retrieval Quality` workflow：把私有 fixture 做 base64 后保存为 Actions secret `RETRIEVAL_BENCHMARK_B64`，workflow 会恢复当前 production generation 并执行真实 BGE-M3 gate；未配置该 secret 时明确跳过。
+常规测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。`pnpm eval:retrieval` 的合成 fixture 只负责规则回归。`Retrieval Quality` workflow 则严格要求已有合法 active generation 和 `RETRIEVAL_BENCHMARK_B64`：它恢复 production catalog/README corpus 与 vector baseline，使用当前候选代码重新执行 `vector_pipeline.js` 生成 candidate vectors，然后分别运行 production-derived regression smoke 与 private human-labeled quality gate。derived exact-identity/个人备注/负查询只能证明 smoke/regression，不作为真实质量证明；private fixture 必须覆盖 exact identity、personal note、README-only、multi-facet、multilingual、negative、community 等 query classes，并配置 class-level thresholds。scheduled data build 在切换 `active-generation.json` 前也运行这两个 candidate gates，任何失败都会阻止 activation。
 
 发布前在自己的目标环境完成：
 
@@ -299,4 +299,4 @@ pnpm eval:retrieval:gate -- --fixture data/retrieval-benchmark.private.json --k 
 | 收录成功但 GitHub 没点 Star | 检查 `starred_on_github`、令牌写权限与限流                                 |
 | 资产或日志损坏              | 保留原始对象，修复失败记录或从完整备份恢复；构建停止覆盖持久状态           |
 
-R2 是运行数据的持久存储，代码仓库不能恢复个人备注和发现历史。默认保留最近三个不可变 generation，使用 `pnpm data:rollback -- --list` 查看候选，使用 `pnpm data:rollback -- --to <generation-id>` 校验目标 manifest 与关键对象后切换 active pointer 并回读确认。README blobs 由 generation 引用并随保留代次做 GC；最新尚未折叠的 `state/` tail 仍独立存在，因此重要部署仍应独立备份 R2。
+R2 是运行数据的持久存储，代码仓库不能恢复个人备注和发现历史。默认保留最近三个不可变 generation；raw state compaction 与同一 retention horizon 对齐。`pnpm data:rollback -- --to <generation-id>` 在切换 pointer 前会重新下载并校验 generation manifest 中每个文件的 bytes/SHA-256、vector index/bin/manifest、README manifest identity 以及所有 content-addressed README blob hashes；任一不一致都拒绝回滚。README blobs 只在所有 retained generations 都不再引用后才 GC。重要部署仍应独立备份 R2。
