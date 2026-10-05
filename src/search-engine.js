@@ -185,7 +185,16 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
         item: entry.item,
         evidence: explain
           ? explainTextMatch(
-              [entry.repo, entry.item.description, entry.item.reason, entry.item.summary, ...(assetIndex.repos[entry.repo.toLowerCase()]?.topics || [])].filter(Boolean).join(' ').toLowerCase(),
+              [
+                entry.repo,
+                assetIndex.repos[entry.repo.toLowerCase()]?.name,
+                entry.item.description,
+                entry.item.reason,
+                entry.item.summary,
+                assetIndex.repos[entry.repo.toLowerCase()]?.language,
+                ...(assetIndex.repos[entry.repo.toLowerCase()]?.topics || []),
+                ...(entry.item.categories || []),
+              ].filter(Boolean).join(' ').toLowerCase(),
               layerQuery,
             )
           : undefined,
