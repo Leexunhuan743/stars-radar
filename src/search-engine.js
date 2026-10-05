@@ -192,7 +192,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
       if (!matchesSubjectGate(text, specificSubjects))
         continue
       const weight = scoreText(text, layerQuery)
-      if (weight > 0)
+      if (weight > 0) {
         keywordScores.set(item.repo.toLowerCase(), {
           weight,
           source: 'curated',
@@ -202,6 +202,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
           facetCoverage: evaluateFacetCoverage(text, facets),
           evidence: explain ? explainTextMatch(text, layerQuery) : undefined,
         })
+      }
     }
   }
 
