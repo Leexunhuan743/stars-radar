@@ -27,7 +27,7 @@ const CI_TOOLING_ONLY = new Set(['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'])
 // Test-harness overrides that redirect a script's data root at a throwaway directory.
 // Deliberately not deployment knobs, so they stay out of .env.example.
 const TEST_ONLY = new Set(['ASSET_STORE_ROOT', 'VECTOR_STORE_ROOT'])
-const WORKFLOW_RUNTIME_ONLY = new Set(['GENERATION_ID', 'GITHUB_SHA'])
+const WORKFLOW_RUNTIME_ONLY = new Set(['ACTIVE_GENERATION_ID', 'GENERATION_ID', 'GITHUB_SHA'])
 
 function readDeclared() {
   const text = fs.readFileSync(path.join(ROOT, '.env.example'), 'utf-8')
