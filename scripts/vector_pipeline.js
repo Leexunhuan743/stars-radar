@@ -62,13 +62,19 @@ export function repositoryVectorRows(repo) {
     text: embeddingText(repo),
   }]
 
-  for (const chunk of selectReadmeVectorChunks(readLocalReadme(repo.repo))) {
+  const readme = readLocalReadme(repo.repo)
+  const readmeSha256 = readme ? digest(readme) : null
+  for (const [ordinal, chunk] of selectReadmeVectorChunks(readme).entries()) {
+    const contentSha256 = digest(chunk.text)
     const chunkHash = digest(`${chunk.heading}\0${chunk.text}`).slice(0, 20)
     rows.push({
       record: {
         id: `readme:${key}:${chunkHash}`,
         repo: repo.repo,
         kind: 'readme_chunk',
+        readme_sha256: readmeSha256,
+        content_sha256: contentSha256,
+        ordinal,
         heading: chunk.heading,
         text: chunk.text,
       },
