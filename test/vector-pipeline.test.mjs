@@ -334,7 +334,6 @@ test('a short embedding response fails without replacing any of the four existin
   files.forEach((file, index) => assert.deepEqual(fs.readFileSync(path.join(TMP, file)), before[index]))
 })
 
-
 test('README evidence participates in embeddings and invalidates only the repository whose README changed', async () => {
   clearLocalPair()
   const bucket = stubR2({})
