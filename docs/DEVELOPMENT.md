@@ -173,7 +173,7 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 ## 检索与证据
 
-向量模型固定为 `BAAI/bge-m3`，维度为 1024。当前输入 profile 为 `repo-metadata-readme-v2`：仓库名称、分类、语言、备注、摘要、简介、topics 与经过清理后的 README 证据共同组成 repo-level embedding；README 最多贡献 6000 个字符，整条 embedding 文本最多 8000 个字符。它仍然不是 chunk-level README 索引，因此当前只能把 README 作为仓库级语义证据，不能声称精确命中了某个章节。旧 manifest 缺少 profile 时仍可安全读取，并在状态接口中报告为 `repo-metadata-v1`，下一次成功数据构建会升级到 v2。默认构建与查询都使用 SiliconFlow；查询向量接口失败时退回词法通道。
+向量模型固定为 `BAAI/bge-m3`，维度为 1024。输入 profile 固定为 `repo-metadata-readme-v2`：仓库名称、分类、语言、备注、摘要、简介、topics 与经过清理后的 README 证据共同组成 repo-level embedding；README 最多贡献 6000 个字符，整条 embedding 文本最多 8000 个字符。它仍然不是 chunk-level README 索引，因此当前只能把 README 作为仓库级语义证据，不能声称精确命中了某个章节。manifest 必须显式声明该 profile；缺少 profile 或 profile 不匹配会被拒绝，必须重新构建向量。默认构建与查询都使用 SiliconFlow；查询向量接口失败时退回词法通道。
 
 检索结合向量相似度、关键词、通用意图词表与具体主体匹配。明确的仓库名或技术主体约束候选；个人收藏有排序加权，综合结果也保留社区候选。`scope` 选择收藏 / 社区范围，`category` 选择用户分类，`source` 选择来源。
 
@@ -183,7 +183,7 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 ## MCP 工具
 
-Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。不配置 `MCP_WRITE_API_KEY` 时，`MCP_API_KEY` 保持向后兼容的读写权限；配置独立写密钥后，`MCP_API_KEY` 只能读取和检索，`MCP_WRITE_API_KEY` 可读且允许 `capture_github_discovery` 与 `star_and_ingest_repo`。REST 写接口使用相同规则，读 key 调用时返回 `403 write_forbidden`。昂贵的向量/GitHub/Web 路径与写路径分别经过平台 Rate Limiting binding；默认预算分别为 60/分钟与 20/分钟，超限返回 `429 rate_limited`。Cloudflare Rate Limiting 是按 location 的保护性、最终一致计数，不应作为精确用量或计费系统；配置了 binding 但 binding 调用异常时服务 fail closed，返回 `503 rate_limiter_unavailable`，避免静默失去成本保护。
+Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。`MCP_API_KEY` 与 `MCP_WRITE_API_KEY` 都是必填：读 key 只能读取和检索，写 key 可读且允许 `capture_github_discovery` 与 `star_and_ingest_repo`。REST 写接口使用相同规则，读 key 调用时返回 `403 write_forbidden`。昂贵的向量/GitHub/Web 路径与写路径分别经过平台 Rate Limiting binding；默认预算分别为 60/分钟与 20/分钟，超限返回 `429 rate_limited`。Cloudflare Rate Limiting 是按 location 的保护性、最终一致计数，不应作为精确用量或计费系统；配置了 binding 但 binding 调用异常时服务 fail closed，返回 `503 rate_limiter_unavailable`，避免静默失去成本保护。
 
 `MCP_TOOLSET` 只控制 MCP server 注册哪些工具，不改变 REST 路由：`all` 是兼容默认值，暴露全部 15 个工具；`research` 保留 13 个只读研究工具并隐藏 `capture_github_discovery` / `star_and_ingest_repo`；`core` 只保留 7 个个人库检索、README/比较、分类/列表和状态工具。非法值会返回 MCP 配置错误，不会回退到 `all`。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
 
