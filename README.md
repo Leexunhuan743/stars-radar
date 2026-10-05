@@ -75,7 +75,7 @@ pnpm exec wrangler r2 bucket create your-radar-bucket
 
 R2 的 S3 凭据需要能读写该桶。这里的 `GH_TOKEN` 在构建时映射为 `GITHUB_TOKEN`，GitHub 自动提供的工作流令牌不能代替你的个人令牌来同步个人收藏。
 
-在 **Actions** 中启用工作流，然后手动运行 **Update Repos Info**。第一次运行会从你的账号生成收藏目录、README 和检索索引。以后工作流每 6 小时运行一次；失败的运行不会保证新向量已经发布，可手动重试。
+在 **Actions** 中启用工作流，然后手动运行 **Update Repos Info**。第一次运行会从你的账号生成收藏目录、README 和检索索引。以后工作流每 6 小时运行一次。derived 目录、榜单、资产索引和向量先作为一整个不可变 generation 上传并验证，只有全部成功才切换 active generation；失败构建不会让线上读到半套新数据。默认保留最近三个 derived generations 便于快速回滚。
 
 ### 4. 配置服务并部署
 
@@ -182,6 +182,8 @@ python scripts/search_stars_cli.py --help
 分类来自你自己的 GitHub Lists，没有固定的分类数量。未放进任何 List 的公开收藏归入 `everything-else`。通过服务填写的收录标签保存在本服务，不会自动修改 GitHub Lists。
 
 **数据会公开吗？**
+
+真实检索质量需要用部署者自己的查询和 relevance labels 评估；`pnpm eval:retrieval:gate` 可按私有 fixture 中的 Recall/MRR/NDCG/负查询/延迟阈值阻止回归，公共仓库不会把合成 fixture 当作生产质量证明。
 
 生成的数据保存在你的 R2 桶中，不提交到代码仓库；服务接口需要访问密钥。同步管线排除私有仓库。请保持桶为私有，并只把密钥交给受信任的客户端。这是单个账号的个人服务，所有使用同一密钥的客户端共享数据和操作权限。
 
