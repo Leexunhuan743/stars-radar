@@ -91,6 +91,22 @@ test('merged personal fields retain independent source provenance', async () => 
   assert.equal(summaryEvidence.source.snapshot_at, '2026-10-01T00:00:00Z')
 })
 
+test('historical ingest summary copied from GitHub description is not treated as a trusted personal note', async () => {
+  const documents = {
+    ...DOCUMENTS,
+    harvested: [{
+      repo: 'Other/Tool',
+      reason: 'selected for research',
+      summary: 'legacy description copy',
+      ingested_at: '2026-10-03T00:00:00Z',
+    }],
+  }
+  const result = await getRepositoryDetails(NO_README, documents, 'other/tool', { ...NO_FETCH, include_readme: false })
+  assert.equal(result.reason, 'selected for research')
+  assert.equal(result.summary, null)
+  assert.equal(result.evidence.some(item => item.fields?.includes('summary')), false)
+})
+
 test('missing compact metadata is fetched from GitHub with provenance but without README calls', async () => {
   const calls = []
   const result = await getRepositoryDetails(NO_README, DOCUMENTS, 'fresh/project', {
