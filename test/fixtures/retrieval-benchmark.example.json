@@ -1,26 +1,62 @@
 {
-  "dataset": "replace-with-private-real-stars-benchmark",
+  "dataset": "replace-with-private-human-labeled-stars-benchmark",
   "cases": [
     {
-      "id": "example-webdav-storage",
-      "query": "支持 WebDAV 和 S3 的自托管工具",
-      "relevant": [
-        "owner/replace-with-a-real-repo"
-      ],
+      "id": "exact-identity-example",
+      "query": "owner/replace-with-a-real-repo",
+      "relevant": ["owner/replace-with-a-real-repo"],
       "forbidden": [],
-      "options": {
-        "scope": "starred"
-      }
+      "class": "exact_identity",
+      "options": { "scope": "starred" }
     },
     {
-      "id": "example-memory-query",
-      "query": "我收藏过的离线 Markdown 笔记工具",
-      "relevant": [
-        "owner/replace-with-a-real-repo"
-      ],
-      "options": {
-        "scope": "starred"
-      }
+      "id": "personal-note-example",
+      "query": "replace with a real query derived from how you remember this project",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "forbidden": [],
+      "class": "personal_note",
+      "options": { "scope": "starred" }
+    },
+    {
+      "id": "readme-only-example",
+      "query": "replace with a capability that is documented in README but not short metadata",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "forbidden": [],
+      "class": "readme_only",
+      "options": { "scope": "starred" }
+    },
+    {
+      "id": "multi-facet-example",
+      "query": "replace with a real multi-condition technical selection query",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "acceptable": ["owner/replace-with-a-real-alternative"],
+      "forbidden": ["owner/replace-with-a-confusing-wrong-repo"],
+      "class": "multi_facet",
+      "options": { "scope": "all" }
+    },
+    {
+      "id": "multilingual-example",
+      "query": "替换成真实的中英文混合检索问题，例如 offline Markdown research tool",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "forbidden": [],
+      "class": "multilingual",
+      "options": { "scope": "all" }
+    },
+    {
+      "id": "negative-example",
+      "query": "replace with a realistic query that should return no acceptable repository",
+      "relevant": [],
+      "forbidden": ["owner/replace-with-a-common-false-positive"],
+      "class": "negative",
+      "options": { "scope": "all" }
+    },
+    {
+      "id": "community-example",
+      "query": "replace with a real query whose best result is community/curated rather than starred",
+      "relevant": ["owner/replace-with-a-real-community-repo"],
+      "forbidden": [],
+      "class": "community",
+      "options": { "scope": "all" }
     }
   ],
   "thresholds": {
@@ -28,9 +64,33 @@
       "min_mean_recall_at_k": 0.7,
       "min_mrr": 0.6,
       "min_mean_ndcg_at_k": 0.6,
+      "min_evidence_coverage_rate": 0.9,
+      "min_provenance_completeness_rate": 0.9,
       "min_negative_empty_success_rate": 0.8,
       "max_forbidden_hits": 0,
-      "max_p95_latency_ms": 5000
+      "max_p95_latency_ms": 5000,
+      "classes": {
+        "readme_only": {
+          "min_mean_recall_at_k": 0.6,
+          "min_mrr": 0.5
+        },
+        "multi_facet": {
+          "min_mean_recall_at_k": 0.6,
+          "min_facet_satisfaction_rate": 0.7
+        },
+        "multilingual": {
+          "min_mean_recall_at_k": 0.6,
+          "min_mrr": 0.5
+        },
+        "negative": {
+          "min_negative_empty_success_rate": 0.8,
+          "max_forbidden_hits": 0
+        },
+        "community": {
+          "min_mean_recall_at_k": 0.6,
+          "min_mrr": 0.5
+        }
+      }
     }
   }
 }
