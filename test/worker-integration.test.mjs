@@ -48,7 +48,7 @@ test('the actual Worker serves authenticated research routes and registers usabl
     fs.mkdirSync(path.join(directory, 'rankings'))
     fs.writeFileSync(path.join(directory, 'rankings', 'rankings.json'), '{}')
     fs.mkdirSync(path.join(directory, 'stars', 'fixture'), { recursive: true })
-    fs.writeFileSync(path.join(directory, 'stars', 'fixture', 'one.md'), '# Local README\nVerified seed data.')
+    fs.writeFileSync(path.join(directory, 'stars', 'fixture', 'one.md'), '# Local README\nVerified terminal music player seed data.')
     assert.equal(await seedLocalR2(proxy.env.R2, directory), 7)
     await proxy.dispose()
     proxy = null
@@ -88,6 +88,9 @@ test('the actual Worker serves authenticated research routes and registers usabl
     const search = await (await worker.fetch('/api/search?q=music%20player&explain=true', { headers })).json()
     assert.equal(search.data[0].repo, 'fixture/one')
     assert.ok(search.data[0].explanation.matched_tokens.includes('music'))
+    assert.equal(search.data[0].explanation.readme_evidence.status, 'ok')
+    assert.equal(search.data[0].explanation.readme_evidence.source, 'cached_readme')
+    assert.match(search.data[0].explanation.readme_evidence.snippets[0].snippet, /terminal music player/)
     client = new Client({ name: 'fixture-research-client', version: '1.0.0' })
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://${worker.address}:${worker.port}/mcp`), { requestInit: { headers } }))
     const tools = await client.listTools()
