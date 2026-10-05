@@ -77,6 +77,7 @@ export function validateVectorIndex(records) {
 
   const ids = new Set()
   const repoRecords = new Set()
+  const chunkRepos = new Set()
   for (const [index, record] of records.entries()) {
     if (!record || typeof record !== 'object' || Array.isArray(record))
       throw new Error(`Vector index record ${index} must be an object.`)
@@ -91,17 +92,28 @@ export function validateVectorIndex(records) {
     if (!VECTOR_RECORD_KINDS.has(record.kind))
       throw new Error(`Vector index record ${record.id} has invalid kind ${JSON.stringify(record.kind)}.`)
 
+    const repoKey = record.repo.toLowerCase()
     if (record.kind === 'repo') {
-      if (repoRecords.has(record.repo.toLowerCase()))
+      if (record.id !== `repo:${repoKey}`)
+        throw new Error(`Repo vector record ${record.id} must use canonical id repo:${repoKey}.`)
+      if (repoRecords.has(repoKey))
         throw new Error(`Vector index contains multiple repo records for ${record.repo}.`)
-      repoRecords.add(record.repo.toLowerCase())
+      repoRecords.add(repoKey)
       continue
     }
 
+    if (!record.id.startsWith(`readme:${repoKey}:`) || record.id === `readme:${repoKey}:`)
+      throw new Error(`README vector record ${record.id} must use canonical repo-prefixed id.`)
+    chunkRepos.add(repoKey)
     if (typeof record.heading !== 'string' || !record.heading.trim())
       throw new Error(`README vector record ${record.id} is missing heading.`)
     if (typeof record.text !== 'string' || !record.text.trim())
       throw new Error(`README vector record ${record.id} is missing text.`)
+  }
+
+  for (const repo of chunkRepos) {
+    if (!repoRecords.has(repo))
+      throw new Error(`README vector records for ${repo} have no matching repo metadata record.`)
   }
 
   return { recordCount: records.length, repoCount: repoRecords.size }
