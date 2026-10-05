@@ -6,7 +6,7 @@
 // primary sort key inverted, relevance_score zeroed, and the `_rrf` tie-breaker removed.
 // The Worker imports this via src/index.js; test/result-compiler.test.mjs imports it
 // directly, so there is one source of truth rather than a drifting replica.
-import { buildReadmeEvidence, EVIDENCE_TRUST } from './evidence.js'
+import { buildReadmeEvidence, buildRepositoryEvidence, EVIDENCE_TRUST } from './evidence.js'
 import { applyCommunityCap, relevanceScore } from './relevance.js'
 
 /**
@@ -41,6 +41,8 @@ export function compileResults({
   limit,
   explain = false,
   applyCommunityDiversityCap = false,
+  catalogSnapshotAt = null,
+  rankingSnapshotAt = null,
 }) {
   const results = []
   const reposByName = new Map(Object.entries(repos).map(([name, record]) => [name.toLowerCase(), record]))
@@ -74,19 +76,66 @@ export function compileResults({
     if (relevance < minScore)
       continue
 
+    const resultRepo = info.repo || repoName
     const factualEvidence = []
-    if (explain && stats.vectorEvidence?.readme_chunk) {
-      factualEvidence.push(buildReadmeEvidence({
-        kind: 'readme_chunk',
-        repo: info.repo || repoName,
-        chunkId: stats.vectorEvidence.readme_chunk.chunk_id,
-        readmeSha256: stats.vectorEvidence.readme_chunk.readme_sha256,
-        contentSha256: stats.vectorEvidence.readme_chunk.content_sha256,
-        ordinal: stats.vectorEvidence.readme_chunk.ordinal,
-        heading: stats.vectorEvidence.readme_chunk.heading,
-        snippet: stats.vectorEvidence.readme_chunk.snippet,
-        similarity: stats.vectorEvidence.readme_chunk.similarity,
-      }))
+    const provenance = {}
+    if (explain) {
+      const metadataFields = ['description', 'stars'].filter(field => info[field] !== undefined && info[field] !== null)
+      if (metadataFields.length > 0) {
+        const metadataEvidence = buildRepositoryEvidence({
+          kind: 'repository_metadata',
+          repo: resultRepo,
+          source: isUserStarred ? 'catalog' : source === 'curated' ? 'ingest_journal' : source,
+          trust: info.description ? EVIDENCE_TRUST.EXTERNAL_UNTRUSTED : EVIDENCE_TRUST.EXTERNAL_STRUCTURED,
+          snapshotAt: isUserStarred ? catalogSnapshotAt : rankingSnapshotAt,
+          fields: metadataFields,
+        })
+        factualEvidence.push(metadataEvidence)
+        for (const field of metadataFields)
+          provenance[field] = metadataEvidence.id
+      }
+
+      const noteFields = ['reason', 'summary'].filter(field => info[field])
+      if (noteFields.length > 0) {
+        const noteEvidence = buildRepositoryEvidence({
+          kind: 'personal_note',
+          repo: resultRepo,
+          source: isUserStarred ? 'catalog' : source === 'curated' ? 'ingest_journal' : source,
+          trust: EVIDENCE_TRUST.USER_TRUSTED,
+          snapshotAt: isUserStarred ? catalogSnapshotAt : rankingSnapshotAt,
+          fields: noteFields,
+        })
+        factualEvidence.push(noteEvidence)
+        for (const field of noteFields)
+          provenance[field] = noteEvidence.id
+      }
+
+      if ((info.categories || []).length > 0) {
+        const categoryEvidence = buildRepositoryEvidence({
+          kind: 'user_taxonomy',
+          repo: resultRepo,
+          source: isUserStarred ? 'github_lists' : source === 'curated' ? 'ingest_journal' : 'asset_index',
+          trust: EVIDENCE_TRUST.USER_TRUSTED,
+          snapshotAt: isUserStarred ? catalogSnapshotAt : rankingSnapshotAt,
+          fields: ['categories'],
+        })
+        factualEvidence.push(categoryEvidence)
+        provenance.categories = categoryEvidence.id
+      }
+
+      if (stats.vectorEvidence?.readme_chunk) {
+        factualEvidence.push(buildReadmeEvidence({
+          kind: 'readme_chunk',
+          repo: resultRepo,
+          chunkId: stats.vectorEvidence.readme_chunk.chunk_id,
+          readmeSha256: stats.vectorEvidence.readme_chunk.readme_sha256,
+          contentSha256: stats.vectorEvidence.readme_chunk.content_sha256,
+          ordinal: stats.vectorEvidence.readme_chunk.ordinal,
+          heading: stats.vectorEvidence.readme_chunk.heading,
+          snippet: stats.vectorEvidence.readme_chunk.snippet,
+          similarity: stats.vectorEvidence.readme_chunk.similarity,
+        }))
+      }
     }
 
     const channels = [
@@ -102,7 +151,7 @@ export function compileResults({
       trust.description = EVIDENCE_TRUST.EXTERNAL_UNTRUSTED
 
     results.push({
-      repo: repoName.startsWith('skill:') ? repoName : (info.repo || repoName),
+      repo: repoName.startsWith('skill:') ? repoName : resultRepo,
       url: info.url || `https://github.com/${repoName}`,
       source,
       source_badge: badge,
@@ -141,7 +190,12 @@ export function compileResults({
             }
           : {}),
       },
-      ...(explain ? { evidence: factualEvidence } : {}),
+      ...(explain
+        ? {
+            provenance,
+            evidence: factualEvidence,
+          }
+        : {}),
       _rrf: stats.rrf || 0,
     })
   }
