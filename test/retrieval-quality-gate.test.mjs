@@ -69,3 +69,44 @@ test('quality gates never pass vacuously when no threshold applies to the execut
   assert.equal(gate.checked, 0)
   assert.deepEqual(gate.failures, ['no thresholds matched the evaluation modes that ran'])
 })
+
+
+test('quality gates can fail a critical query class even when aggregate metrics pass', () => {
+  const gate = evaluateThresholds([{
+    mode: 'hybrid_bge_m3',
+    summary: { mean_recall_at_k: 0.9, mrr: 0.9 },
+    classes: {
+      readme_only: { mean_recall_at_k: 0.4, mrr: 0.5 },
+    },
+    cases: [],
+  }], {
+    hybrid_bge_m3: {
+      min_mean_recall_at_k: 0.8,
+      classes: {
+        readme_only: {
+          min_mean_recall_at_k: 0.7,
+          min_mrr: 0.6,
+        },
+      },
+    },
+  })
+  assert.equal(gate.passed, false)
+  assert.equal(gate.checked, 3)
+  assert.ok(gate.failures.some(message => message.includes('classes.readme_only')))
+})
+
+test('required class thresholds fail loudly when the private benchmark forgot that class', () => {
+  const gate = evaluateThresholds([{
+    mode: 'hybrid_bge_m3',
+    summary: { mrr: 0.9 },
+    classes: {},
+    cases: [],
+  }], {
+    hybrid_bge_m3: {
+      min_mrr: 0.8,
+      classes: { negative: { min_negative_empty_success_rate: 0.9 } },
+    },
+  })
+  assert.equal(gate.passed, false)
+  assert.ok(gate.failures.some(message => message.includes('contains no cases')))
+})
