@@ -55,6 +55,7 @@ Add these Repository secrets in your fork's **Settings → Secrets and variables
 | `R2_BUCKET` | Your bucket name |
 | `R2_ACCESS_KEY_ID` | R2 S3 access key ID |
 | `R2_SECRET_ACCESS_KEY` | R2 S3 secret access key |
+| `RETRIEVAL_BENCHMARK_B64` | Base64 private human-labeled retrieval benchmark; required for candidate activation and PR retrieval gates |
 
 The S3 credentials need read/write access to that bucket. The workflow maps `GH_TOKEN` to `GITHUB_TOKEN`; GitHub's automatic workflow token is not your personal star-sync token.
 
@@ -141,7 +142,7 @@ Stars saved through the service become lexically searchable after journal refres
 
 Your categories are your own GitHub Lists, with no fixed count. Uncategorized public stars use `everything-else`. Ingest tags stay in the radar and do not modify GitHub Lists.
 
-Retrieval quality has two gates. The `Retrieval Quality` workflow restores the production retrieval plane and derives mandatory exact-identity, personal-note and negative queries from the real Stars catalog, enforcing ranking plus evidence/provenance metrics. If `RETRIEVAL_BENCHMARK_B64` is configured, a deployer-maintained human-labeled benchmark runs as an additional gate. Synthetic fixtures remain regression tests, not production-quality proof.
+Retrieval validation has two layers with different meanings. Production-derived exact-identity, personal-note and negative queries are a regression smoke gate only. Retrieval Quality Closure requires `RETRIEVAL_BENCHMARK_B64`: a private human-labeled benchmark with class-level thresholds for README-only, multi-facet, multilingual, negative, community and related real queries. The workflow restores the production corpus, rebuilds candidate vectors with the current code, and evaluates those candidate vectors; scheduled data publication runs the same candidate gates before activation.
 
 Generated data lives in your R2 bucket and is not committed to Git. The sync excludes private repositories. Keep the bucket private and share the service key only with trusted clients. This is a single-account service: all clients with the same key share its data and permissions.
 
