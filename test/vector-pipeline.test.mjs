@@ -367,7 +367,6 @@ test('README evidence participates in embeddings and invalidates only the reposi
   assert.equal(bucket.embeddings.length, 2, 'unchanged README evidence reuses the vector fingerprint')
 })
 
-
 test('legacy metadata-only fingerprints are invalidated by the v2 input profile', async () => {
   clearLocalPair()
   const bucket = stubR2({})
