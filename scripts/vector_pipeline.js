@@ -5,6 +5,7 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import fs from 'fs-extra'
 import { $fetch } from 'ofetch'
+import { ACTIVE_GENERATION_KEY, generationKey, parseGenerationPointer } from '../src/data-generation.js'
 import {
   describePairMismatch,
   DIMS,
@@ -214,19 +215,30 @@ export async function downloadVectorsFromR2() {
   if (!target)
     return false
 
+  let active
+  try {
+    active = parseGenerationPointer(JSON.parse((await readObject(target, ACTIVE_GENERATION_KEY)).toString('utf-8')))
+  }
+  catch (err) {
+    console.warn(`[Vector Pipeline] Could not resolve ${ACTIVE_GENERATION_KEY} (${err.message || String(err)}); rebuilding without a baseline.`)
+    return false
+  }
+
   const objects = [
     { name: EMBEDDINGS_BIN_KEY, field: 'bin' },
     { name: EMBEDDINGS_INDEX_KEY, field: 'index' },
+    { name: EMBEDDINGS_FINGERPRINTS_KEY, field: 'fingerprints' },
     { name: EMBEDDINGS_MANIFEST_KEY, field: 'manifest' },
   ]
 
   const payloads = {}
   for (const object of objects) {
+    const key = generationKey(active.id, object.name)
     try {
-      payloads[object.field] = await readObject(target, object.name)
+      payloads[object.field] = await readObject(target, key)
     }
     catch (err) {
-      console.warn(`[Vector Pipeline] Could not restore ${object.name} from R2 (${err.message || String(err)}); rebuilding without a baseline.`)
+      console.warn(`[Vector Pipeline] Could not restore ${key} from R2 (${err.message || String(err)}); rebuilding without a baseline.`)
       return false
     }
   }
@@ -246,6 +258,7 @@ export async function downloadVectorsFromR2() {
 
     fs.writeFileSync(path.resolve(PROJECT_ROOT, EMBEDDINGS_BIN_KEY), payloads.bin)
     fs.writeFileSync(path.resolve(PROJECT_ROOT, EMBEDDINGS_INDEX_KEY), payloads.index)
+    fs.writeFileSync(path.resolve(PROJECT_ROOT, EMBEDDINGS_FINGERPRINTS_KEY), payloads.fingerprints)
     fs.writeFileSync(path.resolve(PROJECT_ROOT, EMBEDDINGS_MANIFEST_KEY), payloads.manifest)
 
     console.log(`[Vector Pipeline] Restored current vector generation from R2 (${records.length} records, ${payloads.bin.length} bytes).`)
