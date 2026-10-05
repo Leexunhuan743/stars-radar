@@ -1008,8 +1008,13 @@ async function handleRequest(req, env, ctx) {
 
 // True BAAI/bge-m3 1024-Dim Vectors + Intent & Subject Anchoring Hybrid Engine
 async function researchDocuments(env) {
-  const [catalog, assetIndex, harvested] = await Promise.all([getCatalog(env), getAssetIndex(env), getHarvested(env)])
-  return { catalog, assetIndex, harvested }
+  const [catalog, assetIndex, harvested, readmes] = await Promise.all([
+    getCatalog(env),
+    getAssetIndex(env),
+    getHarvested(env),
+    getReadmeManifest(env),
+  ])
+  return { catalog, assetIndex, harvested, readmes }
 }
 
 async function attachReadmeEvidence(env, results, query) {
