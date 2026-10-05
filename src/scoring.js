@@ -42,6 +42,25 @@ export function containsTerm(text, term) {
   return termMatcher(text)(term)
 }
 
+export function evaluateFacetCoverage(text, facets = []) {
+  const matches = termMatcher(text)
+  const matched = []
+  for (const facet of facets) {
+    const terms = Array.isArray(facet?.terms) && facet.terms.length > 0
+      ? facet.terms
+      : [facet?.value].filter(Boolean)
+    if (terms.some(matches))
+      matched.push(facet.id)
+  }
+  const total = facets.length
+  return {
+    matched: matched.length,
+    total,
+    ratio: total > 0 ? Number((matched.length / total).toFixed(4)) : null,
+    matched_facets: matched,
+  }
+}
+
 /**
  * Scores one flattened text pool against a query.
  *
