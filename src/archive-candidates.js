@@ -112,7 +112,16 @@ export function resolveArchiveCandidates({
       continue
 
     const displayName = record.repo || repoName
-    const pool = `${displayName} ${record.description || ''} ${record.reason || ''} ${record.summary || ''} ${(record.topics || []).join(' ')}`.toLowerCase()
+    const pool = [
+      displayName,
+      record.name,
+      record.description,
+      record.reason,
+      record.summary,
+      record.language,
+      ...(record.topics || []),
+      ...(record.categories || []),
+    ].filter(Boolean).join(' ').toLowerCase()
     if (specificSubjects.length > 0 && !specificSubjects.some(sub => containsTerm(pool, sub)))
       continue
 
