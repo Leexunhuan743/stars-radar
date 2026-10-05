@@ -1,4 +1,3 @@
-import { getReadmeManifest } from './documents.js'
 import { parseFrontmatter } from './frontmatter.js'
 import { BadRequestError } from './http.js'
 import { readmeBlobKey } from './object-keys.js'
@@ -50,7 +49,7 @@ async function githubResponse(repo, suffix, headers, fetcher) {
   }
 }
 
-export async function getRepositoryDetails(env, { catalog, assetIndex, harvested }, repo, { include_readme = true, refresh = false, fetcher = fetch, now = () => new Date() } = {}) {
+export async function getRepositoryDetails(env, { catalog, assetIndex, harvested, readmes = { repos: {} } }, repo, { include_readme = true, refresh = false, fetcher = fetch, now = () => new Date() } = {}) {
   const name = repositoryName(repo)
   const starred = findRecord(catalog.repos || {}, name)
   const asset = findRecord(assetIndex.repos || {}, name)
@@ -64,7 +63,6 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
   let body = null
   let readmeSource = null
   if (include_readme) {
-    const readmes = await getReadmeManifest(env)
     const ref = readmes.repos?.[(record?.repo || name).toLowerCase()]
     const object = ref?.sha256 ? await env.R2.get(readmeBlobKey(ref.sha256)) : null
     if (object) {
