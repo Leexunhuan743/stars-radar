@@ -1,0 +1,74 @@
+name: Retrieval Quality
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stars-radar-retrieval-quality
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      RETRIEVAL_BENCHMARK_B64: ${{ secrets.RETRIEVAL_BENCHMARK_B64 }}
+      SILICONFLOW_KEY: ${{ secrets.SILICONFLOW_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: |
+            - recursive: true
+              args: [--frozen-lockfile, --strict-peer-dependencies]
+
+      - name: Detect private benchmark configuration
+        id: config
+        run: |
+          if [ -n "${RETRIEVAL_BENCHMARK_B64}" ]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::RETRIEVAL_BENCHMARK_B64 is not configured; real retrieval quality gate was not run."
+          fi
+
+      - name: Restore active production retrieval plane
+        if: steps.config.outputs.enabled == 'true'
+        run: |
+          test -n "${SILICONFLOW_KEY}" || { echo "::error::SILICONFLOW_KEY is required"; exit 1; }
+          test -n "${R2_ACCOUNT_ID}" || { echo "::error::R2_ACCOUNT_ID is required"; exit 1; }
+          test -n "${R2_BUCKET}" || { echo "::error::R2_BUCKET is required"; exit 1; }
+          aws configure set default.region auto
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp "s3://${R2_BUCKET}/active-generation.json" "${RUNNER_TEMP}/active-generation.json" --endpoint-url "${endpoint}"
+          active=$(node --input-type=module -e 'import fs from "node:fs"; import { parseGenerationPointer } from "./src/data-generation.js"; console.log(parseGenerationPointer(JSON.parse(fs.readFileSync(process.argv[1],"utf8"))).id)' "${RUNNER_TEMP}/active-generation.json")
+          mkdir -p rankings data
+          for spec in             "catalog.json:catalog.json"             "rankings.json:rankings/rankings.json"             "asset-index.json:asset-index.json"             "embeddings.bin:embeddings.bin"             "embeddings-index.json:embeddings-index.json"; do
+            key="${spec%%:*}"
+            local_path="${spec##*:}"
+            aws s3 cp "s3://${R2_BUCKET}/generations/${active}/${key}" "${local_path}" --endpoint-url "${endpoint}"
+          done
+          echo "Evaluating active production generation ${active}"
+
+      - name: Materialize private benchmark
+        if: steps.config.outputs.enabled == 'true'
+        run: |
+          printf '%s' "${RETRIEVAL_BENCHMARK_B64}" | base64 --decode > data/retrieval-benchmark.private.json
+          node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("data/retrieval-benchmark.private.json"));if(!Array.isArray(x.cases)||!x.cases.length||!x.thresholds)throw new Error("benchmark must contain non-empty cases and thresholds")'
+
+      - name: Enforce real retrieval quality thresholds
+        if: steps.config.outputs.enabled == 'true'
+        run: pnpm eval:retrieval:gate -- --output retrieval-quality-report.json
