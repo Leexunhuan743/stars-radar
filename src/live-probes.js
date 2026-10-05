@@ -1,4 +1,5 @@
 import { appendJsonLines } from './append-store.js'
+import { EVIDENCE_TRUST } from './evidence.js'
 import { buildCommunityIndex } from './community-index.js'
 import { parseDateRange } from './date-range.js'
 import { getCatalog, getHarvested, getRankings } from './documents.js'
@@ -190,6 +191,7 @@ export async function searchGithubCode(env, {
       url: htmlUrl,
       language: ext,
       snippet: fragment ? `\`\`\`${ext}\n${fragment}\n\`\`\`` : '(No snippet fragment returned)',
+      trust: EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
     }
   })
 
@@ -245,6 +247,7 @@ export async function searchWebTech(env, {
           title: r.title?.replace(/<[^>]+>/g, '').trim(),
           url: r.url,
           snippet: r.description?.replace(/<[^>]+>/g, '').trim() || '',
+          trust: EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
           source: 'brave_search',
         }))
         return {
@@ -285,6 +288,7 @@ export async function searchWebTech(env, {
           title: r.title,
           url: r.url,
           snippet: r.content || '',
+          trust: EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
           source: 'tavily_search',
         }))
         return {
