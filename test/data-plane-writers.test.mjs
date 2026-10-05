@@ -57,16 +57,16 @@ test('a missing baseline starts empty, an unreadable one fails', async () => {
   }
 })
 
-test('the upload step refuses a run that produced no asset index', async () => {
+test('generation staging refuses a run that produced no asset index', () => {
   const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
-  assert.ok(
-    !/was not produced by this run and is not being uploaded/.test(workflow),
-    'the silent warning branch is back: an object that this run was supposed to produce would be skipped while the job still succeeds',
-  )
+  const prepare = fs.readFileSync(path.join(ROOT, 'scripts', 'prepare_data_generation.js'), 'utf-8')
+
+  assert.match(workflow, /node scripts\/prepare_data_generation\.js/)
+  assert.match(prepare, /ASSET_INDEX_KEY/)
   assert.match(
-    workflow,
-    /::error::asset-index\.json was not produced by this run[\s\S]{0,200}?\n\s*exit 1/,
-    'asset-index.json must be fatal when missing: scripts/asset_store.js writes it unconditionally, so its absence means R2 keeps serving a stale index',
+    prepare,
+    /Generation is missing required documents/,
+    'a build that failed to produce asset-index.json must stop before any generation can activate',
   )
 })
 
@@ -111,48 +111,28 @@ test('the publishing job cannot write to the repository', () => {
   )
 })
 
-test('the sweep is gated on a non-empty corpus, and every upload is read back', () => {
-  // Two guards that exist because the bucket is now the only copy:
-  //   * `sync --delete` with an empty stars/ deletes the whole README corpus while reporting
-  //     success, so the sweep must be refused when there is nothing to sweep with;
-  //   * an upload that silently truncated would leave the Worker serving the previous revision
-  //     of a document this job claims to have published, so each document is read back.
+test('the README sweep is guarded and immutable generation uploads are read back before activation', () => {
   const build = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
 
   const emptyCorpusGuard = build.match(/local_readmes[\s\S]{0,400}?exit 1/)
-  assert.ok(emptyCorpusGuard, 'the sweep is no longer gated on a non-empty corpus')
+  assert.ok(emptyCorpusGuard, 'the README sweep is no longer gated on a non-empty corpus')
   assert.ok(
     build.indexOf('local_readmes') < build.indexOf('aws s3 sync stars/'),
     'the corpus check must precede the sync that uses --delete',
   )
+  assert.match(build, /--exclude "generations\/\*"/)
+  assert.match(build, /--exclude "active-generation\.json"/)
 
-  assert.match(build, /head-object --bucket "\$\{R2_BUCKET\}" --key "\$\{key\}"[\s\S]{0,200}ContentLength/, 'uploaded documents must be read back and sized')
-  assert.match(build, /BEFORE_INGEST_OBJECTS/, 'the run must record the ingest journal size it started with')
   assert.match(
     build,
-    /ingests were destroyed/,
-    'the read-back step must fail when the journal shrank during the run',
+    /head-object --bucket "\$\{R2_BUCKET\}"[\s\S]{0,180}?generations\/\$\{GENERATION_ID\}\/\$\{rel\}[\s\S]{0,180}?ContentLength/,
+    'every staged generation object must be read back and sized',
+  )
+  assert.ok(
+    build.indexOf('Verify immutable generation in R2') < build.indexOf('Activate verified data generation'),
+    'active-generation.json must move only after immutable object verification',
   )
 
-  // Prefix counts decide whether a prefix is empty or unreadable, and the first version of this
-  // got both halves wrong in ways only a live run exposed:
-  //   * `aws s3 ls` exits non-zero for an absent prefix, so a first run looked like a credentials
-  //     failure and the job stopped;
-  //   * `--query KeyCount` prints the literal "None" for an empty listing, and "None" compared as
-  //     a string against a number meant the zero-backup guard never fired.
-  // Match the quoted form commands use; the comment above the helper names the query on purpose.
-  assert.ok(!/--query\s+['"]KeyCount['"]/.test(build), '--query KeyCount returns "None" for an empty prefix; count the JSON listing instead')
-  assert.match(build, /count_objects\(\) \{[\s\S]{0,400}?\|\| return 1/, 'the counting helper must fail only when the request itself failed')
-  // Each step runs in its own shell, so the helper must be defined in every step that calls it —
-  // using it without the definition failed a live run with `command not found`. One definition per
-  // step that counts, and one call site per count (the read-back loop counts both prefixes from a
-  // single call).
-  assert.equal((build.match(/count_objects\(\) \{/g) || []).length, 4, 'the counting helper must be defined in every step that uses it')
-  assert.equal((build.match(/count_objects "/g) || []).length, 4, 'every prefix count must go through the helper')
-
-  // The corpus has to come back from R2 before the sync runs, otherwise every repository looks new
-  // and all ~930 READMEs are re-fetched from GitHub on every run — the incrementality the
-  // pipeline's own predicate implements never gets a chance to apply.
   assert.match(
     build,
     /aws s3 sync "s3:\/\/\$\{R2_BUCKET\}\/" stars\/[\s\S]{0,200}--include "\*\/\*\.md"/,
@@ -181,12 +161,9 @@ test('every http answer goes through the envelope helper', () => {
   )
 })
 
-test('no workflow ever deletes or sweeps the Worker-owned state prefixes', () => {
-  // Two independent hazards, both silent:
-  //   * the bucket-root `sync --delete` would remove any prefix it does not explicitly exclude,
-  //     so one schedule tick could delete every ingest and probe capture;
-  //   * the merge step used to `s3 rm --recursive` the probe prefix afterwards, which raced with
-  //     the Worker appending new captures and — with no snapshots — destroyed the only copy.
+test('no workflow recursively deletes Worker-owned state prefixes', () => {
+  // Root corpus sweeps must exclude state, and compaction may delete only exact keys from the
+  // generated plan. Recursive deletion of a state prefix would race with Worker appends.
   const workflows = fs.readdirSync(path.join(ROOT, '.github', 'workflows'))
     .filter(name => name.endsWith('.yaml') || name.endsWith('.yml'))
     .map(name => ({ name, text: fs.readFileSync(path.join(ROOT, '.github', 'workflows', name), 'utf-8') }))
