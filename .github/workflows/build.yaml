@@ -84,7 +84,7 @@ jobs:
             aws s3 cp "s3://${R2_BUCKET}/${prefix}/${obj}" "${obj}" --endpoint-url "${endpoint}"
           done
 
-      - name: Download the ingest journal      - name: Download the ingest journal from R2
+      - name: Download the ingest journal from R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -158,7 +158,7 @@ jobs:
           echo "BEFORE_INGEST_OBJECTS=${before}" >> "${GITHUB_ENV}"
           echo "Ingest journal objects before this run: ${before}"
 
-      - name: Download Worker-side probe captures      - name: Download Worker-side probe captures from R2
+      - name: Download Worker-side probe captures from R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -338,7 +338,7 @@ jobs:
           cmp active-generation.json "${RUNNER_TEMP}/active-generation.json"
           echo "✓ activated generation ${GENERATION_ID}"
 
-      - name: Deploy Cloudflare Worker      - name: Deploy Cloudflare Worker (skipped unless CLOUDFLARE_API_TOKEN is set)
+      - name: Deploy Cloudflare Worker (skipped unless CLOUDFLARE_API_TOKEN is set)
         if: env.CLOUDFLARE_API_TOKEN != ''
         run: pnpm exec wrangler deploy
         env:
