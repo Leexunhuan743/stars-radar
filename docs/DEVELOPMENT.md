@@ -176,7 +176,7 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 检索结合向量相似度、关键词、通用意图词表与具体主体匹配。明确的仓库名或技术主体约束候选；个人收藏有排序加权，综合结果也保留社区候选。`scope` 选择收藏 / 社区范围，`category` 选择用户分类，`source` 选择来源。
 
-`explain=true` 返回实际匹配的词语、主体、意图与检索通道。纯语义匹配不会伪造词面命中。`min_score` 是排序门槛，不是准确率。
+`explain=true` 返回实际匹配的词语、主体、意图与检索通道，并额外对前 5 个结果读取 R2 中已缓存的 README：按 Markdown 标题切分，返回最多两个短片段及其真实词面命中。该步骤不会访问 GitHub；Stars Radar 自己生成的分类/推荐理由头会先被剥离，避免把 curator 元数据伪装成上游 README 证据。若 README 缺失、读取失败或只有语义相似而没有实际词面证据，会分别通过 `readme_evidence.status` / 空 `snippets` 如实表达，不制造片段。`min_score` 是排序门槛，不是准确率。
 
 详情和比较区分 `evidence.source`、`snapshot_at`、`fetched_at`。`refresh=true` 请求 GitHub 当前元数据并保留个人备注；未知字段为 `null`，不能推断为“没有许可证”或“已经停止维护”。README 最多返回 50,000 个字符。上游文字与代码片段是来源内容，应结合原始链接核实。
 
