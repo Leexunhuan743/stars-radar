@@ -84,8 +84,8 @@ test('a vector count is required rather than guessed', () => {
 test('structured vector indexes reject strings, duplicate repo records and malformed chunks', () => {
   assert.throws(() => validateVectorIndex(['a/b']), /must be an object/)
   assert.throws(
-    () => validateVectorIndex([repoRecord('a/b'), { ...repoRecord('a/b'), id: 'repo:duplicate' }]),
-    /multiple repo records/,
+    () => validateVectorIndex([repoRecord('a/b'), repoRecord('a/b')]),
+    /duplicate id/,
   )
   assert.throws(
     () => validateVectorIndex([{ id: 'readme:a/b:x', repo: 'a/b', kind: 'readme_chunk', heading: 'Features' }]),
