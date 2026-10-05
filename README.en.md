@@ -21,8 +21,8 @@ The project is in development and intended for personal deployments. It provides
 - Search your own stars by keywords, purpose or natural-language descriptions. Categories come from your GitHub Lists.
 - Explore GitHub Trending, recent repositories, HelloGitHub picks and Agent Skills boards, or search GitHub live.
 - Compare 2–5 repositories using metadata, personal notes, source labels and snapshot dates. Unknown fields remain unknown.
-- Search README sections semantically: each repository has a metadata vector plus independent BGE-M3 vectors for selected README chunks, so features documented only inside README sections can recall the repository directly.
-- Read repository details, READMEs and code snippets. With `explain=true`, inspect the semantic README chunk and separate literal README evidence behind a result.
+- Search selected README sections semantically: repositories in the semantic corpus keep a metadata vector plus independent BGE-M3 vectors for an adaptive, bounded set of README chunks. README-only capabilities can participate in recall when their section is selected; the system does not claim that every section of a long README is vectorized.
+- Read repository details, READMEs and code snippets. With `explain=true`, `ranking` signals are separated from field `provenance` and factual `evidence[]`; README evidence carries generation/SHA/chunk identity and freshness. Third-party README text, descriptions, code and web snippets are `external_untrusted` evidence, never instructions.
 - Star a repository and record a reason. Metadata becomes available to lexical search first; semantic vectors arrive with the next successful data build.
 
 Search scores rank candidates; they are not quality ratings or correctness probabilities. Community sources can be unavailable or stale. Check source dates and repository evidence before making a decision.
@@ -141,7 +141,7 @@ Stars saved through the service become lexically searchable after journal refres
 
 Your categories are your own GitHub Lists, with no fixed count. Uncategorized public stars use `everything-else`. Ingest tags stay in the radar and do not modify GitHub Lists.
 
-Production retrieval quality still needs labels from your own corpus. `pnpm eval:retrieval:gate` can enforce private-fixture thresholds for Recall/MRR/NDCG, negative-query behavior, forbidden hits and latency. The **Retrieval Quality** workflow restores the active production generation and runs that gate when `RETRIEVAL_BENCHMARK_B64` is configured; otherwise it explicitly skips it. Synthetic fixtures are not presented as production-quality proof.
+Retrieval quality has two gates. The `Retrieval Quality` workflow restores the production retrieval plane and derives mandatory exact-identity, personal-note and negative queries from the real Stars catalog, enforcing ranking plus evidence/provenance metrics. If `RETRIEVAL_BENCHMARK_B64` is configured, a deployer-maintained human-labeled benchmark runs as an additional gate. Synthetic fixtures remain regression tests, not production-quality proof.
 
 Generated data lives in your R2 bucket and is not committed to Git. The sync excludes private repositories. Keep the bucket private and share the service key only with trusted clients. This is a single-account service: all clients with the same key share its data and permissions.
 
