@@ -2,10 +2,17 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { compareRepositories, getRepositoryDetails, repositoryName, RepositoryRequestError } from '../src/repository-details.js'
 
+const README_SHA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const DOCUMENTS = {
   catalog: { generatedAt: '2026-10-01T00:00:00Z', repos: { 'Acme/Tool': { repo: 'Acme/Tool', stars: 0, language: 'Rust', reason: 'works offline', pushedAt: '2026-09-30T00:00:00Z' } } },
   assetIndex: { generatedAt: '2026-10-02T00:00:00Z', repos: { 'other/tool': { repo: 'Other/Tool', license: 'MIT', description: 'community utility', topics: ['cli'] } } },
   harvested: [],
+  readmes: {
+    generation: { published_at: '2026-10-02T12:00:00Z' },
+    repos: {
+      'acme/tool': { repo: 'Acme/Tool', sha256: README_SHA, object_key: `readmes/${README_SHA}.md` },
+    },
+  },
 }
 
 const NO_README = { R2: { get: () => {
@@ -62,12 +69,12 @@ test('missing compact metadata is fetched from GitHub with provenance but withou
 
 test('archived README is wrapped and capped while metadata comes from the catalogue', async () => {
   const env = { R2: { get: async (key) => {
-    assert.equal(key, 'Acme/Tool.md')
+    assert.equal(key, `readmes/${README_SHA}.md`)
     return { text: async () => `# Tool\n${'x'.repeat(51000)}` }
   } } }
   const result = await getRepositoryDetails(env, DOCUMENTS, 'acme/tool', NO_FETCH)
   assert.equal(result.truncated, true)
-  assert.equal(result.readme_source, 'archive')
+  assert.equal(result.readme_source, 'generation')
   assert.ok(result.readme.startsWith('<untrusted_content'))
   assert.ok(result.readme.endsWith('</untrusted_content>'))
 })
@@ -110,12 +117,24 @@ test('refresh compares current GitHub facts without losing personal reasons', as
 })
 
 test('frontmatter metadata survives when only a README archive knows the repository', async () => {
-  const env = { R2: { get: async () => ({ text: async () => '---\nstars: 42\nlanguage: Go\nreason: useful offline\ncategories: ["research"]\n---\n# Archive' }) } }
-  const result = await getRepositoryDetails(env, DOCUMENTS, 'archive/only', NO_FETCH)
+  const env = { R2: { get: async key => {
+    assert.equal(key, `readmes/${README_SHA}.md`)
+    return { text: async () => '---\nstars: 42\nlanguage: Go\nreason: useful offline\ncategories: ["research"]\n---\n# Archive' }
+  } } }
+  const documents = {
+    ...DOCUMENTS,
+    readmes: {
+      generation: { published_at: '2026-10-02T12:00:00Z' },
+      repos: {
+        'archive/only': { repo: 'archive/only', sha256: README_SHA, object_key: `readmes/${README_SHA}.md` },
+      },
+    },
+  }
+  const result = await getRepositoryDetails(env, documents, 'archive/only', NO_FETCH)
   assert.equal(result.stars, 42)
   assert.equal(result.reason, 'useful offline')
   assert.deepEqual(result.categories, ['research'])
-  assert.equal(result.evidence.source, 'readme_archive')
+  assert.equal(result.evidence.source, 'readme_generation')
   assert.equal(result.evidence.fetched_at, null)
 })
 
