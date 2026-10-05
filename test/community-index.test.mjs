@@ -59,7 +59,6 @@ test('records without a repository name are skipped rather than keyed undefined'
   assert.deepEqual([...index.keys()].sort(), ['ok/one', 'ok/two'])
 })
 
-
 test('HelloGitHub prose is normalized to the shared description field', () => {
   const index = buildCommunityIndex({
     rankings: {
