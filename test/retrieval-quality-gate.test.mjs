@@ -70,7 +70,6 @@ test('quality gates never pass vacuously when no threshold applies to the execut
   assert.deepEqual(gate.failures, ['no thresholds matched the evaluation modes that ran'])
 })
 
-
 test('quality gates can fail a critical query class even when aggregate metrics pass', () => {
   const gate = evaluateThresholds([{
     mode: 'hybrid_bge_m3',
