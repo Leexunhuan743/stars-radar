@@ -18,6 +18,7 @@ import {
   validateVectorIndex,
   vectorCountFromBytes,
   vectorManifest,
+  vectorNorms,
   verifyVectorManifest,
 } from '../src/embeddings.js'
 
@@ -79,6 +80,17 @@ test('a byte count that is not a whole number of vectors still reports whole slo
 test('a vector count is required rather than guessed', () => {
   assert.throws(() => expectedPairBytes(undefined), /needs a vector count/)
   assert.throws(() => expectedPairBytes(-1), /needs a vector count/)
+})
+
+test('vector norms are computed once per structured vector record', () => {
+  const values = new Float32Array(DIMS * 2)
+  values[0] = 3
+  values[1] = 4
+  values[DIMS] = 12
+  values[DIMS + 1] = 5
+
+  assert.deepEqual([...vectorNorms(values, 2)], [5, 13])
+  assert.throws(() => vectorNorms(new Float32Array(DIMS), 2), /components for 2 records/)
 })
 
 test('structured vector indexes reject strings, duplicate repo records and malformed chunks', () => {
