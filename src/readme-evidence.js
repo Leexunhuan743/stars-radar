@@ -8,7 +8,7 @@ export const README_EVIDENCE_SNIPPET = 360
 export const README_VECTOR_BASE_CHUNKS = 6
 export const README_VECTOR_MAX_CHUNKS = 12
 export const README_VECTOR_MIN_CHARS = 80
-export const README_VECTOR_IMPORTANT_MIN_CHARS = 24
+export const README_VECTOR_IMPORTANT_MIN_CHARS = 12
 
 const IMPORTANT_HEADING = /\b(?:requirements?|compatibility|platforms?|providers?|integrations?|features?|install(?:ation)?|usage|api|license|support)\b|支持|平台|兼容|要求|依赖|集成|功能|安装|用法|许可证/i
 
@@ -176,20 +176,34 @@ export function selectReadmeVectorChunks(markdown, { limit } = {}) {
     return []
   if (sections.length <= budget)
     return sections
+  if (budget === 1)
+    return [sections.reduce((best, section) => (
+      sectionInformationScore(section) > sectionInformationScore(best) ? section : best
+    ))]
 
-  // Partition the README into deterministic source-order regions and choose the most informative
-  // section from each region. This preserves whole-document coverage while preferring capability,
-  // compatibility and requirement sections over boilerplate of similar position.
-  const selected = []
-  const used = new Set()
-  for (let slot = 0; slot < budget; slot++) {
-    const start = Math.floor(slot * sections.length / budget)
-    const end = Math.max(start + 1, Math.floor((slot + 1) * sections.length / budget))
-    const candidates = sections.slice(start, end)
-      .map((section, offset) => ({ section, index: start + offset }))
+  // Always preserve both document boundaries. The interior budget is then distributed across
+  // source-order regions, choosing the most informative section in each region. This guarantees
+  // whole-document coverage while preferring capability/compatibility sections over boilerplate.
+  const selected = [
+    { section: sections[0], index: 0 },
+    { section: sections.at(-1), index: sections.length - 1 },
+  ]
+  const used = new Set(selected.map(entry => entry.index))
+  const interiorBudget = budget - selected.length
+  const interiorCount = Math.max(0, sections.length - 2)
+
+  for (let slot = 0; slot < interiorBudget; slot++) {
+    const startIndex = 1 + Math.floor(slot * interiorCount / interiorBudget)
+    const endIndex = 1 + Math.max(
+      Math.floor((slot + 1) * interiorCount / interiorBudget),
+      Math.floor(slot * interiorCount / interiorBudget) + 1,
+    )
+    const candidates = sections.slice(startIndex, Math.min(endIndex, sections.length - 1))
+      .map((section, offset) => ({ section, index: startIndex + offset }))
+      .filter(entry => !used.has(entry.index))
       .sort((a, b) => sectionInformationScore(b.section) - sectionInformationScore(a.section) || a.index - b.index)
     const winner = candidates[0]
-    if (!winner || used.has(winner.index))
+    if (!winner)
       continue
     used.add(winner.index)
     selected.push(winner)
