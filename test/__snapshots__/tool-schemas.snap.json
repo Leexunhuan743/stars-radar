@@ -347,13 +347,13 @@
         },
         "categories": {
           "default": [],
+          "maxItems": 20,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100
-          },
-          "maxItems": 20
+          }
         }
       },
       "required": [
