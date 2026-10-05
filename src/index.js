@@ -218,9 +218,28 @@ async function handleRequest(req, env, ctx) {
       )
     }
 
-    if (apiKey !== env.MCP_API_KEY) {
+    const writeKey = env.MCP_WRITE_API_KEY
+    const canRead = apiKey === env.MCP_API_KEY || (writeKey && apiKey === writeKey)
+    const canWrite = writeKey ? apiKey === writeKey : apiKey === env.MCP_API_KEY
+
+    if (!canRead) {
       return errorResponse('unauthorized', 'Invalid API key. Supply your key via Authorization: Bearer <KEY> header.', 401)
     }
+
+    // MCP_WRITE_API_KEY is optional for backward compatibility. When configured, MCP_API_KEY is
+    // strictly read-only while the write key can both read and mutate.
+    const writeForbidden = () => errorResponse(
+      'write_forbidden',
+      'This credential is read-only. Use MCP_WRITE_API_KEY for capture or ingest operations.',
+      403,
+    )
+    const writeToolFailure = () => ({
+      isError: true,
+      content: [{ type: 'text', text: JSON.stringify({
+        error: 'write_forbidden',
+        message: 'This credential is read-only. Use the configured write credential for this operation.',
+      }) }],
+    })
 
     // Direct REST API Endpoints
     if (url.pathname === '/health') {
@@ -335,6 +354,8 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/capture' && req.method === 'POST') {
+      if (!canWrite)
+        return writeForbidden()
       try {
         const body = z.object(TOOL_DEFINITIONS.capture_github_discovery.inputSchema).parse(await readJsonBody(req, { limit: INGEST_BODY_LIMIT }))
         return okResponse(await captureGithubDiscovery(env, body), { pretty: true })
@@ -381,6 +402,8 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/ingest' && req.method === 'POST') {
+      if (!canWrite)
+        return writeForbidden()
       try {
         const body = z.object(TOOL_DEFINITIONS.star_and_ingest_repo.inputSchema).parse(await readJsonBody(req, { limit: INGEST_BODY_LIMIT }))
         const result = await starAndIngestRepo(env, body)
@@ -533,6 +556,8 @@ async function handleRequest(req, env, ctx) {
       TOOL_DEFINITIONS.capture_github_discovery.name,
       { description: TOOL_DEFINITIONS.capture_github_discovery.description, inputSchema: TOOL_DEFINITIONS.capture_github_discovery.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.capture_github_discovery.readOnly } },
       async ({ repo, query }) => {
+        if (!canWrite)
+          return writeToolFailure()
         try {
           const result = await captureGithubDiscovery(env, { repo, query })
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -588,6 +613,8 @@ async function handleRequest(req, env, ctx) {
       TOOL_DEFINITIONS.star_and_ingest_repo.name,
       { description: TOOL_DEFINITIONS.star_and_ingest_repo.description, inputSchema: TOOL_DEFINITIONS.star_and_ingest_repo.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.star_and_ingest_repo.readOnly } },
       async ({ repo, reason, categories = DEFAULT_INGEST_CATEGORIES }) => {
+        if (!canWrite)
+          return writeToolFailure()
         try {
           const result = await starAndIngestRepo(env, { repo, reason, categories })
           return {
