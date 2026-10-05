@@ -46,6 +46,9 @@ export function buildReadmeEvidence({
   matchedIntents = [],
   ref,
   generation,
+  readmeSha256,
+  contentSha256,
+  ordinal,
 } = {}) {
   const identity = chunkId || `${ref?.sha256 || 'live'}:${heading || 'README'}`
   return {
@@ -60,8 +63,10 @@ export function buildReadmeEvidence({
       snapshot_at: generation?.published_at || null,
     },
     content: {
-      readme_sha256: ref?.sha256 || null,
+      readme_sha256: ref?.sha256 || readmeSha256 || null,
       object_key: ref?.object_key || null,
+      content_sha256: contentSha256 || null,
+      ordinal: Number.isInteger(ordinal) ? ordinal : null,
       chunk_id: chunkId || null,
       heading: heading || 'README',
       snippet: snippet || '',
@@ -88,8 +93,8 @@ export function bindReadmeEvidence(evidence, { ref, generation } = {}) {
     },
     content: {
       ...(evidence.content || {}),
-      readme_sha256: ref?.sha256 || null,
-      object_key: ref?.object_key || null,
+      readme_sha256: ref?.sha256 || evidence.content?.readme_sha256 || null,
+      object_key: ref?.object_key || evidence.content?.object_key || null,
     },
   }
 }
