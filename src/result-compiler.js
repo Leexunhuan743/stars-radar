@@ -89,6 +89,18 @@ export function compileResults({
       }))
     }
 
+    const channels = [
+      ...(stats.vScore > 0 ? ['vector'] : []),
+      ...(stats.kwWeight > 0 ? [stats.channel || 'keyword'] : []),
+    ]
+    const trust = {}
+    if (info.reason)
+      trust.reason = EVIDENCE_TRUST.USER_TRUSTED
+    if (info.summary)
+      trust.summary = EVIDENCE_TRUST.USER_TRUSTED
+    if (info.description)
+      trust.description = EVIDENCE_TRUST.EXTERNAL_UNTRUSTED
+
     results.push({
       repo: repoName.startsWith('skill:') ? repoName : (info.repo || repoName),
       url: info.url || `https://github.com/${repoName}`,
@@ -97,59 +109,45 @@ export function compileResults({
       stars: info.stars,
       categories: info.categories || [],
       reason: info.reason || undefined,
-      reason_trust: info.reason ? EVIDENCE_TRUST.USER_TRUSTED : undefined,
       summary: info.summary || undefined,
-      summary_trust: info.summary ? EVIDENCE_TRUST.USER_TRUSTED : undefined,
       description: info.description || undefined,
-      description_trust: info.description ? EVIDENCE_TRUST.EXTERNAL_UNTRUSTED : undefined,
-      relevance_score: relevance,
-      vector_similarity: stats.vScore ? Number(stats.vScore.toFixed(4)) : undefined,
+      ...(Object.keys(trust).length > 0 ? { trust } : {}),
       ...(sourceChannels.length > 0 ? { source_channels: sourceChannels } : {}),
-      ...(explain
-        ? {
-            evidence: factualEvidence,
-            explanation: {
-              channels: [
-                ...(stats.vScore > 0 ? ['vector'] : []),
-                ...(stats.kwWeight > 0 ? [stats.channel || 'keyword'] : []),
-              ],
+      ranking: {
+        score: relevance,
+        ...(explain
+          ? {
+              channels,
               keyword_weight: stats.kwWeight,
               ...(stats.scoringSource ? { scoring_source: stats.scoringSource } : {}),
               vector_similarity: stats.vScore > 0 ? Number(stats.vScore.toFixed(4)) : null,
-              ...(stats.vectorEvidence
-                ? {
-                    semantic_evidence: {
-                      repo_similarity: stats.vectorEvidence.repo_similarity > 0
-                        ? Number(stats.vectorEvidence.repo_similarity.toFixed(4))
-                        : null,
-                      readme_chunk: stats.vectorEvidence.readme_chunk
-                        ? {
-                            chunk_id: stats.vectorEvidence.readme_chunk.chunk_id,
-                            readme_sha256: stats.vectorEvidence.readme_chunk.readme_sha256,
-                            content_sha256: stats.vectorEvidence.readme_chunk.content_sha256,
-                            ordinal: stats.vectorEvidence.readme_chunk.ordinal,
-                            heading: stats.vectorEvidence.readme_chunk.heading,
-                            snippet: stats.vectorEvidence.readme_chunk.snippet,
-                            similarity: Number(stats.vectorEvidence.readme_chunk.similarity.toFixed(4)),
-                          }
-                        : null,
-                    },
-                  }
-                : {}),
-              matched_tokens: stats.evidence?.matched_tokens || [],
-              matched_subjects: stats.evidence?.matched_subjects || [],
-              matched_intents: stats.evidence?.matched_intents || [],
-            },
-          }
-        : {}),
-      _rrf: stats.rrf || 0, // 内部融合分(含 starred ×1.5), 仅作排序键, 返回前清除
+              repo_vector_similarity: stats.vectorEvidence?.repo_similarity > 0
+                ? Number(stats.vectorEvidence.repo_similarity.toFixed(4))
+                : null,
+              readme_vector_similarity: stats.vectorEvidence?.readme_chunk?.similarity > 0
+                ? Number(stats.vectorEvidence.readme_chunk.similarity.toFixed(4))
+                : null,
+              facet_coverage: stats.facetCoverage || {
+                matched: 0,
+                total: 0,
+                ratio: null,
+                matched_facets: [],
+              },
+              literal_matches: {
+                tokens: stats.evidence?.matched_tokens || [],
+                subjects: stats.evidence?.matched_subjects || [],
+                intents: stats.evidence?.matched_intents || [],
+              },
+            }
+          : {}),
+      },
+      ...(explain ? { evidence: factualEvidence } : {}),
+      _rrf: stats.rrf || 0,
     })
   }
 
-  // 排序: relevance_score(相关性强度) 主键, RRF 融合分(含 starred ×1.5) 作精确 tie-breaker.
-  // 避免纯 RRF 主排序按 rank 丢绝对强度, 致弱 starred(w26) 系统性压过高分 community(w43) 的病态倒挂.
-  // 同分(非线性映射后大量并列)时 starred ×1.5 决定次序, 达成"私藏优先"而不牺牲相关性.
-  results.sort((a, b) => b.relevance_score - a.relevance_score || b._rrf - a._rrf)
+  // Ranking score is the relevance strength; RRF is only an internal tie-breaker.
+  results.sort((a, b) => b.ranking.score - a.ranking.score || b._rrf - a._rrf)
   for (const r of results)
     delete r._rrf
 
