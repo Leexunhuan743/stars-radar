@@ -384,7 +384,6 @@ test('non-starred results are truncated to ceil(limit * 0.4) without reordering'
   assert.equal(results.filter(r => r.source !== 'starred').length, 2)
 })
 
-
 test('community diversity cap is opt-in so explicit result sets can fill the requested limit', () => {
   const rrfMap = new Map()
   for (let i = 1; i <= 5; i++)
@@ -397,7 +396,6 @@ test('community diversity cap is opt-in so explicit result sets can fill the req
   assert.equal(capped.length, 2, 'the default mixed view still applies ceil(limit*0.4)')
 })
 
-
 test('corroborating source channels are exposed without changing the primary source', () => {
   const stats = vectorEntry({ source: 'trending', kwWeight: 20 })
   stats.sourceChannels = ['trending', 'hellogithub', 'breakout']
@@ -408,7 +406,6 @@ test('corroborating source channels are exposed without changing the primary sou
   assert.equal(result.source, 'trending')
   assert.deepEqual(result.source_channels, ['trending', 'hellogithub', 'breakout'])
 })
-
 
 test('source filtering matches corroborating channels without rewriting the primary source', () => {
   const stats = vectorEntry({ source: 'trending', kwWeight: 20 })
