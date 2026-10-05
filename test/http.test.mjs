@@ -139,7 +139,6 @@ test('an ingest body that is legitimately sized passes', async () => {
   assert.equal(parsed.repo, 'owner/name')
 })
 
-
 test('bounded string parameters reject oversized search inputs before upstream work', () => {
   const options = { parameter: 'q', fallback: '', minLength: 0, maxLength: 8 }
   assert.equal(stringParam(null, options), '')
