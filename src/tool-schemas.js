@@ -33,7 +33,7 @@ export const TOOL_DEFINITIONS = {
     readOnly: true,
     description: 'Search your curated personal GitHub stars (size depends on the deployment) and ingested community tools using BAAI/bge-m3 vector semantics + domain intent. Results include provenance and optional scoring evidence. For open-world discovery of new or unstarred tools across GitHub, use search_github_live instead.',
     inputSchema: {
-      query: z.string().describe('Search query, feature description, or keywords (e.g. "antigravity 反代", "fast spotify client", "capcut open source")'),
+      query: z.string().max(512).describe('Search query, feature description, or keywords (max 512 characters; e.g. "antigravity 反代", "fast spotify client", "capcut open source")'),
       explain: z.boolean().optional().default(false).describe('Include actual matched tokens, subjects, intent terms and scoring channels. Semantic-only matches carry no invented literal evidence.'),
       category: z.string().optional().describe('Optional exact taxonomy filter against your GitHub Lists categories (e.g. "agent-plugins", "terminal", "media-players"). Case-insensitive. Call list_categories to inspect valid bucket slugs.'),
       source: z.enum(RESULT_SOURCES).optional().describe('Optional filter on where a hit came from, independent of the taxonomy above: "starred" (your own stars), "curated" (staged through star_and_ingest_repo), "trending"/"hellogithub"/"breakout"/"skill"/"skill_repo" (a community board), "archive" (the historical long tail), "community" or "ranking". The value matches the `source` field of each result.'),
@@ -84,7 +84,7 @@ export const TOOL_DEFINITIONS = {
     readOnly: true,
     description: 'Open-world live GitHub repository explorer. Searches public repositories across GitHub for new tools, libraries, and capabilities. This tool is read-only; use capture_github_discovery to explicitly persist a selected discovery.',
     inputSchema: {
-      query: z.string().describe('Search query, capability keywords, or framework names (e.g. "antigravity cf worker", "mcp rust", "deepseek")'),
+      query: z.string().max(512).describe('Search query, capability keywords, or framework names (max 512 characters; e.g. "antigravity cf worker", "mcp rust", "deepseek")'),
       language: z.string().optional().describe('Filter by programming language (e.g. "rust", "typescript", "python", "go")'),
       min_stars: z.number().int().min(0).optional().default(15).describe('Minimum stargazers threshold (default: 15 to filter noise)'),
       sort: z.enum(['stars', 'updated', 'forks']).optional().default('stars').describe('Sort criterion'),
@@ -110,7 +110,7 @@ export const TOOL_DEFINITIONS = {
     readOnly: true,
     description: 'Search public repository code across GitHub for concrete API usage, configuration recipes, and syntax implementations. Extracts contextual syntax snippets with exact file URLs.',
     inputSchema: {
-      query: z.string().describe('Exact code term, method name, or syntax string to search (e.g. "thoughtSignature", "daily-cloudcode-pa"). Must contain at least one non-qualifier keyword.'),
+      query: z.string().max(256).describe('Exact code term, method name, or syntax string to search (max 256 characters; e.g. "thoughtSignature", "daily-cloudcode-pa"). Must contain at least one non-qualifier keyword.'),
       repo: z.string().optional().describe('Scope search to a specific repository ("owner/repo")'),
       language: z.string().optional().describe('Target programming language (e.g. "typescript", "rust", "go", "python")'),
       extension: z.string().optional().describe('Target file extension without dot (e.g. "jsonc", "toml", "rs", "tsx")'),
@@ -124,7 +124,7 @@ export const TOOL_DEFINITIONS = {
     readOnly: true,
     description: 'Search the broader technical web for official documentation, framework changelogs, StackOverflow error discussions, and technical teardowns. Multi-provider with zero-key fallback.',
     inputSchema: {
-      query: z.string().describe('Technical search query (e.g. "Cloudflare Workers vector dot product Float32Array performance")'),
+      query: z.string().max(512).describe('Technical search query (max 512 characters; e.g. "Cloudflare Workers vector dot product Float32Array performance")'),
       domain: z.string().optional().describe('Optional domain filter to restrict search (e.g. "developers.cloudflare.com", "stackoverflow.com")'),
       freshness: z.enum(['day', 'week', 'month', 'year', 'all']).optional().default('all').describe('Filter by content recency'),
       limit: z.number().int().min(1).max(10).optional().default(5).describe('Number of web results to return (default: 5)'),
