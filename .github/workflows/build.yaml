@@ -104,10 +104,10 @@ jobs:
           aws configure set default.region auto
           mkdir -p state/ingest-journal
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          # The journal is the source of truth for user ingests and is never rewritten by this
-          # job — it is only read, folded into asset-state.json, and left in place. Not being
-          # here on a first run is normal, but a listing failure must not be mistaken for an
-          # empty journal: an empty fold silently drops every curated entry.
+          # The journal is append-only between builds. This run folds only the tail not covered by
+          # the previous generation snapshot; exact raw keys proven durable in that previous
+          # generation may be deleted only after the new generation becomes active. Not being here
+          # on a first run is normal, but a listing failure must not be mistaken for an empty journal.
           #
           # `aws s3 ls` cannot draw that line: it exits non-zero for a prefix that does not exist
           # yet, so a first run looked like a credentials failure. `list-objects-v2` answers 200
@@ -178,10 +178,10 @@ jobs:
           aws configure set default.region auto
           mkdir -p state/probe-captures
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          # Read-only, like the ingest journal: captures are folded into asset-state.json and
-          # left on R2. They used to be listed, synced, and then deleted with `s3 rm --recursive`
-          # after the merge — a delete that raced with the Worker appending new captures, and one
-          # that the "no snapshots" decision makes unaffordable (there is no copy to fall back on).
+          # Probe captures follow the same one-generation delayed compaction rule as ingests:
+          # previous-generation keys are already durable in asset-state/index, while captures first
+          # seen by this run stay raw until a later generation proves they were folded. Recursive
+          # prefix deletion is never allowed.
           #
           # `list-objects-v2` rather than `s3 ls`: an absent prefix is zero keys, not a failure.
           # Prints how many objects live under a prefix. Exits non-zero only when the request
