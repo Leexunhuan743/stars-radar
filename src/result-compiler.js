@@ -48,6 +48,10 @@ export function compileResults({
     const isUserStarred = !!starredItem
     const commItem = communityMap.get(repoName.toLowerCase())
     const info = starredItem || commItem || stats.extraItem || {}
+    const sourceChannels = [...new Set([
+      ...(stats.sourceChannels || []),
+      ...(commItem?.source_channels || []),
+    ])]
 
     const source = isUserStarred ? 'starred' : (stats.source !== 'starred' ? stats.source : (commItem ? 'community' : 'ranking'))
     const badge = isUserStarred ? '⭐ Starred' : (stats.badge && stats.badge !== '⭐ Starred' ? stats.badge : (commItem ? '⚡ Community Ingested' : '🌐 Public Ranking'))
@@ -81,6 +85,7 @@ export function compileResults({
       description: info.description || undefined,
       relevance_score: relevance,
       vector_similarity: stats.vScore ? Number(stats.vScore.toFixed(4)) : undefined,
+      ...(sourceChannels.length > 0 ? { source_channels: sourceChannels } : {}),
       ...(explain
         ? {
             explanation: {
