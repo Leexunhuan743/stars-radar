@@ -19,6 +19,7 @@ import {
   seedHarvested,
 } from './documents.js'
 import { DIMS, EMBEDDING_MODEL, isEmbedding } from './embeddings.js'
+import { bindReadmeEvidence, buildReadmeEvidence } from './evidence.js'
 import {
   BadRequestError,
   booleanParam,
@@ -1024,22 +1025,43 @@ async function researchDocuments(env) {
 async function attachReadmeEvidence(env, results, query) {
   const candidates = results
     .slice(0, README_EVIDENCE_MAX_RESULTS)
-    .filter(result => result?.explanation && /^[\w.-]+\/[\w.-]+$/.test(result.repo || ''))
+    .filter(result => result?.explanation && /^[\\w.-]+\\/[\\w.-]+$/.test(result.repo || ''))
   const manifest = await getReadmeManifest(env)
 
   await Promise.all(candidates.map(async (result) => {
+    const ref = manifest.repos?.[result.repo.toLowerCase()]
+    result.evidence = (result.evidence || []).map(item => bindReadmeEvidence(item, {
+      ref,
+      generation: manifest.generation,
+    }))
+
     const evidence = {
       source: 'cached_readme',
       status: 'missing',
+      generation: manifest.generation?.id || null,
+      readme_sha256: ref?.sha256 || null,
       snippets: [],
     }
     try {
-      const ref = manifest.repos?.[result.repo.toLowerCase()]
       if (ref?.sha256) {
         const object = await env.R2.get(readmeBlobKey(ref.sha256))
         if (object) {
           evidence.status = 'ok'
-          evidence.snippets = findReadmeEvidence(await object.text(), query, defaultIntents)
+          const hits = findReadmeEvidence(await object.text(), query, defaultIntents)
+          evidence.snippets = hits
+          result.evidence.push(...hits.map(hit => buildReadmeEvidence({
+            kind: 'readme_literal',
+            repo: result.repo,
+            chunkId: `literal:${ref.sha256}:${hit.section_ordinal}`,
+            heading: hit.heading,
+            snippet: hit.snippet,
+            keywordWeight: hit.keyword_weight,
+            matchedTokens: hit.matched_tokens,
+            matchedSubjects: hit.matched_subjects,
+            matchedIntents: hit.matched_intents,
+            ref,
+            generation: manifest.generation,
+          })))
         }
       }
     }
