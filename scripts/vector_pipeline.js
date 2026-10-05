@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url'
 import fs from 'fs-extra'
 import { $fetch } from 'ofetch'
 import { describePairMismatch, DIMS, EMBEDDING_MODEL, expectedPairBytes, isEmbedding, vectorManifest } from '../src/embeddings.js'
-import { EMBEDDINGS_BIN_KEY, EMBEDDINGS_FINGERPRINTS_KEY, EMBEDDINGS_INDEX_KEY, EMBEDDINGS_MANIFEST_KEY } from '../src/object-keys.js'
+import { parseFrontmatter } from '../src/frontmatter.js'
+import { EMBEDDINGS_BIN_KEY, EMBEDDINGS_FINGERPRINTS_KEY, EMBEDDINGS_INDEX_KEY, EMBEDDINGS_MANIFEST_KEY, localReadmePath } from '../src/object-keys.js'
 import { retryAsync } from '../src/retry.js'
 import { r2Target, readObject } from './r2-rest.js'
 
@@ -18,13 +19,37 @@ const SILICONFLOW_KEY = process.env.SILICONFLOW_KEY
 const EMBED_ATTEMPTS = 3
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 
-function embeddingText(repo) {
+const EMBEDDING_TEXT_LIMIT = 8000
+const README_TEXT_LIMIT = 6000
+
+function readmeEvidence(repo) {
+  const file = path.resolve(PROJECT_ROOT, localReadmePath(repo.repo))
+  if (!fs.existsSync(file))
+    return ''
+
+  try {
+    const { body } = parseFrontmatter(fs.readFileSync(file, 'utf-8'))
+    return body
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, README_TEXT_LIMIT)
+  }
+  catch (error) {
+    throw new Error(`Could not read README evidence for ${repo.repo}: ${error.message || String(error)}`)
+  }
+}
+
+export function embeddingText(repo) {
   const categories = (repo.categories || []).join(', ')
   const topics = (repo.topics || []).join(', ')
-  return [repo.repo, categories, repo.language, repo.reason, repo.summary, repo.description, topics]
+  const readme = readmeEvidence(repo)
+  return [repo.repo, categories, repo.language, repo.reason, repo.summary, repo.description, topics, readme]
     .filter(Boolean)
     .join(' ')
-    .slice(0, 1500)
+    .slice(0, EMBEDDING_TEXT_LIMIT)
 }
 
 export async function buildRepositoryVectors(repositories) {
