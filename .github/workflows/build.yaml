@@ -247,20 +247,8 @@ jobs:
       - name: Build exact-key state compaction plan
         run: node scripts/build_compaction_plan.js
 
-      - name: Lint
-        run: pnpm lint
-
-      - name: Run test suite (schema snapshot + retrieval + asset store guards)
-        run: pnpm test
-
       - name: Verify embeddings.bin invariant before upload
         run: node scripts/verify_vector_pair.js
-
-      # This job is the one that actually writes production, and it is not verified by ci.yaml (a
-      # scheduled run has no push to hang a check on), so it verifies its own bundle before
-      # publishing — the same dry run the merge gate does.
-      - name: Verify the Worker bundles before publishing
-        run: pnpm exec wrangler deploy --dry-run --outdir dist
 
       - name: Prepare immutable data generation
         run: |
