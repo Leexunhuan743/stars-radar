@@ -114,3 +114,31 @@ test('the source\u2019s own classification still counts as scoring text', () => 
   assert.ok(hit, 'the HelloGitHub section name participates in matching')
   assert.equal('categories' in hit.item, false)
 })
+
+
+test('the strongest corroborating source supplies the scoring evidence without changing primary provenance', () => {
+  const doc = rankings()
+  doc.trending.overall_daily = [{
+    repo: 'acme/shared',
+    description: 'browser helper',
+    language: 'Rust',
+  }]
+  doc.breakoutWeekly = [{
+    repo: 'acme/shared',
+    description: 'browser browser chrome chrome helper',
+    language: 'Rust',
+  }]
+
+  const keywordScores = new Map()
+  collectCommunityHits({
+    rankings: doc,
+    query: query({ queryTokens: ['browser', 'chrome'], explain: true }),
+    keywordScores,
+  })
+
+  const hit = keywordScores.get('acme/shared')
+  assert.equal(hit.source, 'trending', 'presentation provenance remains stable')
+  assert.equal(hit.scoringSource, 'breakout', 'the source that produced the stronger score is explicit')
+  assert.deepEqual(hit.sourceChannels, ['trending', 'breakout'])
+  assert.ok(hit.evidence.matched_tokens.includes('chrome'))
+})
