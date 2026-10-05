@@ -77,16 +77,17 @@ export function compileResults({
       continue
 
     const resultRepo = info.repo || repoName
+    const resultSourceKind = isUserStarred ? 'catalog' : source === 'curated' ? 'ingest_journal' : source
     const factualEvidence = []
     const provenance = {}
     if (explain) {
-      const metadataFields = ['description', 'stars'].filter(field => info[field] !== undefined && info[field] !== null)
+      const metadataFields = ['stars'].filter(field => info[field] !== undefined && info[field] !== null)
       if (metadataFields.length > 0) {
         const metadataEvidence = buildRepositoryEvidence({
           kind: 'repository_metadata',
           repo: resultRepo,
-          source: isUserStarred ? 'catalog' : source === 'curated' ? 'ingest_journal' : source,
-          trust: info.description ? EVIDENCE_TRUST.EXTERNAL_UNTRUSTED : EVIDENCE_TRUST.EXTERNAL_STRUCTURED,
+          source: resultSourceKind,
+          trust: EVIDENCE_TRUST.EXTERNAL_STRUCTURED,
           snapshotAt: isUserStarred ? catalogSnapshotAt : rankingSnapshotAt,
           fields: metadataFields,
         })
@@ -95,12 +96,25 @@ export function compileResults({
           provenance[field] = metadataEvidence.id
       }
 
+      if (info.description) {
+        const descriptionEvidence = buildRepositoryEvidence({
+          kind: 'repository_description',
+          repo: resultRepo,
+          source: resultSourceKind,
+          trust: EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
+          snapshotAt: isUserStarred ? catalogSnapshotAt : rankingSnapshotAt,
+          fields: ['description'],
+        })
+        factualEvidence.push(descriptionEvidence)
+        provenance.description = descriptionEvidence.id
+      }
+
       const noteFields = ['reason', 'summary'].filter(field => info[field])
       if (noteFields.length > 0) {
         const noteEvidence = buildRepositoryEvidence({
           kind: 'personal_note',
           repo: resultRepo,
-          source: isUserStarred ? 'catalog' : source === 'curated' ? 'ingest_journal' : source,
+          source: resultSourceKind,
           trust: EVIDENCE_TRUST.USER_TRUSTED,
           snapshotAt: isUserStarred ? catalogSnapshotAt : rankingSnapshotAt,
           fields: noteFields,
@@ -131,7 +145,9 @@ export function compileResults({
           readmeSha256: stats.vectorEvidence.readme_chunk.readme_sha256,
           contentSha256: stats.vectorEvidence.readme_chunk.content_sha256,
           ordinal: stats.vectorEvidence.readme_chunk.ordinal,
+          chunkOrdinal: stats.vectorEvidence.readme_chunk.chunk_ordinal,
           heading: stats.vectorEvidence.readme_chunk.heading,
+          headingPath: stats.vectorEvidence.readme_chunk.heading_path,
           snippet: stats.vectorEvidence.readme_chunk.snippet,
           similarity: stats.vectorEvidence.readme_chunk.similarity,
         }))
