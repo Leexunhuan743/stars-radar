@@ -47,7 +47,6 @@ test('a date missing on either side downloads rather than assuming it is current
   assert.equal(needsReadmeDownload({ fileExists: true, cachedEntry: { pushedAt: '2026-02-01T00:00:00Z' }, pushedAt: undefined }), true)
 })
 
-
 test('a stale README is retried even after repository metadata advances', () => {
   assert.equal(
     needsReadmeDownload({
