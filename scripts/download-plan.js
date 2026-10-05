@@ -22,9 +22,11 @@ export function needsReadmeDownload({ fileExists, cachedEntry, pushedAt }) {
   // No cached entry means this repository is new to the catalogue.
   if (!cachedEntry)
     return true
-  // An unchanged push date means the rendered README cannot have changed. A missing date on
-  // either side makes that comparison impossible, and re-downloading is the safe answer.
-  if (!pushedAt || !cachedEntry.pushedAt)
+  // Repository metadata may advance even when a README refresh failed. Compare the live push
+  // against the push that the cached README actually represents, not the catalogue snapshot itself.
+  // Falling back to pushedAt migrates pre-v2 catalogues without a second compatibility path.
+  const readmePushedAt = cachedEntry.readmePushedAt || cachedEntry.pushedAt
+  if (!pushedAt || !readmePushedAt)
     return true
-  return cachedEntry.pushedAt !== pushedAt
+  return readmePushedAt !== pushedAt
 }
