@@ -37,6 +37,7 @@ test('the actual Worker serves authenticated research routes and registers usabl
     const writeArtifact = async (key, content) => fs.writeFileSync(path.join(directory, key), typeof content === 'string' ? content : new Uint8Array(content))
     await writeArtifact('catalog.json', JSON.stringify({ repos, totalRepos: 2, categories: [], generatedAt: '2026-10-03T00:00:00Z' }))
     await writeArtifact('asset-index.json', JSON.stringify({ repos: {}, intent_inverted: {}, totalRepos: 0 }))
+    await writeArtifact('asset-state.json', JSON.stringify({ repos: {} }))
     const records = Object.keys(repos).map(repo => ({
       id: `repo:${repo.toLowerCase()}`,
       repo,
@@ -48,12 +49,13 @@ test('the actual Worker serves authenticated research routes and registers usabl
     binary[DIMS] = 1
     await writeArtifact('embeddings-index.json', index)
     await writeArtifact('embeddings.bin', binary.buffer)
+    await writeArtifact('embeddings-fingerprints.json', JSON.stringify({}))
     await writeArtifact('embeddings-manifest.json', JSON.stringify(await vectorManifest(records, index, binary)))
     fs.mkdirSync(path.join(directory, 'rankings'))
     fs.writeFileSync(path.join(directory, 'rankings', 'rankings.json'), '{}')
     fs.mkdirSync(path.join(directory, 'stars', 'fixture'), { recursive: true })
     fs.writeFileSync(path.join(directory, 'stars', 'fixture', 'one.md'), '# Local README\nVerified terminal music player seed data.')
-    assert.equal(await seedLocalR2(proxy.env.R2, directory), 7)
+    assert.ok(await seedLocalR2(proxy.env.R2, directory) >= 10)
     await proxy.dispose()
     proxy = null
     worker = await unstable_dev(path.join(root, 'src', 'index.js'), {
@@ -73,6 +75,7 @@ test('the actual Worker serves authenticated research routes and registers usabl
     const health = await (await worker.fetch('/health', { headers })).json()
     assert.equal(health.ok, true)
     assert.equal(health.data.totalStarred, 2, 'temporary R2 data must be loaded before any candidate lookup')
+    assert.ok(health.data.dataGeneration?.id, 'health must expose the generation serving this isolate')
     assert.equal(health.data.vectorCount, 2)
     assert.equal(health.data.repoVectorCount, 2)
     assert.equal(health.data.readmeChunkVectorCount, 0)
