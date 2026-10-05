@@ -227,8 +227,10 @@ jobs:
           node --input-type=module - "${RUNNER_TEMP}/readmes.json" > "${RUNNER_TEMP}/readmes.tsv" <<'NODE'
           import fs from 'node:fs'
           const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
-          for (const ref of Object.values(manifest.repos || {}))
-            process.stdout.write(`${ref.object_key}\tstars/${ref.repo}.md\n`)
+          for (const ref of Object.values(manifest.repos || {})) {
+            if (ref.object_key)
+              process.stdout.write(`${ref.object_key}\tstars/${ref.repo}.md\n`)
+          }
           NODE
           export endpoint R2_BUCKET
           xargs -0 -r -P 16 -n 2 bash -c '
