@@ -2,7 +2,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import fs from 'fs-extra'
-import { ASSET_INDEX_KEY, INGEST_JOURNAL_PREFIX, PROBE_CAPTURE_PREFIX } from '../src/object-keys.js'
+import { INGEST_JOURNAL_PREFIX, PROBE_CAPTURE_PREFIX } from '../src/object-keys.js'
 
 const ROOT = process.env.ASSET_STORE_ROOT
   ? path.resolve(process.env.ASSET_STORE_ROOT)
