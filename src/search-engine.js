@@ -20,7 +20,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
   const starredNames = new Set(Object.keys(repos).map(name => name.toLowerCase()))
   const targetCategory = category?.trim().toLowerCase()
   const targetSource = source?.trim().toLowerCase()
-  const { queryTokens, matchedGroups, specificSubjects } = analyzeQuery(query, genericIntents)
+  const { queryTokens, matchedGroups, specificSubjects, hardSubjects } = analyzeQuery(query, genericIntents)
   // The channels every catalogue-free layer scores through; defined in src/scoring.js so a layer
   // cannot weigh a match differently from its neighbours.
   const layerQuery = { specificSubjects, queryTokens, matchedGroups, intents: genericIntents, explain }
@@ -199,6 +199,7 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
     keywordScores,
     repos,
     specificSubjects,
+    hardSubjects,
   })
 
   const ingestedByName = new Map(harvested.map(item => [item.repo.toLowerCase(), item]))
