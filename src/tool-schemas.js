@@ -81,8 +81,8 @@ export const TOOL_DEFINITIONS = {
   // ---- Level 3: active probes ----
   search_github_live: {
     name: 'search_github_live',
-    readOnly: false,
-    description: 'Open-world live GitHub repository explorer. Searches public repositories across GitHub for new tools, libraries, and capabilities. Supports language/stars/date filtering, auto-hygiene (pruning forks/dead projects), and cross-references your personal stars.',
+    readOnly: true,
+    description: 'Open-world live GitHub repository explorer. Searches public repositories across GitHub for new tools, libraries, and capabilities. This tool is read-only; use capture_github_discovery to explicitly persist a selected discovery.',
     inputSchema: {
       query: z.string().describe('Search query, capability keywords, or framework names (e.g. "antigravity cf worker", "mcp rust", "deepseek")'),
       language: z.string().optional().describe('Filter by programming language (e.g. "rust", "typescript", "python", "go")'),
@@ -92,7 +92,16 @@ export const TOOL_DEFINITIONS = {
       since: z.string().optional().describe('Filter by creation date (e.g. "7d", "30d", "2026-08-01", or "2026-08-01..2026-08-31")'),
       until: z.string().optional().describe('End date filter (YYYY-MM-DD)'),
       limit: z.number().int().min(1).max(30).optional().default(10).describe('Maximum results to return (default: 10)'),
-      persist: z.boolean().optional().default(false).describe(`When true, capture qualifying discoveries (stars>=50, non-empty description, top-3 by stars) into R2 ${PROBE_CAPTURE_PREFIX} for the next asset-store merge. Only metadata is captured; discoveries never enter the vector index automatically.`),
+    },
+  },
+
+  capture_github_discovery: {
+    name: 'capture_github_discovery',
+    readOnly: false,
+    description: `Persist one user-selected live GitHub discovery into R2 ${PROBE_CAPTURE_PREFIX}. The server re-fetches repository metadata from GitHub and applies the capture threshold before writing, so client-supplied stars or descriptions are never trusted.`,
+    inputSchema: {
+      repo: z.string().describe('Repository full name in "owner/repo" format or a GitHub repository URL.'),
+      query: z.string().min(1).max(512).describe('The originating discovery query, used to count independent observations during later promotion.'),
     },
   },
 
