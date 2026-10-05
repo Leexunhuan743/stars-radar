@@ -23,6 +23,9 @@ jobs:
     env:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      SILICONFLOW_KEY: ${{ secrets.SILICONFLOW_KEY }}
+      RETRIEVAL_BENCHMARK_B64: ${{ secrets.RETRIEVAL_BENCHMARK_B64 }}
+      GENERATION_RETENTION: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -244,11 +247,27 @@ jobs:
       - name: Build unified asset index (accumulate starred + community + probes)
         run: node scripts/asset_store.js
 
-      - name: Build exact-key state compaction plan
-        run: node scripts/build_compaction_plan.js
-
       - name: Verify embeddings.bin invariant before upload
         run: node scripts/verify_vector_pair.js
+
+      - name: Require private retrieval closure benchmark
+        run: |
+          test -n "${RETRIEVAL_BENCHMARK_B64}" || { echo "::error::RETRIEVAL_BENCHMARK_B64 is required before candidate data activation"; exit 1; }
+          printf '%s' "${RETRIEVAL_BENCHMARK_B64}" | base64 --decode > data/retrieval-benchmark.private.json
+          node scripts/validate_private_benchmark.js data/retrieval-benchmark.private.json
+
+      - name: Enforce candidate production regression smoke gate
+        run: |
+          node scripts/build_retrieval_benchmark_from_corpus.js --output data/retrieval-benchmark.derived.json
+          pnpm eval:retrieval:gate -- \
+            --fixture data/retrieval-benchmark.derived.json \
+            --output retrieval-regression-derived-report.json
+
+      - name: Enforce private candidate retrieval quality gate
+        run: |
+          pnpm eval:retrieval:gate -- \
+            --fixture data/retrieval-benchmark.private.json \
+            --output retrieval-quality-private-report.json
 
       - name: Prepare immutable data generation
         run: |
@@ -310,6 +329,12 @@ jobs:
           done < <(find .generation-stage -type f -printf '%P\n' | sort)
           exit ${failed}
 
+      - name: Validate candidate generation hashes, vectors and README refs
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: node scripts/validate_remote_generation.js --generation "${GENERATION_ID}"
+
       - name: Activate verified data generation
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -323,6 +348,30 @@ jobs:
           aws s3 cp "s3://${R2_BUCKET}/active-generation.json" "${RUNNER_TEMP}/active-generation.json" --endpoint-url "${endpoint}"
           cmp active-generation.json "${RUNNER_TEMP}/active-generation.json"
           echo "✓ activated generation ${GENERATION_ID}"
+
+      - name: Build rollback-safe compaction plan from oldest retained generation
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          aws configure set default.region auto
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3api list-objects-v2 --bucket "${R2_BUCKET}" --prefix "generations/" --delimiter "/" \
+            --endpoint-url "${endpoint}" --output json > "${RUNNER_TEMP}/generations.json"
+          mapfile -t retained < <(node --input-type=module - "${RUNNER_TEMP}/generations.json" "${GENERATION_RETENTION}" <<'NODE'
+          import fs from 'node:fs'
+          const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+          const limit = Number(process.argv[3])
+          for (const prefix of (payload.CommonPrefixes || []).map(item => item.Prefix).sort().reverse().slice(0, limit))
+            console.log(prefix)
+          NODE
+          )
+          test "${#retained[@]}" -gt 0 || { echo "::error::No retained generations found after activation"; exit 1; }
+          oldest="${retained[${#retained[@]}-1]}"
+          echo "Compaction recovery horizon: ${oldest}"
+          aws s3 cp "s3://${R2_BUCKET}/${oldest}asset-index.json" "${RUNNER_TEMP}/compaction-base-asset-index.json" \
+            --endpoint-url "${endpoint}" --only-show-errors
+          node scripts/build_compaction_plan.js --index "${RUNNER_TEMP}/compaction-base-asset-index.json"
 
       - name: Compact consumed append-only state
         env:
@@ -352,7 +401,7 @@ jobs:
           aws s3api list-objects-v2 --bucket "${R2_BUCKET}" --prefix "generations/" --delimiter "/" \
             --endpoint-url "${endpoint}" --output json > "${RUNNER_TEMP}/generations.json"
           mapfile -t prefixes < <(node -e 'const fs=require("fs");const d=JSON.parse(fs.readFileSync(process.argv[1]));for(const x of (d.CommonPrefixes||[]).map(v=>v.Prefix).sort().reverse()) console.log(x)' "${RUNNER_TEMP}/generations.json")
-          for ((i=3; i<${#prefixes[@]}; i++)); do
+          for ((i=GENERATION_RETENTION; i<${#prefixes[@]}; i++)); do
             prefix="${prefixes[$i]}"
             if [ "${prefix}" = "generations/${GENERATION_ID}/" ]; then
               echo "::error::Refusing to delete the active generation ${prefix}"
