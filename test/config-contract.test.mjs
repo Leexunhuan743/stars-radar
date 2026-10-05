@@ -205,7 +205,6 @@ test('rate-limit bindings use independent namespaces and documented one-minute b
   assert.deepEqual(limits.get('WRITE_RATE_LIMITER').simple, { limit: 20, period: 60 })
 })
 
-
 test('GitHub Actions dependencies are pinned to immutable commit SHAs', () => {
   const workflowDir = path.join(ROOT, '.github', 'workflows')
   const workflows = fs.readdirSync(workflowDir)
