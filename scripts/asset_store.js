@@ -34,6 +34,7 @@ import {
   CATALOG_KEY,
   INGEST_JOURNAL_PREFIX,
   LOCAL_RANKINGS_DIR,
+  PREVIOUS_ASSET_INDEX_FILE,
   PROBE_CAPTURE_PREFIX,
   RANKINGS_KEY,
 } from '../src/object-keys.js'
@@ -48,7 +49,7 @@ const PROJECT_ROOT = process.env.ASSET_STORE_ROOT
 const STATE_PATH = path.resolve(PROJECT_ROOT, ASSET_STATE_KEY)
 const INDEX_PATH = path.resolve(PROJECT_ROOT, ASSET_INDEX_KEY)
 const META_PATH = path.resolve(PROJECT_ROOT, 'asset-meta.json')
-const PREVIOUS_INDEX_PATH = path.resolve(PROJECT_ROOT, 'previous-asset-index.json')
+const PREVIOUS_INDEX_PATH = path.resolve(PROJECT_ROOT, PREVIOUS_ASSET_INDEX_FILE)
 
 // 意图词表是 Worker 与管线共用的数据，因此放在 data/ 下：管线按路径读它，读的必须是"数据"
 // 而不是"Worker 的源码目录"——后者是分层倒置，也让管线在只拷脚本的环境里跑不起来。
@@ -239,7 +240,7 @@ function previousIngestSnapshot() {
   const index = fs.readJsonSync(PREVIOUS_INDEX_PATH)
   const snapshot = index.ingest_snapshot || { keys: [], entries: [] }
   if (!Array.isArray(snapshot.keys) || !Array.isArray(snapshot.entries))
-    throw new Error('previous-asset-index.json has an invalid ingest_snapshot.')
+    throw new Error(`${PREVIOUS_ASSET_INDEX_FILE} has an invalid ingest_snapshot.`)
   return snapshot
 }
 
