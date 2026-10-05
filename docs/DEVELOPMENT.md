@@ -156,18 +156,18 @@ Bash / zsh 使用 `export WORKER_URL=...` 和 `export MCP_API_KEY=...`。
 | `<owner>/<repo>.md`                       | README；本地路径为 `stars/<owner>/<repo>.md` | CI                |
 | `rankings.json`                           | 社区榜单及各来源更新时间 / 失败状态          | CI                |
 | `asset-state.json`                        | 历史资产、首次发现、上榜次数等持久状态       | CI                |
-| `asset-index.json`                        | 热集检索索引与 `ingest_snapshot`             | CI                |
+| `generations/<id>/asset-index.json`       | 热集检索索引与 ingest/probe snapshots         | CI                |
 | `embeddings.bin`、`embeddings-index.json` | Float32 向量及结构化 records（repo metadata / README chunks） | CI                |
 | `embeddings-fingerprints.json`            | 文本 / 模型与向量内容指纹，用于复用          | CI                |
 | `embeddings-manifest.json`                | 模型、维度、数量及 index/bin 的 SHA-256      | CI                |
 | `state/ingest-journal/*.jsonl`            | 经确认的收录和备注，每次操作追加一个对象     | Worker 或本地收割 |
 | `state/probe-captures/*.jsonl`            | 经 `capture_github_discovery` 明确确认的发现元数据 | Worker            |
 
-CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件，不由 Worker 读取，也不上传。
+`state/` 在 Worker 写入侧保持 append-only；CI 只会在新 generation 已激活后，根据上一代 snapshot 的**精确 key 列表**回收已证明持久化的旧对象，绝不递归删除整个前缀。`asset-meta.json` 是本地统计文件，不由 Worker 读取，也不上传。
 
 资产分为 `starred`、`curated`、`community`、`discovered`。前三种进入热集；实时搜索本身永远不写状态，只有显式调用 `capture_github_discovery` 才记录一次发现观察，满足跨查询确认等规则后才晋升为社区资产。取消 Star 会移除个人收藏标记，历史资产可能作为社区候选保留；已明确收录的记录仍保存在日志中。
 
-`ingest_snapshot` 保存 CI 已折叠的 curator entries 与仍存在的原始 key。下一轮只解析上一代 snapshot 尚未覆盖的 raw tail，再把旧 compacted entries 与新 tail 合并成新 snapshot。active generation 成功切换后，CI 只删除上一代明确列出的 ingest key，以及本轮实际下载并已折叠的 probe key；不会递归删除 state 前缀。这样构建期间的新写入不会被误删，同时历史 curator 信息即使原始 JSONL 已回收仍保存在 generation snapshot 中。
+`ingest_snapshot` 保存已折叠的 curator entries 与对应原始 key；`probe_snapshot` 保存该代已折叠的 probe 原始 key。下一轮只解析上一代 snapshot 尚未覆盖的 raw tail。active generation 成功切换后，CI 只删除**上一代**明确列出的 ingest/probe key；本轮第一次看到的写入至少再保留一个 generation，因此回滚上一代再重建也不会丢掉新收录或新发现。不会递归删除任何 state 前缀。
 
 常规数据缓存为 30 分钟，入库日志视图为 60 秒，均是每个 Worker 实例独立的缓存。写入实例立即安装新视图，其他实例刷新后可见。大量语料或高频写入会增加内存与 R2 请求开销，当前架构适用于个人库，是单账号共享密钥服务，没有多租户隔离。
 
