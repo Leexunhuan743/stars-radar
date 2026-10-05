@@ -55,8 +55,12 @@ function awsBuffer(args) {
 
 function readObject(target, key) {
   return awsBuffer([
-    's3', 'cp', `s3://${target.bucket}/${key}`, '-',
-    '--endpoint-url', target.endpoint,
+    's3',
+    'cp',
+    `s3://${target.bucket}/${key}`,
+    '-',
+    '--endpoint-url',
+    target.endpoint,
     '--only-show-errors',
   ])
 }
