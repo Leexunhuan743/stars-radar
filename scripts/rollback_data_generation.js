@@ -1,8 +1,8 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
-import { execFileSync } from 'node:child_process'
 import { parseGenerationPointer, validateGenerationId } from '../src/data-generation.js'
 
 function required(name) {
@@ -12,9 +12,9 @@ function required(name) {
   return value
 }
 
-function aws(args, { encoding = 'utf8' } = {}) {
+function aws(args) {
   return execFileSync('aws', args, {
-    encoding,
+    encoding: 'utf8',
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -31,19 +31,24 @@ function target() {
   }
 }
 
-function s3(target, ...args) {
-  return aws([...args, '--endpoint-url', target.endpoint])
+function s3(targetConfig, ...args) {
+  return aws([...args, '--endpoint-url', targetConfig.endpoint])
 }
 
 export function listGenerations() {
-  const t = target()
+  const targetConfig = target()
   const raw = s3(
-    t,
-    's3api', 'list-objects-v2',
-    '--bucket', t.bucket,
-    '--prefix', 'generations/',
-    '--delimiter', '/',
-    '--output', 'json',
+    targetConfig,
+    's3api',
+    'list-objects-v2',
+    '--bucket',
+    targetConfig.bucket,
+    '--prefix',
+    'generations/',
+    '--delimiter',
+    '/',
+    '--output',
+    'json',
   )
   const payload = JSON.parse(raw)
   return (payload.CommonPrefixes || [])
@@ -53,28 +58,37 @@ export function listGenerations() {
     .reverse()
 }
 
-function readGenerationJson(t, generationId, name) {
-  const text = s3(t, 's3', 'cp', `s3://${t.bucket}/generations/${generationId}/${name}`, '-')
+function readGenerationJson(targetConfig, generationId, name) {
+  const text = s3(
+    targetConfig,
+    's3',
+    'cp',
+    `s3://${targetConfig.bucket}/generations/${generationId}/${name}`,
+    '-',
+  )
   return JSON.parse(text)
 }
 
 export function validateRollbackTarget(generationId) {
   const id = validateGenerationId(generationId)
-  const t = target()
-  const manifest = readGenerationJson(t, id, 'generation-manifest.json')
+  const targetConfig = target()
+  const manifest = readGenerationJson(targetConfig, id, 'generation-manifest.json')
   if (manifest?.generation?.id !== id)
     throw new Error(`generation-manifest.json belongs to ${manifest?.generation?.id || 'unknown'}, not ${id}.`)
 
-  const requiredFiles = ['catalog.json', 'rankings.json', 'asset-index.json', 'asset-state.json', 'readmes.json']
-  for (const name of requiredFiles) {
+  for (const name of ['catalog.json', 'rankings.json', 'asset-index.json', 'asset-state.json', 'readmes.json']) {
     if (!manifest.files?.[name])
       throw new Error(`Generation ${id} is missing ${name} in its manifest.`)
     s3(
-      t,
-      's3api', 'head-object',
-      '--bucket', t.bucket,
-      '--key', `generations/${id}/${name}`,
-      '--output', 'json',
+      targetConfig,
+      's3api',
+      'head-object',
+      '--bucket',
+      targetConfig.bucket,
+      '--key',
+      `generations/${id}/${name}`,
+      '--output',
+      'json',
     )
   }
   return parseGenerationPointer(manifest.generation)
@@ -82,13 +96,25 @@ export function validateRollbackTarget(generationId) {
 
 export function rollbackDataGeneration(generationId) {
   const pointer = validateRollbackTarget(generationId)
-  const t = target()
+  const targetConfig = target()
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-rollback-'))
   try {
     const local = path.join(dir, 'active-generation.json')
     fs.writeFileSync(local, `${JSON.stringify(pointer, null, 2)}\n`)
-    s3(t, 's3', 'cp', local, `s3://${t.bucket}/active-generation.json`)
-    const remote = s3(t, 's3', 'cp', `s3://${t.bucket}/active-generation.json`, '-')
+    s3(
+      targetConfig,
+      's3',
+      'cp',
+      local,
+      `s3://${targetConfig.bucket}/active-generation.json`,
+    )
+    const remote = s3(
+      targetConfig,
+      's3',
+      'cp',
+      `s3://${targetConfig.bucket}/active-generation.json`,
+      '-',
+    )
     const confirmed = parseGenerationPointer(JSON.parse(remote))
     if (confirmed.id !== pointer.id)
       throw new Error(`Rollback verification failed: active generation is ${confirmed.id}.`)
