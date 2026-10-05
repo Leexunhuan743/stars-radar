@@ -76,7 +76,7 @@ test('repos whose display name has uppercase letters still resolve', () => {
   assert.ok(hit, 'uppercase-named repo must not be dropped from the archive channel')
   assert.equal(hit.repo, 'Moriafly/SaltUI', 'the display casing must be preserved in the result')
   assert.equal(hit.item.url, 'https://github.com/Moriafly/SaltUI')
-  assert.equal(hit.weight, 10)
+  assert.equal(hit.weight, 6, 'one intent match plus a bounded synonym repeat bonus')
 })
 
 test('an intent word with capitals still reaches the lowercase inverted index', () => {
@@ -180,6 +180,6 @@ test('archive ranking reflects match strength instead of assigning every candida
 
   const byRepo = new Map(hits.map(hit => [hit.repo, hit.weight]))
   assert.ok(byRepo.get('a/strong') > byRepo.get('b/weak'))
-  assert.equal(byRepo.get('a/strong'), 10)
+  assert.equal(byRepo.get('a/strong'), 6, 'matching multiple synonyms in one intent group saturates')
   assert.equal(byRepo.get('b/weak'), 5)
 })
