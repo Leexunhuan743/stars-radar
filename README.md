@@ -75,7 +75,7 @@ pnpm exec wrangler r2 bucket create your-radar-bucket
 
 R2 的 S3 凭据需要能读写该桶。这里的 `GH_TOKEN` 在构建时映射为 `GITHUB_TOKEN`，GitHub 自动提供的工作流令牌不能代替你的个人令牌来同步个人收藏。
 
-在 **Actions** 中启用工作流，然后手动运行 **Update Repos Info**。第一次运行会从你的账号生成收藏目录、README 和检索索引。以后工作流每 6 小时运行一次。derived 目录、榜单、资产索引和向量先作为一整个不可变 generation 上传并验证，只有全部成功才切换 active generation；失败构建不会让线上读到半套新数据。默认保留最近三个 derived generations 便于快速回滚。
+在 **Actions** 中启用工作流，然后手动运行 **Update Repos Info**。第一次运行会从你的账号生成收藏目录、README 和检索索引。以后工作流每 6 小时运行一次。catalog、榜单、资产索引、向量以及 README 引用表会作为同一个不可变 generation 发布；README 正文按 SHA-256 存为 `readmes/<sha256>.md` 内容寻址对象。只有 generation 与引用到的 README blobs 都上传成功并完成回读校验后才切换 `active-generation.json`。默认保留最近三个 generations，可用 `pnpm data:rollback -- --list` / `pnpm data:rollback -- --to <generation-id>` 回滚。
 
 ### 4. 配置服务并部署
 
@@ -98,7 +98,7 @@ Worker secrets 与 Actions secrets 是两套配置，需要分别设置。完整
 
 `MCP_TOOLSET` 控制 **MCP 客户端可见的工具面**：默认 `research`（全部只读研究工具，不暴露 capture / star-and-ingest）；`core` 只保留个人库检索/比较/状态工具；只有显式设置 `all` 才暴露写工具。该选项只改变 MCP 的工具发现与调用面，REST 路由保持不变；无效值会让 MCP 初始化失败。
 
-如果希望数据工作流在更新完成后自动部署 Worker，还需要在 Actions 中设置 `CLOUDFLARE_API_TOKEN`，并授予对应账号的 Worker 部署权限。未设置时，工作流只更新 R2 数据。
+数据更新与 Worker 部署已经彻底分离。`Update Repos Info` 只负责 R2 数据；`Deploy Worker` 只在主分支 Worker 相关代码变化或手动触发时部署。部署 workflow 需要 Actions secrets `CLOUDFLARE_API_TOKEN`、`R2_ACCOUNT_ID`、`MCP_API_KEY`，以及 repository variable `WORKER_URL`，部署后会自动调用 `/health` 做生产 smoke check。
 
 ## 连接 AI 助手
 
@@ -183,7 +183,7 @@ python scripts/search_stars_cli.py --help
 
 **数据会公开吗？**
 
-真实检索质量需要用部署者自己的查询和 relevance labels 评估；`pnpm eval:retrieval:gate` 可按私有 fixture 中的 Recall/MRR/NDCG/负查询/延迟阈值阻止回归，公共仓库不会把合成 fixture 当作生产质量证明。
+真实检索质量需要用部署者自己的查询和 relevance labels 评估；`pnpm eval:retrieval:gate` 可按私有 fixture 中的 Recall/MRR/NDCG/负查询/延迟阈值阻止回归。`Retrieval Quality` workflow 会在主分支更新后恢复当前 production generation，并在配置了 `RETRIEVAL_BENCHMARK_B64` secret 时执行真实 BGE-M3 gate；未配置时会明确标记为跳过，而不会把合成 fixture 当作生产质量证明。
 
 生成的数据保存在你的 R2 桶中，不提交到代码仓库；服务接口需要访问密钥。同步管线排除私有仓库。请保持桶为私有，并只把密钥交给受信任的客户端。这是单个账号的个人服务，所有使用同一密钥的客户端共享数据和操作权限。
 
