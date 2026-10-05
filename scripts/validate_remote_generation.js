@@ -36,7 +36,7 @@ export function remoteTarget() {
 }
 
 function awsBuffer(args) {
-  return execFileSync('aws', args, {
+  return execFileSync('aws', [...args, '--region', 'auto'], {
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
