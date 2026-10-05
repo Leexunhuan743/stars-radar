@@ -57,6 +57,11 @@ test('the boolean and string readers match what the API documents', () => {
   assert.equal(optionalString(' rust '), 'rust')
   assert.equal(optionalString(''), undefined)
   assert.equal(optionalString(null), undefined)
+  assert.equal(optionalString('12345678', { parameter: 'language', maxLength: 8 }), '12345678')
+  assert.throws(
+    () => optionalString('123456789', { parameter: 'language', maxLength: 8 }),
+    BadRequestError,
+  )
 })
 
 test('responses carry the JSON content type and the CORS headers', async () => {
