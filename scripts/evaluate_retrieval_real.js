@@ -128,6 +128,49 @@ export function evaluateOne(returned, relevantList, forbiddenList, k) {
   }
 }
 
+function evidenceQuality(results, relevantList, k) {
+  const relevant = new Set((relevantList || []).map(value => value.toLowerCase()))
+  if (relevant.size === 0) {
+    return {
+      evidence_coverage_rate: null,
+      provenance_completeness_rate: null,
+      facet_satisfaction_rate: null,
+    }
+  }
+
+  const relevantHits = results.slice(0, k).filter(result => relevant.has(result.repo.toLowerCase()))
+  if (relevantHits.length === 0) {
+    return {
+      evidence_coverage_rate: null,
+      provenance_completeness_rate: null,
+      facet_satisfaction_rate: null,
+    }
+  }
+
+  const evidenceCoverage = average(relevantHits.map(result => (result.evidence || []).length > 0 ? 1 : 0))
+  const provenanceCompleteness = average(relevantHits.map((result) => {
+    const fields = ['description', 'stars', 'categories', 'reason', 'summary']
+      .filter((field) => {
+        const value = result[field]
+        return Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && value !== ''
+      })
+    if (fields.length === 0)
+      return 1
+    const covered = fields.filter(field => result.provenance?.[field]).length
+    return covered / fields.length
+  }))
+  const facetSatisfaction = average(relevantHits
+    .map(result => result.ranking?.facet_coverage)
+    .filter(coverage => coverage?.total >= 2)
+    .map(coverage => coverage.ratio))
+
+  return {
+    evidence_coverage_rate: evidenceCoverage,
+    provenance_completeness_rate: provenanceCompleteness,
+    facet_satisfaction_rate: facetSatisfaction,
+  }
+}
+
 function average(values) {
   const numeric = values.filter(Number.isFinite)
   return numeric.length ? numeric.reduce((sum, value) => sum + value, 0) / numeric.length : null
@@ -144,6 +187,9 @@ export function summarize(rows) {
     mean_precision_at_k: average(positive.map(row => row.metrics.precision_at_k)),
     mrr: average(positive.map(row => row.metrics.reciprocal_rank)),
     mean_ndcg_at_k: average(positive.map(row => row.metrics.ndcg_at_k)),
+    evidence_coverage_rate: average(positive.map(row => row.metrics.evidence_coverage_rate)),
+    provenance_completeness_rate: average(positive.map(row => row.metrics.provenance_completeness_rate)),
+    facet_satisfaction_rate: average(positive.map(row => row.metrics.facet_satisfaction_rate)),
     negative_empty_success_rate: average(negative.map(row => row.metrics.empty_success ? 1 : 0)),
     p50_latency_ms: percentile(rows.map(row => row.latency_ms), 0.50),
     p95_latency_ms: percentile(rows.map(row => row.latency_ms), 0.95),
@@ -171,6 +217,9 @@ const THRESHOLD_RULES = {
   min_mean_precision_at_k: { metric: 'mean_precision_at_k', direction: 'min' },
   min_mrr: { metric: 'mrr', direction: 'min' },
   min_mean_ndcg_at_k: { metric: 'mean_ndcg_at_k', direction: 'min' },
+  min_evidence_coverage_rate: { metric: 'evidence_coverage_rate', direction: 'min' },
+  min_provenance_completeness_rate: { metric: 'provenance_completeness_rate', direction: 'min' },
+  min_facet_satisfaction_rate: { metric: 'facet_satisfaction_rate', direction: 'min' },
   min_negative_empty_success_rate: { metric: 'negative_empty_success_rate', direction: 'min' },
   max_forbidden_hits: { metric: 'forbidden_hits', direction: 'max' },
   max_p95_latency_ms: { metric: 'p95_latency_ms', direction: 'max' },
@@ -264,7 +313,7 @@ async function runMode(name, fixture, documents, { lexicalOnly, k }) {
     const results = searchDocuments(
       { ...documents, queryVector },
       scenario.query,
-      { ...(scenario.options || {}), limit: Math.max(k, scenario.options?.limit || 0), explain: false },
+      { ...(scenario.options || {}), limit: Math.max(k, scenario.options?.limit || 0), explain: true },
     )
     const returned = results.map(result => result.repo)
     rows.push({
@@ -274,7 +323,10 @@ async function runMode(name, fixture, documents, { lexicalOnly, k }) {
         ? scenario.classes
         : (scenario.class ? [scenario.class] : ['uncategorized']),
       returned,
-      metrics: evaluateOne(returned, scenario.relevant || [], scenario.forbidden || [], k),
+      metrics: {
+        ...evaluateOne(returned, scenario.relevant || [], scenario.forbidden || [], k),
+        ...evidenceQuality(results, scenario.relevant || [], k),
+      },
       latency_ms: Number((performance.now() - started).toFixed(1)),
     })
   }
