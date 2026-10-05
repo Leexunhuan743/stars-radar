@@ -36,7 +36,8 @@ export function enrichLiveResults(items, { reposCatalog = {}, communityIndex = n
   return (items || []).map((item, index) => {
     const fullName = item.full_name
     const userStar = findCatalogEntry(reposCatalog, fullName)
-    const isCommunity = communityIndex.has(fullName.toLowerCase())
+    const communityRecord = communityIndex.get(fullName.toLowerCase())
+    const isCommunity = !!communityRecord
 
     // Starred wins over community: the user's own choice is the stronger statement, and a
     // repository can legitimately be both.
@@ -57,6 +58,7 @@ export function enrichLiveResults(items, { reposCatalog = {}, communityIndex = n
       badge: provenance.badge,
       user_categories: userStar?.categories || undefined,
       user_reason: userStar?.reason || undefined,
+      community_sources: communityRecord?.source_channels?.length ? communityRecord.source_channels : undefined,
     }
   })
 }
