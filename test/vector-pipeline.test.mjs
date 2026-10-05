@@ -121,6 +121,7 @@ function clearLocalPair() {
   fs.rmSync(index, { force: true })
   fs.rmSync(path.join(TMP, 'embeddings-fingerprints.json'), { force: true })
   fs.rmSync(path.join(TMP, 'embeddings-manifest.json'), { force: true })
+  fs.rmSync(path.join(TMP, 'stars'), { recursive: true, force: true })
 }
 
 test('a consistent pair in R2 is restored, and satisfies the byte-length invariant', async () => {
@@ -331,4 +332,36 @@ test('a short embedding response fails without replacing any of the four existin
   globalThis.fetch = async () => Response.json({ data: [] })
   await assert.rejects(buildRepositoryVectors([{ repo: 'acme/one', description: 'changed' }]), /returned 0 vectors for 1/)
   files.forEach((file, index) => assert.deepEqual(fs.readFileSync(path.join(TMP, file)), before[index]))
+})
+
+
+test('README evidence participates in embeddings and invalidates only the repository whose README changed', async () => {
+  clearLocalPair()
+  const bucket = stubR2({})
+  const inputs = [
+    { repo: 'acme/one', description: 'generic self-hosted app' },
+    { repo: 'acme/two', description: 'another utility' },
+  ]
+
+  await buildRepositoryVectors(inputs)
+  assert.equal(bucket.embeddings.length, 1)
+
+  const readmeDir = path.join(TMP, 'stars', 'acme')
+  fs.mkdirSync(readmeDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(readmeDir, 'one.md'),
+    '---\nrepo: acme/one\n---\n# Features\nSupports WebDAV synchronization and S3-compatible storage.',
+  )
+
+  const rebuilt = await buildRepositoryVectors(inputs)
+  assert.equal(rebuilt.updatedCount, 1)
+  assert.equal(rebuilt.addedCount, 0)
+  assert.equal(bucket.embeddings.length, 2)
+  assert.equal(bucket.embeddings[1].length, 1)
+  assert.match(bucket.embeddings[1][0], /WebDAV synchronization/)
+  assert.match(bucket.embeddings[1][0], /S3-compatible storage/)
+
+  const stable = await buildRepositoryVectors(inputs)
+  assert.equal(stable.updatedCount, 0)
+  assert.equal(bucket.embeddings.length, 2, 'unchanged README evidence reuses the vector fingerprint')
 })
