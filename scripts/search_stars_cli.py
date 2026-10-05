@@ -87,6 +87,42 @@ def fetch_json(endpoint, params=None):
         raise ApiError(f"{endpoint} failed: {payload.get('error')} — {payload.get('message')}")
     return payload.get("data")
 
+
+def post_json(endpoint, body):
+    """POST one authenticated JSON command and return its success payload."""
+    require_api_config()
+    url = f"{WORKER_URL}{endpoint}"
+    headers = {
+        **HEADERS,
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json",
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            failure = json.loads(e.read().decode("utf-8"))
+            raise ApiError(f"{endpoint} failed: {failure.get('error')} — {failure.get('message')}")
+        except ApiError:
+            raise
+        except Exception:
+            raise ApiError(f"{endpoint} failed with HTTP {e.code}")
+    except ApiError:
+        raise
+    except Exception as e:
+        raise ApiError(f"{endpoint} could not be reached: {e}")
+
+    if not payload.get("ok"):
+        raise ApiError(f"{endpoint} failed: {payload.get('error')} — {payload.get('message')}")
+    return payload.get("data")
+
 def show_live_search(query, language=None, min_stars=15, sort="stars", since=None, until=None, limit=10, persist=False):
     params = {"q": query, "limit": limit, "min_stars": min_stars, "sort": sort}
     if language:
@@ -95,15 +131,22 @@ def show_live_search(query, language=None, min_stars=15, sort="stars", since=Non
         params["since"] = since
     if until:
         params["until"] = until
-    if persist:
-        params["persist"] = "1"
-
     data = fetch_json("/api/live", params)
     if not data or not data.get("repos"):
         print(f"No repositories found matching \"{query}\".")
         return
 
     repos = data.get("repos", [])
+    if persist:
+        candidates = sorted(
+            [r for r in repos if (r.get("stars") or 0) >= 50 and r.get("description")],
+            key=lambda r: r.get("stars") or 0,
+            reverse=True,
+        )[:3]
+        captures = [post_json("/api/capture", {"repo": r.get("repo"), "query": query}) for r in candidates]
+        captured = sum(item.get("captured", 0) for item in captures if item)
+        print(f"Captured {captured}/{len(candidates)} qualifying discoveries through the explicit write endpoint.")
+
     print(f"\n🌐 Live GitHub Repository Search for: \"{query}\" ({len(repos)} hits)\n" + "=" * 70)
     for i, r in enumerate(repos, 1):
         stars = f"⭐ {r.get('stars', 0):,}"
@@ -362,7 +405,7 @@ def main():
     parser.add_argument("--topic", help="Topic or keyword filter for date-based retrieval")
     parser.add_argument("--language", "--lang", help="Programming language filter for date-based retrieval")
     parser.add_argument("--min-stars", type=int, default=15, help="Minimum stars threshold for live search (default: 15)")
-    parser.add_argument("--persist", action="store_true", help="Capture qualifying live discoveries into the asset database (probes JSONL for CI accumulation)")
+    parser.add_argument("--persist", action="store_true", help="After the read-only live search, explicitly capture up to 3 qualifying discoveries through /api/capture")
 
     args = parser.parse_args()
 
