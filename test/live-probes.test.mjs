@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { beforeEach, test } from 'node:test'
+import { ACTIVE_GENERATION_KEY, createGenerationPointer, generationKey } from '../src/data-generation.js'
 import { resetDocumentCaches } from '../src/documents.js'
 import { errorResponse } from '../src/http.js'
 import { captureGithubDiscovery, searchGithubCode, searchGithubLive, searchWebTech } from '../src/live-probes.js'
@@ -7,9 +8,22 @@ import { githubFailure, ProbeRequestError, probeToolFailure } from '../src/probe
 
 beforeEach(resetDocumentCaches)
 
+const GENERATION_ID = '20261005T083000Z-ceaa138fd814-5151'
+const POINTER = createGenerationPointer(
+  GENERATION_ID,
+  'ceaa138fd814f70ff2a194cf050a789e7e77cf95',
+  '2026-10-05T08:30:00.000Z',
+)
+
 function environment({ put = async () => {}, catalog = { repos: {} } } = {}) {
   return { R2: {
-    get: async key => key === 'catalog.json' ? { json: async () => catalog } : null,
+    get: async (key) => {
+      if (key === ACTIVE_GENERATION_KEY)
+        return { json: async () => POINTER }
+      if (key === generationKey(GENERATION_ID, 'catalog.json'))
+        return { json: async () => catalog }
+      return null
+    },
     list: async () => ({ objects: [], truncated: false }),
     put,
   } }
