@@ -15,7 +15,7 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
 
 ## 来源与真相基础
 
-- **MCP 端点**：`https://stars.example.com/mcp` 是**你自己部署**的 Worker 地址，请替换为你自己的自定义域名或 `<worker-name>.<subdomain>.workers.dev`（鉴权：请求头配置 `Authorization: Bearer <YOUR_MCP_API_KEY>`，密钥读取自环境变量 `MCP_API_KEY`）。`WORKER_URL` 刻意不提供默认值：`search_stars_cli.py` 与 `audit_cf_deployment.py` 在它未设置时会直接以配置错误退出，避免缺失的值把你的 `MCP_API_KEY` 发往第三方主机。
+- **MCP 端点**：`https://stars.example.com/mcp` 是**你自己部署**的 Worker 地址，请替换为你自己的自定义域名或 `<worker-name>.<subdomain>.workers.dev`。读取请求使用 `Authorization: Bearer <YOUR_MCP_API_KEY>`；若部署者配置了独立 `MCP_WRITE_API_KEY`，则 capture / star / ingest 必须使用写密钥，读密钥不能执行副作用。`WORKER_URL` 刻意不提供默认值：`search_stars_cli.py` 与 `audit_cf_deployment.py` 在它未设置时会直接以配置错误退出，避免缺失的值把密钥发往第三方主机。
 - **本地代码库与工具路径**：
   - 本地搜索与收割 CLI：`scripts/search_stars_cli.py`
   - 线上部署验收与巡检脚本：`scripts/audit_cf_deployment.py`
@@ -30,7 +30,7 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
 
 明确列出本 skill **绝对不碰什么**：
 
-- **入库门禁与人工确认原则（Human-in-the-Loop）**：只读探针（`search_github_live` / `search_github_code` / `search_web_tech`）严禁擅自向私藏库写入数据；只有当用户在会话中明确发出收藏/收录指令（或用户在 GitHub 上主动点星）时，AI 方可调用 `star_and_ingest_repo` 执行操作。两条通道的落点不同：经确认的收录**追加**到 R2 的入库日志 `state/ingest-journal/`（每次一个新对象，谁都不会覆盖谁），日志立即参与 `scope=all/rankings` 的词法检索：写入实例立即可见，其他实例正常情况下在 60 秒内刷新。该日志在下次资产同步（`scripts/asset_store.js`）时以 `tier='curated'` 合并，**进热集索引**（`starred`+`curated`+`community`，即 Worker 运行时唯一读取的 `asset-index.json`），混合检索以 `source=curated`、`💎 Curated Asset` 徽标呈现；已同步到个人收藏目录的仓库以 `source=starred` 呈现；而 `search_github_live` 的 `persist=true` 只把合格发现项以**仅元数据**追加到 R2 `state/probe-captures/`，同步后为 `tier='discovered'`，**不进热集索引**（需跨查询确认晋升为 `community` 后才进），因此未经确认的社区项目不会混入个人私藏，确保个人私藏库的真理源绝对纯净；
+- **入库门禁与人工确认原则（Human-in-the-Loop）**：`search_github_live` / `search_github_code` / `search_web_tech` 都是只读探针，搜索本身绝不写状态。若用户明确要求“记住/沉淀这个发现”，调用 `capture_github_discovery`，Worker 会重新向 GitHub 读取仓库元数据并通过阈值后追加到 `state/probe-captures/`；它只是一次 discovered 观察，不会直接进入向量热集。只有当用户明确要求收藏/收录时，才调用 `star_and_ingest_repo`：它会尝试 GitHub Star，并向 `state/ingest-journal/` 追加永久 curator 记录。该日志立即参与词法检索，后续 CI 以 `tier='curated'` 合并进热集和语义向量。未经明确确认的发现不会混入个人私藏真理源；
 - **不进行非技术类通用网页搜索**：技术文档搜索（`search_web_tech`）仅服务于开发者技术选型、报错排查和文档阅读，不处理常规娱乐或商业闲聊；
 - **不盲目全量通读超大文件**：阅读仓库详情时优先查阅结构化元数据和关键特性；代码搜索结果严格提取语法片段，避免爆破上下文窗口；
 - **向量单写者**：CI 统一计算和发布向量。Worker 与本地收割只追加元数据日志；本地向量构建只生成文件，不发布到 R2。收割后先词法检索，下一轮成功 CI 构建再获得向量检索。
@@ -82,7 +82,7 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
 
 - 搜私藏与全网：`python scripts/search_stars_cli.py "<query>"`
 - 全网搜仓库：`python scripts/search_stars_cli.py --live "<query>" --limit 5`
-- **全网搜仓库并沉淀进资产库**：`python scripts/search_stars_cli.py --live "<query>" --limit 5 --persist`（把符合条件（stars≥50、非空描述、按 stars Top-3）的全网新发现捕获进持续增长的统一资产库，供下次 CI 合并）
+- **全网搜仓库并显式沉淀发现**：`python scripts/search_stars_cli.py --live "<query>" --limit 5 --persist`。这里的 `--persist` 只是 CLI 兼容工作流：先执行只读 `/api/live`，再对符合阈值的 Top-3 候选逐个调用显式写接口 `/api/capture`；服务端会重新校验 GitHub 元数据。若启用了独立写密钥，请同时设置 `MCP_WRITE_API_KEY`。
 - 全网搜代码：`python scripts/search_stars_cli.py --code "<code_query>" --language <lang>`
 - 全网搜文档：`python scripts/search_stars_cli.py --web "<tech_query>"`
 - 一键点星入库：`python scripts/search_stars_cli.py --star "owner/repo" --reason "<curator_note>"`
