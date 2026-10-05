@@ -126,7 +126,7 @@ export function deriveBenchmark(catalog, { maxExact = 24, maxNotes = 24 } = {}) 
   }
 
   return {
-    dataset: 'production-derived-stars-retrieval-gate',
+    dataset: 'production-derived-regression-smoke',
     provenance: {
       kind: 'derived_from_active_catalog',
       generated_at: new Date().toISOString(),
@@ -160,7 +160,7 @@ export function main() {
   const benchmark = deriveBenchmark(catalog)
   fs.mkdirSync(path.dirname(outputPath), { recursive: true })
   fs.writeFileSync(outputPath, `${JSON.stringify(benchmark, null, 2)}\n`)
-  console.log(`[Retrieval Benchmark] derived ${benchmark.cases.length} cases from ${benchmark.provenance.catalog_repo_count} real catalog repositories.`)
+  console.log(`[Retrieval Regression] derived ${benchmark.cases.length} smoke/regression cases from ${benchmark.provenance.catalog_repo_count} production catalog repositories; this is not a human-labeled quality benchmark.`)
 }
 
 if (process.argv[1]?.endsWith('build_retrieval_benchmark_from_corpus.js')) {
