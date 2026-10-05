@@ -1,7 +1,7 @@
 import process from 'node:process'
 import fs from 'fs-extra'
 import { embeddingRepositories, foldJournalFiles } from '../src/ingest-journal.js'
-import { CATALOG_KEY, INGEST_JOURNAL_PREFIX, LOCAL_STARS_DIR, localReadmePath } from '../src/object-keys.js'
+import { CATALOG_KEY, INGEST_JOURNAL_PREFIX, LOCAL_STARS_DIR, localReadmePath, README_SYNC_STATUS_FILE } from '../src/object-keys.js'
 import { needsReadmeDownload } from './download-plan.js'
 import { collectAllRankings } from './fetch_rankings.js'
 import { fetchUserLists, summarizeCategories } from './github-lists.js'
@@ -77,6 +77,11 @@ async function main() {
     // 2. Identify new or modified repositories
     const toDownload = []
     const updatedCatalogRepos = {}
+    const readmeSync = {
+      generated_at: new Date().toISOString(),
+      active_generation: process.env.ACTIVE_GENERATION_ID || null,
+      repos: {},
+    }
 
     for (const repo of liveStarred) {
       const name = repo.full_name
@@ -120,6 +125,13 @@ async function main() {
       if (needsDownload) {
         toDownload.push(repoInfo)
       }
+      else if (fileExists) {
+        readmeSync.repos[name.toLowerCase()] = {
+          repo: name,
+          status: 'reused',
+          preserved_from_generation: process.env.ACTIVE_GENERATION_ID || null,
+        }
+      }
     }
 
     console.log(`Repos needing README download: ${toDownload.length} / ${liveStarred.length}`)
@@ -137,19 +149,35 @@ async function main() {
         const ownerDir = `${LOCAL_STARS_DIR}/${repoInfo.owner}`
         fs.ensureDirSync(ownerDir)
         fs.writeFileSync(`stars/${repoInfo.repo}.md`, content, 'utf-8')
+        readmeSync.repos[repoInfo.repo.toLowerCase()] = {
+          repo: repoInfo.repo,
+          status: readme === null ? 'absent' : 'fresh',
+          fetched_at: new Date().toISOString(),
+          preserved_from_generation: null,
+        }
       })
       readmeFailures = run.failures
       if (readmeFailures.length > 0) {
+        for (const failure of readmeFailures) {
+          const target = localReadmePath(failure.item.repo)
+          const staleAvailable = fs.existsSync(target)
+          readmeSync.repos[failure.item.repo.toLowerCase()] = {
+            repo: failure.item.repo,
+            status: staleAvailable ? 'stale' : 'unavailable',
+            preserved_from_generation: staleAvailable ? (process.env.ACTIVE_GENERATION_ID || null) : null,
+            error: failure.error?.message || String(failure.error),
+          }
+        }
         const named = readmeFailures.slice(0, 10).map(f => f.item.repo).join(', ')
         console.warn(
-          `Could not fetch ${readmeFailures.length} README(s); they were left out of the corpus and will be `
-          + `retried on the next run: ${named}${readmeFailures.length > 10 ? ', …' : ''}`,
+          `Could not refresh ${readmeFailures.length} README(s); stale cached blobs are preserved when available, `
+          + `otherwise the repository is published without README evidence and retried next run: `
+          + `${named}${readmeFailures.length > 10 ? ', …' : ''}`,
         )
       }
     }
 
-    if (readmeFailures.length > 0)
-      throw new Error(`README sync failed for ${readmeFailures.length} repositories; refusing to publish a partial corpus. Retry the build.`)
+    fs.writeJsonSync(README_SYNC_STATUS_FILE, readmeSync, { spaces: 2 })
 
     const categoriesList = summarizeCategories(liveCategories, updatedCatalogRepos)
 
