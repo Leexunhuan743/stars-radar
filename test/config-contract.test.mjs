@@ -79,6 +79,7 @@ const WORKFLOW_SECRETS = new Set([
   'R2_SECRET_ACCESS_KEY',
   'CLOUDFLARE_API_TOKEN',
   'MCP_API_KEY', // production smoke check
+  'RETRIEVAL_BENCHMARK_B64', // private retrieval quality fixture
 ])
 
 function readWorkflowSecrets() {
