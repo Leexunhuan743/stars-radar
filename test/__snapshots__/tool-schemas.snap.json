@@ -151,7 +151,7 @@
   },
   "search_github_live": {
     "name": "search_github_live",
-    "readOnly": false,
+    "readOnly": true,
     "schema": {
       "type": "object",
       "properties": {
@@ -195,10 +195,6 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 30
-        },
-        "persist": {
-          "default": false,
-          "type": "boolean"
         }
       },
       "required": [
@@ -206,8 +202,29 @@
         "min_stars",
         "sort",
         "order",
-        "limit",
-        "persist"
+        "limit"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "capture_github_discovery": {
+    "name": "capture_github_discovery",
+    "readOnly": false,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "repo",
+        "query"
       ],
       "additionalProperties": false
     }
