@@ -112,9 +112,15 @@ test('every excluded configuration name really belongs to its exclusion category
   // These three sets are the test's own allow-list, so without evidence they are a way to
   // silence a finding rather than a documented exception. Each entry is checked against
   // where it actually lives.
-  const wrangler = fs.readFileSync(path.join(ROOT, 'wrangler.jsonc'), 'utf-8')
-  for (const name of RUNTIME_BINDINGS)
-    assert.match(wrangler, new RegExp(`"binding"\\s*:\\s*"${name}"`), `${name} must be declared as a Worker binding`)
+  const wranglerText = fs.readFileSync(path.join(ROOT, 'wrangler.jsonc'), 'utf-8')
+  const wrangler = JSON.parse(wranglerText)
+  const rateLimitBindings = new Set((wrangler.ratelimits || []).map(binding => binding.name))
+  for (const name of RUNTIME_BINDINGS) {
+    if (name === 'R2')
+      assert.match(wranglerText, new RegExp(`"binding"\\s*:\\s*"${name}"`), `${name} must be declared as an R2 Worker binding`)
+    else
+      assert.ok(rateLimitBindings.has(name), `${name} must be declared as a rate-limit Worker binding`)
+  }
 
   const secrets = readWorkflowSecrets()
   for (const name of CI_TOOLING_ONLY)
