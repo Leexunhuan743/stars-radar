@@ -58,13 +58,13 @@ test('forbidden hits and latency percentiles remain visible in the summary', () 
   ]
 
   assert.equal(percentile([30, 10, 20], 0.5), 20)
-  assert.equal(percentile([30, 10, 20], 0.95), 20)
+  assert.equal(percentile([30, 10, 20], 0.95), 30)
 
   const summary = summarize(rows)
   assert.equal(summary.cases, 3)
   assert.equal(summary.forbidden_hits, 2)
   assert.equal(summary.p50_latency_ms, 20)
-  assert.equal(summary.p95_latency_ms, 20)
+  assert.equal(summary.p95_latency_ms, 30)
   assert.equal(summary.mean_recall_at_k, 0.5)
   assert.equal(summary.mrr, 0.5)
 })
