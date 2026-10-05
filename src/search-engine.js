@@ -222,5 +222,6 @@ export function searchDocuments({ catalog, rankings, assetIndex, harvested, vect
     minScore: min_score,
     limit,
     explain,
+    applyCommunityDiversityCap: scope === 'all' && !targetSource,
   })
 }
