@@ -22,7 +22,7 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
   - 部署、架构与接口文档：`docs/DEVELOPMENT.md`
   - 核心工作区与索引：`catalog.json`、`embeddings.bin`、`embeddings-index.json`
   - 社区榜单快照：`rankings/rankings.json`
-  - 完整 14 大 MCP 工具参数定义与返回值：[tool-matrix.md](references/tool-matrix.md)
+  - 完整 15 大 MCP 工具参数定义与返回值：[tool-matrix.md](references/tool-matrix.md)
   - 常用命令行配方与字典：[cli-recipes.md](references/cli-recipes.md)
   - 实战经验、提问范式与避坑指南：[playbook.md](references/playbook.md)
 
@@ -58,7 +58,7 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
 
 1. **查私藏与已入库精选（Level 1 闭集高信任锚点）**：
    - 当用户寻找**自己收藏过的工具、明确需要私房解决方案、或查询已知领域精选**时：调用 `search_github_stars`；
-   - 系统利用 1024 维 BGE-M3 单一权威向量与 18 大通用意图本体检索：对整个库做一次线性扫描，信噪比远高于开放世界检索；
+   - 系统利用 1024 维 BGE-M3 单一权威向量与通用意图本体检索；当前 `repo-metadata-readme-v2` 会把经过清理和限长的 README 证据纳入 repo-level embedding。它不是 README chunk 检索，因此不能把纯语义命中描述成精确章节证据；
    - **警惕边界**：私藏库只覆盖本实例已同步的收藏与收录。若用户明确问“全网新出的”、“最近火的”或私藏库中极可能未收录的冷门概念（如“代码结构 可视化”），**切勿仅在私藏库中强行挑选，必须主动进入 Level 3 探网**。
 
 2. **查看社区情报榜单（Level 2 常态化雷达）**：
@@ -74,7 +74,7 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
 
 4. **一键 Star 并入库沉淀（Ingest Loop 闭环）**：
    - 仅在用户**明确确认收录**时调用 `star_and_ingest_repo`（`repo: "owner/repo"`）；
-   - 自动在 GitHub 上点星，暂存入 R2 数据库，次日自动计算 1024 维向量固化为个人资产。
+   - 自动在 GitHub 上点星并追加 curator 日志；下一次成功的定时数据构建（默认每 6 小时）会计算 1024 维向量并固化为个人资产。
 
 ### 第二步：CLI 命令行执行规则（当处于终端环境时）
 
