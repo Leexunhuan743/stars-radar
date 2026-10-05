@@ -1,6 +1,7 @@
 import { parseFrontmatter } from './frontmatter.js'
 import { BadRequestError } from './http.js'
-import { readmeKey } from './object-keys.js'
+import { getReadmeManifest } from './documents.js'
+import { readmeBlobKey } from './object-keys.js'
 
 export class RepositoryRequestError extends Error {
   constructor(message, upstreamStatus) {
@@ -63,7 +64,9 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
   let body = null
   let readmeSource = null
   if (include_readme) {
-    const object = await env.R2.get(readmeKey(record?.repo || name))
+    const readmes = await getReadmeManifest(env)
+    const ref = readmes.repos?.[(record?.repo || name).toLowerCase()]
+    const object = ref?.sha256 ? await env.R2.get(readmeBlobKey(ref.sha256)) : null
     if (object) {
       const parsed = parseFrontmatter(await object.text())
       body = parsed.body
