@@ -197,7 +197,6 @@ test('the CI gate requires vectors for journal ingests even when the star catalo
   finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
-
 test('vector manifests report whether README evidence is present without rejecting safe legacy generations', async () => {
   const names = ['a/b']
   const index = Buffer.from(JSON.stringify(names))
