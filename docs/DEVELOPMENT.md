@@ -68,6 +68,7 @@ pnpm install --frozen-lockfile
 | `SILICONFLOW_URL`                          | 可选向量接口地址，默认 SiliconFlow embeddings 接口      |
 | `MCP_API_KEY`                              | Worker 读取认证；未配置独立写密钥时保持旧版读写行为      |
 | `MCP_WRITE_API_KEY`                        | 可选独立写密钥；配置后 capture / star / ingest 只接受它  |
+| `MCP_TOOLSET`                              | 可选 MCP 工具暴露面：`all` / `research` / `core`；默认 `all` |
 | `R2_ACCOUNT_ID`、`R2_BUCKET`               | CI S3 上传及本地 R2 REST 操作的目标                     |
 | `R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` | Actions 的 S3 读写凭据                                  |
 | `CLOUDFLARE_API_TOKEN`                     | 可选 CI 部署；本地收割与向量恢复的 REST 操作也需要它    |
@@ -182,7 +183,9 @@ CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件�
 
 ## MCP 工具
 
-Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。不配置 `MCP_WRITE_API_KEY` 时，`MCP_API_KEY` 保持向后兼容的读写权限；配置独立写密钥后，`MCP_API_KEY` 只能读取和检索，`MCP_WRITE_API_KEY` 可读且允许 `capture_github_discovery` 与 `star_and_ingest_repo`。REST 写接口使用相同规则，读 key 调用时返回 `403 write_forbidden`。昂贵的向量/GitHub/Web 路径与写路径分别经过平台 Rate Limiting binding；默认预算分别为 60/分钟与 20/分钟，超限返回 `429 rate_limited`。Cloudflare Rate Limiting 是按 location 的保护性、最终一致计数，不应作为精确用量或计费系统；配置了 binding 但 binding 调用异常时服务 fail closed，返回 `503 rate_limiter_unavailable`，避免静默失去成本保护。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
+Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。不配置 `MCP_WRITE_API_KEY` 时，`MCP_API_KEY` 保持向后兼容的读写权限；配置独立写密钥后，`MCP_API_KEY` 只能读取和检索，`MCP_WRITE_API_KEY` 可读且允许 `capture_github_discovery` 与 `star_and_ingest_repo`。REST 写接口使用相同规则，读 key 调用时返回 `403 write_forbidden`。昂贵的向量/GitHub/Web 路径与写路径分别经过平台 Rate Limiting binding；默认预算分别为 60/分钟与 20/分钟，超限返回 `429 rate_limited`。Cloudflare Rate Limiting 是按 location 的保护性、最终一致计数，不应作为精确用量或计费系统；配置了 binding 但 binding 调用异常时服务 fail closed，返回 `503 rate_limiter_unavailable`，避免静默失去成本保护。
+
+`MCP_TOOLSET` 只控制 MCP server 注册哪些工具，不改变 REST 路由：`all` 是兼容默认值，暴露全部 15 个工具；`research` 保留 13 个只读研究工具并隐藏 `capture_github_discovery` / `star_and_ingest_repo`；`core` 只保留 7 个个人库检索、README/比较、分类/列表和状态工具。非法值会返回 MCP 配置错误，不会回退到 `all`。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
 
 <!-- prettier-ignore -->
 | 工具                    | 用途 / 常用参数                                                              |
