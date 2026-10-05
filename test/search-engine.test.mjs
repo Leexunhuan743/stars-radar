@@ -5,7 +5,9 @@ import { searchDocuments } from '../src/search-engine.js'
 
 const INTENTS = { terminal: ['terminal', 'cli'], browser: ['browser'] }
 
-const repoRecord = repo => ({ id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' })
+function repoRecord(repo) {
+  return { id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' }
+}
 const readmeRecord = (repo, heading, text) => ({
   id: `readme:${repo.toLowerCase()}:fixture`,
   repo,
@@ -246,7 +248,6 @@ test('a strong semantic vector can recover an ordinary feature absent from short
   assert.deepEqual(result.explanation.channels, ['vector'])
   assert.deepEqual(result.explanation.matched_subjects, [])
 })
-
 
 test('README chunk vectors can recall a feature absent from repository metadata and expose semantic evidence', () => {
   const values = new Float32Array(DIMS * 2)
