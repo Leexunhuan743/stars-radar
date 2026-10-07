@@ -21,7 +21,8 @@ The project is in development and intended for personal deployments. It provides
 - Search your own stars by keywords, purpose or natural-language descriptions. Categories come from your GitHub Lists.
 - Explore GitHub Trending, recent repositories, HelloGitHub picks and Agent Skills boards, or search GitHub live.
 - Compare 2–5 repositories using metadata, personal notes, source labels and snapshot dates. Unknown fields remain unknown.
-- Read repository details, READMEs and code snippets. Request matching evidence for search results.
+- Search selected README sections semantically: repositories in the semantic corpus keep a metadata vector plus up to eight evenly distributed README chunk vectors. README-only capabilities can participate in recall when their section is selected; the system does not claim that every section of a long README is vectorized.
+- Read repository details, READMEs and code snippets. With `explain=true`, `ranking` signals are separated from field `provenance` and factual `evidence[]`; README evidence carries generation/SHA/chunk identity and freshness. Third-party README text, descriptions, code and web snippets are `external_untrusted` evidence, never instructions.
 - Star a repository and record a reason. Metadata becomes available to lexical search first; semantic vectors arrive with the next successful data build.
 
 Search scores rank candidates; they are not quality ratings or correctness probabilities. Community sources can be unavailable or stale. Check source dates and repository evidence before making a decision.
@@ -54,10 +55,11 @@ Add these Repository secrets in your fork's **Settings → Secrets and variables
 | `R2_BUCKET` | Your bucket name |
 | `R2_ACCESS_KEY_ID` | R2 S3 access key ID |
 | `R2_SECRET_ACCESS_KEY` | R2 S3 secret access key |
+| `RETRIEVAL_BENCHMARK_B64` | Base64 private human-labeled retrieval benchmark; required for candidate activation and PR retrieval gates |
 
 The S3 credentials need read/write access to that bucket. The workflow maps `GH_TOKEN` to `GITHUB_TOKEN`; GitHub's automatic workflow token is not your personal star-sync token.
 
-Enable workflows in **Actions** and manually run **Update Repos Info**. The first run builds your catalogue, README archive and retrieval index. Subsequent runs are scheduled every six hours. A failed run does not guarantee new vectors were published; retry it after addressing the failure.
+Enable workflows in **Actions** and manually run **Update Repos Info**. The first run builds your catalogue, README corpus and retrieval index. Subsequent runs are scheduled every six hours. Catalogue, rankings, asset state/index, vectors and the README reference manifest are published as one immutable generation. README bodies are content-addressed at `readmes/<sha256>.md`. The active pointer moves only after the generation and referenced blobs publish successfully. Raw ingest/probe state and content-addressed README blobs remain append-only source truth. Builds restore the previous snapshot first and download only unseen state-tail objects. The latest 30 remotely validated ready generations are retained for rollback; failed or partial generations do not consume that window. Use `pnpm data:rollback -- --list` and `pnpm data:rollback -- --to <generation-id>` for validated rollback.
 
 ### 3. Configure and deploy the Worker
 
@@ -65,14 +67,20 @@ Set Worker secrets separately from Actions secrets:
 
 ```sh
 pnpm exec wrangler secret put MCP_API_KEY
+# Required: mutations use a separate key
+pnpm exec wrangler secret put MCP_WRITE_API_KEY
 pnpm exec wrangler secret put GITHUB_TOKEN
 pnpm exec wrangler secret put SILICONFLOW_KEY
 pnpm deploy
 ```
 
-Use a random private value for `MCP_API_KEY` and your personal GitHub token for `GITHUB_TOKEN`. Wrangler prints the deployed URL. Anyone with the service key can read notes, invoke upstream APIs and perform star operations using your GitHub token.
+Both `MCP_API_KEY` and `MCP_WRITE_API_KEY` are required and must be different random values. The read key can search/read only; the write key may also capture discoveries and star/ingest repositories. Use your personal GitHub token for `GITHUB_TOKEN`. Wrangler prints the deployed URL.
 
-To deploy automatically after a data update, also set the Actions secret `CLOUDFLARE_API_TOKEN` with Worker deployment permission for the account. Without it, the workflow only publishes R2 data. Configuration details are listed in [.env.example](.env.example) and the [developer guide](docs/DEVELOPMENT.md).
+`wrangler.jsonc` also declares two Cloudflare Rate Limiting bindings: expensive search/probe work defaults to 60 calls per minute and write operations to 20 calls per minute, keyed by the authenticated credential at the current Cloudflare location. These are protective budgets, not exact accounting. If the example `namespace_id` values are already used in your Cloudflare account, replace both with unused positive integers before deployment.
+
+`MCP_TOOLSET` controls the **MCP-visible tool surface**. The default is `research`, which exposes all read-only research tools but hides capture and star/ingest. Write tools are exposed only when `all` is selected explicitly. REST routes are unchanged; invalid values fail MCP initialization.
+
+Data publication and Worker deployment are separate workflows. **Update Repos Info** only publishes R2 data. **Deploy Worker** runs on relevant main-branch code changes or manual dispatch and requires Actions secrets `CLOUDFLARE_API_TOKEN`, `R2_ACCOUNT_ID`, `MCP_API_KEY`, plus repository variable `WORKER_URL`; it performs a production `/health` smoke check after deploy. Configuration details are listed in [.env.example](.env.example) and the [developer guide](docs/DEVELOPMENT.md).
 
 ## Connect an AI assistant
 
@@ -102,7 +110,7 @@ Replace the placeholders. Client formats vary. The service uses Bearer-key authe
 
 ## Command-line client
 
-The client uses only the Python standard library. Set `WORKER_URL` and `MCP_API_KEY` in your shell; it does not load `.env` automatically.
+The client uses only the Python standard library. Set `WORKER_URL` and `MCP_API_KEY` in your shell; it does not load `.env` automatically. Set `MCP_WRITE_API_KEY` before `--capture` or `--star` commands.
 
 PowerShell:
 
@@ -133,6 +141,8 @@ python scripts/search_stars_cli.py --help
 Stars saved through the service become lexically searchable after journal refresh, normally within a minute on other instances. Semantic search follows the next successful CI build. Stars made directly on GitHub require the next successful star sync.
 
 Your categories are your own GitHub Lists, with no fixed count. Uncategorized public stars use `everything-else`. Ingest tags stay in the radar and do not modify GitHub Lists.
+
+Retrieval quality has one authoritative gate. Retrieval Quality Closure requires `RETRIEVAL_BENCHMARK_B64`: a private human-labeled benchmark with class-level thresholds for README-only, multi-facet, multilingual, negative, community and related real queries. Trusted runs restore the production corpus, rebuild candidate vectors with the current code, and evaluate those candidate vectors; scheduled data publication runs the same private gate before activation. Fork pull requests use only the non-secret synthetic regression.
 
 Generated data lives in your R2 bucket and is not committed to Git. The sync excludes private repositories. Keep the bucket private and share the service key only with trusted clients. This is a single-account service: all clients with the same key share its data and permissions.
 

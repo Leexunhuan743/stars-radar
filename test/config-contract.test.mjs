@@ -19,7 +19,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 // Cloudflare bindings are declared in wrangler.jsonc and injected by the platform, so
 // they are not environment variables and must not appear in .env.example.
-const RUNTIME_BINDINGS = new Set(['R2'])
+const RUNTIME_BINDINGS = new Set(['EXPENSIVE_RATE_LIMITER', 'R2', 'WRITE_RATE_LIMITER'])
 
 // Consumed by the CI workflow through the `aws s3` CLI, not by any code in the repo.
 const CI_TOOLING_ONLY = new Set(['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'])
@@ -27,6 +27,7 @@ const CI_TOOLING_ONLY = new Set(['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'])
 // Test-harness overrides that redirect a script's data root at a throwaway directory.
 // Deliberately not deployment knobs, so they stay out of .env.example.
 const TEST_ONLY = new Set(['ASSET_STORE_ROOT', 'VECTOR_STORE_ROOT'])
+const WORKFLOW_RUNTIME_ONLY = new Set(['ACTIVE_GENERATION_ID', 'GENERATION_ID', 'GITHUB_SHA'])
 
 function readDeclared() {
   const text = fs.readFileSync(path.join(ROOT, '.env.example'), 'utf-8')
@@ -77,6 +78,8 @@ const WORKFLOW_SECRETS = new Set([
   'R2_ACCESS_KEY_ID',
   'R2_SECRET_ACCESS_KEY',
   'CLOUDFLARE_API_TOKEN',
+  'MCP_API_KEY', // production smoke check
+  'RETRIEVAL_BENCHMARK_B64', // private retrieval quality fixture
 ])
 
 function readWorkflowSecrets() {
@@ -112,9 +115,15 @@ test('every excluded configuration name really belongs to its exclusion category
   // These three sets are the test's own allow-list, so without evidence they are a way to
   // silence a finding rather than a documented exception. Each entry is checked against
   // where it actually lives.
-  const wrangler = fs.readFileSync(path.join(ROOT, 'wrangler.jsonc'), 'utf-8')
-  for (const name of RUNTIME_BINDINGS)
-    assert.match(wrangler, new RegExp(`"binding"\\s*:\\s*"${name}"`), `${name} must be declared as a Worker binding`)
+  const wranglerText = fs.readFileSync(path.join(ROOT, 'wrangler.jsonc'), 'utf-8')
+  const wrangler = JSON.parse(wranglerText)
+  const rateLimitBindings = new Set((wrangler.ratelimits || []).map(binding => binding.name))
+  for (const name of RUNTIME_BINDINGS) {
+    if (name === 'R2')
+      assert.match(wranglerText, new RegExp(`"binding"\\s*:\\s*"${name}"`), `${name} must be declared as an R2 Worker binding`)
+    else
+      assert.ok(rateLimitBindings.has(name), `${name} must be declared as a rate-limit Worker binding`)
+  }
 
   const secrets = readWorkflowSecrets()
   for (const name of CI_TOOLING_ONLY)
@@ -166,7 +175,11 @@ test('the fail-closed variables are still present', () => {
 
 test('every environment variable the code reads is documented in .env.example', () => {
   const undocumented = [...consumed].filter(
-    name => !declared.has(name) && !RUNTIME_BINDINGS.has(name) && !CI_TOOLING_ONLY.has(name) && !TEST_ONLY.has(name),
+    name => !declared.has(name)
+      && !RUNTIME_BINDINGS.has(name)
+      && !CI_TOOLING_ONLY.has(name)
+      && !TEST_ONLY.has(name)
+      && !WORKFLOW_RUNTIME_ONLY.has(name),
   )
   assert.deepEqual(
     undocumented,
@@ -183,5 +196,96 @@ test('every variable documented in .env.example is actually consumed', () => {
     inert,
     [],
     `these variables are documented but nothing reads them: ${inert.join(', ')}`,
+  )
+})
+test('rate-limit bindings use independent namespaces and documented one-minute budgets', () => {
+  const wrangler = JSON.parse(fs.readFileSync(path.join(ROOT, 'wrangler.jsonc'), 'utf-8'))
+  const limits = new Map((wrangler.ratelimits || []).map(binding => [binding.name, binding]))
+
+  assert.deepEqual([...limits.keys()].sort(), ['EXPENSIVE_RATE_LIMITER', 'WRITE_RATE_LIMITER'])
+  assert.notEqual(
+    limits.get('EXPENSIVE_RATE_LIMITER').namespace_id,
+    limits.get('WRITE_RATE_LIMITER').namespace_id,
+    'read-side cost protection and write protection must not share one counter namespace',
+  )
+  assert.deepEqual(limits.get('EXPENSIVE_RATE_LIMITER').simple, { limit: 60, period: 60 })
+  assert.deepEqual(limits.get('WRITE_RATE_LIMITER').simple, { limit: 20, period: 60 })
+})
+
+test('GitHub Actions dependencies are pinned to immutable commit SHAs', () => {
+  const workflowDir = path.join(ROOT, '.github', 'workflows')
+  const workflows = fs.readdirSync(workflowDir)
+    .filter(name => /\.ya?ml$/.test(name))
+    .map(name => ({ name, text: fs.readFileSync(path.join(workflowDir, name), 'utf-8') }))
+
+  for (const { name, text } of workflows) {
+    const uses = [...text.matchAll(/uses:\s*([^\s#]+)/g)].map(match => match[1])
+    for (const reference of uses) {
+      const at = reference.lastIndexOf('@')
+      assert.ok(at > 0, `${name}: malformed action reference ${reference}`)
+      assert.match(
+        reference.slice(at + 1),
+        /^[0-9a-f]{40}$/,
+        `${name}: ${reference} must be pinned to a full commit SHA`,
+      )
+    }
+  }
+})
+
+test('data publication is generation-atomic and append-only source state is never deleted', () => {
+  const build = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
+
+  assert.match(build, /active-generation\.json/)
+  assert.match(build, /generations\/\$\{GENERATION_ID\}\//)
+  assert.ok(
+    build.indexOf('Upload immutable data generation') < build.indexOf('Validate candidate generation hashes, vectors and README refs'),
+    'generation objects must upload before remote integrity validation',
+  )
+  assert.ok(
+    build.indexOf('Validate candidate generation hashes, vectors and README refs') < build.indexOf('Mark validated generation ready'),
+    'remote integrity validation must succeed before a generation becomes retention-eligible',
+  )
+  assert.ok(
+    build.indexOf('Mark validated generation ready') < build.indexOf('Activate verified data generation'),
+    'only a validated generation may be activated',
+  )
+  assert.match(build, /Publish content-addressed README blobs/)
+  assert.match(
+    build,
+    /aws s3 sync \.readme-content-stage\/ "s3:\/\/\$\{R2_BUCKET\}\/readmes\/"/,
+    'README bodies must publish to the content-addressed blob namespace',
+  )
+  assert.doesNotMatch(
+    build,
+    /aws s3 sync stars\/ "s3:\/\/\$\{R2_BUCKET\}\//,
+    'the data workflow must not mutate a bucket-root README archive',
+  )
+  assert.doesNotMatch(
+    build,
+    /s3:\/\/\$\{R2_BUCKET\}\/catalog\.json/,
+    'catalog.json must not be published as a mutable root data object',
+  )
+  assert.doesNotMatch(
+    build,
+    /(?:s3 rm|s3api delete-object)[^\n]*state\/(?:ingest-journal|probe-captures)/,
+    'append-only state is durable source data and must never be deleted by the publisher',
+  )
+  assert.doesNotMatch(build, /s3api delete-object[^\n]*readmes\//, 'content-addressed README blobs are immutable source objects')
+  assert.match(
+    build,
+    /head-object[^\n]*embeddings-manifest\.json/,
+    'an active generation without vectors must be detected as a valid empty semantic corpus',
+  )
+  assert.match(build, /node scripts\/validate_remote_generation\.js --generation "\$\{GENERATION_ID\}"/)
+  assert.match(build, /GENERATION_RETENTION: 30/)
+  assert.match(build, /Mark validated generation ready/)
+  assert.match(build, /Retain latest validated data generations/)
+  assert.match(build, /ready\.json/)
+  assert.match(build, /node scripts\/state_tail_plan\.js ingest/)
+  assert.match(build, /node scripts\/state_tail_plan\.js probe/)
+  assert.match(build, /node scripts\/restore_readme_corpus\.js/)
+  assert.ok(
+    build.indexOf('Download active generation baseline from R2') < build.indexOf('Download unseen ingest journal tail from R2'),
+    'state tail planning requires the previous asset-index snapshot first',
   )
 })

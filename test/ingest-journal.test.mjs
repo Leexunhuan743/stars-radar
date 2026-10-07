@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   buildJournalKey,
+  embeddingRepositories,
   foldIngestEntries,
   foldJournalFiles,
   parseJournalText,
@@ -75,4 +76,28 @@ test('the pipeline fold reports which object carried an unreadable line', () => 
   assert.equal(harvested.length, 1)
   assert.equal(problems.length, 1)
   assert.match(problems[0], /two\.jsonl/)
+})
+
+test('embedding inputs merge current ingest reason with catalog summary', () => {
+  const [curated] = embeddingRepositories({}, [{
+    repo: 'Acme/Tool',
+    description: 'external GitHub description',
+    reason: 'user reason',
+  }])
+  assert.equal(curated.summary, undefined)
+  assert.equal(curated.reason, 'user reason')
+
+  const [starred] = embeddingRepositories({
+    'Acme/Tool': {
+      repo: 'Acme/Tool',
+      description: 'external GitHub description',
+      summary: 'catalog summary',
+      reason: 'catalog reason',
+    },
+  }, [{
+    repo: 'Acme/Tool',
+    reason: 'new ingest reason',
+  }])
+  assert.equal(starred.summary, 'catalog summary')
+  assert.equal(starred.reason, 'new ingest reason')
 })

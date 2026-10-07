@@ -8,20 +8,27 @@ import { test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { seedLocalR2 } from '../scripts/seed-local-r2.js'
 import { verifyVectorPair } from '../scripts/verify_vector_pair.js'
+import { ACTIVE_GENERATION_KEY } from '../src/data-generation.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-function fixture({ starred = [], graphqlFailure = false, readmeFailure = false } = {}) {
+function fixture({ starred = [], graphqlFailure = false, readmeFailure = false, readmeAbsent = false } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-bootstrap-'))
   const stub = path.join(directory, 'stub.mjs')
   fs.writeFileSync(stub, `
     const starred = ${JSON.stringify(starred)};
-    globalThis.fetch = async (input) => {
+    globalThis.fetch = async (input, init = {}) => {
       const url = String(input);
       if (url.includes('/user/starred')) return Response.json(starred);
       if (url.endsWith('/graphql')) return Response.json(${graphqlFailure ? '{ errors: [{ message: "denied" }] }' : '{ data: { viewer: { lists: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }'});
-      if (url.endsWith('/readme')) return new Response(${readmeFailure ? '"denied", { status: 403 }' : '"# Fixture README", { headers: { "content-type": "text/plain" } }'});
-      if (url.includes('/embeddings')) return Response.json({ data: [{ index: 0, embedding: [1, ...Array(1023).fill(0)] }] });
+      if (url.endsWith('/readme')) return new Response(${readmeFailure ? '"denied", { status: 403 }' : readmeAbsent ? 'null, { status: 404 }' : '"# Fixture README", { headers: { "content-type": "text/plain" } }'});
+      if (url.includes('/embeddings')) {
+        const body = JSON.parse(init.body || '{}');
+        const inputs = Array.isArray(body.input) ? body.input : [body.input];
+        return Response.json({
+          data: inputs.map((_, index) => ({ index, embedding: [1, ...Array(1023).fill(0)] })),
+        });
+      }
       return new Response('Fixture denies external network access', { status: 403 });
     };
   `)
@@ -56,6 +63,8 @@ for (const starred of [[], [{ full_name: 'fixture/tool', name: 'tool', owner: { 
       fs.copyFileSync(path.join(root, 'data/intents.json'), path.join(setup.directory, 'data/intents.json'))
       const assets = setup.run('asset_store.js')
       assert.equal(assets.status, 0, assets.stderr)
+      const vectors = setup.run('build_candidate_vectors.js')
+      assert.equal(vectors.status, 0, vectors.stderr)
       assert.ok(await verifyVectorPair(setup.directory))
       const catalogue = JSON.parse(fs.readFileSync(path.join(setup.directory, 'catalog.json')))
       assert.equal(catalogue.totalRepos, starred.length)
@@ -65,10 +74,18 @@ for (const starred of [[], [{ full_name: 'fixture/tool', name: 'tool', owner: { 
       await seedLocalR2({ put: async (key) => {
         keys.push(key)
       } }, setup.directory)
-      assert.ok(keys.includes('asset-index.json'))
-      assert.equal(keys.includes('fixture/tool.md'), starred.length > 0)
+      assert.ok(keys.includes(ACTIVE_GENERATION_KEY))
+      assert.ok(
+        keys.some(key => /^generations\/[\w.-]+\/asset-index\.json$/.test(key)),
+        'local seed must mirror production and place the asset index under the active generation',
+      )
+      assert.ok(
+        keys.some(key => /^generations\/[\w.-]+\/generation-manifest\.json$/.test(key)),
+        'local seed must include the generation manifest used to inspect a staged publication',
+      )
+      assert.equal(keys.some(key => /^readmes\/[0-9a-f]{64}\.md$/.test(key)), starred.length > 0)
       fs.unlinkSync(path.join(setup.directory, 'asset-index.json'))
-      await assert.rejects(seedLocalR2({ put: async () => assert.fail('no partial seed allowed') }, setup.directory), /ENOENT/)
+      await assert.rejects(seedLocalR2({ put: async () => assert.fail('no partial seed allowed') }, setup.directory), /Generation is missing required documents: asset-index\.json/)
     }
     finally {
       setup.clean()
@@ -94,13 +111,68 @@ test('a failed Lists read cannot prune an existing corpus or replace the catalog
   }
 })
 
-test('README download failure cannot publish a successful new catalogue', () => {
-  const setup = fixture({ starred: [{ full_name: 'fixture/tool', name: 'tool', owner: { login: 'fixture' }, stargazers_count: 1 }], readmeFailure: true })
+test('README download failure degrades the evidence plane without blocking repository metadata', () => {
+  const setup = fixture({
+    starred: [{
+      full_name: 'fixture/tool',
+      name: 'tool',
+      owner: { login: 'fixture' },
+      stargazers_count: 1,
+      pushed_at: '2026-10-01T00:00:00Z',
+    }],
+    readmeFailure: true,
+  })
   try {
     const result = setup.run('index.js')
-    assert.notEqual(result.status, 0)
-    assert.match(result.stderr, /refusing to publish a partial corpus/)
-    assert.equal(fs.existsSync(path.join(setup.directory, 'catalog.json')), false)
+    assert.equal(result.status, 0, result.stderr)
+    const catalogue = JSON.parse(fs.readFileSync(path.join(setup.directory, 'catalog.json'), 'utf8'))
+    assert.equal(catalogue.totalRepos, 1)
+    assert.equal(catalogue.repos['fixture/tool'].pushedAt, '2026-10-01T00:00:00Z')
+    assert.equal(fs.existsSync(path.join(setup.directory, 'stars', 'fixture', 'tool.md')), false)
+    const status = JSON.parse(fs.readFileSync(path.join(setup.directory, '.readme-sync-status.json'), 'utf8'))
+    assert.equal(status.repos['fixture/tool'].status, 'unavailable')
+    assert.equal(status.repos['fixture/tool'].upstream_pushed_at, '2026-10-01T00:00:00Z')
+    assert.equal(status.repos['fixture/tool'].source_pushed_at, null)
+  }
+  finally {
+    setup.clean()
+  }
+})
+
+test('README absence is reused without inventing a generated README blob', () => {
+  const setup = fixture({
+    starred: [{
+      full_name: 'fixture/tool',
+      name: 'tool',
+      owner: { login: 'fixture' },
+      stargazers_count: 1,
+      pushed_at: '2026-10-01T00:00:00Z',
+    }],
+    readmeAbsent: true,
+  })
+  try {
+    const first = setup.run('index.js')
+    assert.equal(first.status, 0, first.stderr)
+    assert.equal(fs.existsSync(path.join(setup.directory, 'stars', 'fixture', 'tool.md')), false)
+    let status = JSON.parse(fs.readFileSync(path.join(setup.directory, '.readme-sync-status.json'), 'utf8'))
+    assert.equal(status.repos['fixture/tool'].status, 'absent')
+
+    fs.writeFileSync(path.join(setup.directory, 'previous-readmes.json'), JSON.stringify({
+      schema: 2,
+      repos: {
+        'fixture/tool': {
+          repo: 'fixture/tool',
+          status: 'absent',
+          source_pushed_at: '2026-10-01T00:00:00Z',
+        },
+      },
+    }))
+
+    const second = setup.run('index.js')
+    assert.equal(second.status, 0, second.stderr)
+    assert.match(second.stdout, /Repos needing README download: 0 \/ 1/)
+    status = JSON.parse(fs.readFileSync(path.join(setup.directory, '.readme-sync-status.json'), 'utf8'))
+    assert.equal(status.repos['fixture/tool'].status, 'absent')
   }
   finally {
     setup.clean()

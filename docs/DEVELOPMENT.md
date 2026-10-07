@@ -59,13 +59,16 @@ pnpm install --frozen-lockfile
 
 这三处不会自动互相同步。`pnpm build:stars`、收割脚本和 Python 客户端使用当前进程的环境变量；Python 不读取 `.env`。真实配置及其环境专用变体均被忽略，示例文件可以入仓。本地 secret 文件规则见 [Cloudflare 文档](https://developers.cloudflare.com/workers/configuration/secrets/)。
 
+<!-- prettier-ignore -->
 | 名称                                       | 用途                                                    |
 | ------------------------------------------ | ------------------------------------------------------- |
 | `GITHUB_TOKEN`                             | 本地构建和 Worker 的 Stars、Lists、GitHub 搜索及点 Star |
 | `GH_TOKEN`                                 | 仅 Actions secret，在构建步骤映射为 `GITHUB_TOKEN`      |
 | `SILICONFLOW_KEY`                          | 数据构建和 Worker 查询向量                              |
 | `SILICONFLOW_URL`                          | 可选向量接口地址，默认 SiliconFlow embeddings 接口      |
-| `MCP_API_KEY`                              | Worker 与客户端 Bearer 认证，离线构建不需要             |
+| `MCP_API_KEY`                              | Worker 读取认证；未配置独立写密钥时保持旧版读写行为      |
+| `MCP_WRITE_API_KEY`                        | 必填独立写密钥；capture / star / ingest 只接受它         |
+| `MCP_TOOLSET`                              | MCP 工具暴露面：`research`（默认）/ `all`                |
 | `R2_ACCOUNT_ID`、`R2_BUCKET`               | CI S3 上传及本地 R2 REST 操作的目标                     |
 | `R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` | Actions 的 S3 读写凭据                                  |
 | `CLOUDFLARE_API_TOKEN`                     | 可选 CI 部署；本地收割与向量恢复的 REST 操作也需要它    |
@@ -85,21 +88,21 @@ Fine-grained token 对 Stars 读取要求 Starring read，点 Star 要求 Starri
 
 ## 首次部署与更新
 
-首次部署步骤见 [README](../README.md#开始使用)。`wrangler.jsonc` 的 Worker 名称和桶名需要按部署环境填写，代码使用固定绑定名 `R2`。绑定配置见 [Cloudflare R2 文档](https://developers.cloudflare.com/r2/get-started/workers-api/)。
+首次部署步骤见 [README](../README.md#开始使用)。`wrangler.jsonc` 的 Worker 名称和桶名需要按部署环境填写，代码使用固定 R2 绑定名 `R2`，并声明 `EXPENSIVE_RATE_LIMITER` 与 `WRITE_RATE_LIMITER` 两个 Rate Limiting binding。R2 配置见 [Cloudflare R2 文档](https://developers.cloudflare.com/r2/get-started/workers-api/)，限流 binding 见 [Cloudflare Rate Limiting API](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)。`namespace_id` 由部署者定义且在同一 Cloudflare 账号内需要保持唯一；示例 ID 若冲突必须替换。
 
 `.github/workflows/build.yaml` 每 6 小时运行，也支持手动触发。Fork 后需要主动启用 Actions 和定时工作流。一次运行依次：
 
-1. 从 R2 下载向量缓存、资产状态、社区快照、README 和追加日志；对象不存在是首次运行，认证或网络失败会停止运行。
+1. 读取 `active-generation.json`，先从当前 `generations/<id>/` 恢复向量、资产状态、上一代 `asset-index.json` snapshot、社区快照与 `readmes.json`；README blob key 由 SHA-256 推导。随后列出 `state/` 远端 keys，与上一代 ingest/probe snapshot 比较，只下载 unseen tail。没有 active generation 是首次运行，指针损坏或当前 generation 缺关键文件都会停止运行。
 2. 获取当前公开 Stars 和全部 Lists / 成员页，更新目录和 README。
 3. 为 Stars 和已确认收录构建向量，再抓取社区快照。
 4. 合并持久资产状态，生成热集索引和入库日志快照。
 5. 运行 lint、测试、向量一致性检查及 Worker 打包检查。
-6. 上传派生数据，检查上传对象长度，并检查入库日志没有减少。
-7. 设置部署令牌时部署 Worker，否则仅更新 R2 数据。
+6. 上传派生 generation，并用 `validate_remote_generation.js` 对远端 generation manifest、对象 SHA-256、vector pair/manifest 与 README blob hashes 做统一校验；校验成功后写入 `ready.json`，再切换 active pointer。
+7. 数据 workflow 到此结束，不部署 Worker。Worker 由独立 `Deploy Worker` workflow 在主分支相关代码变化或手动触发时发布，并在发布后调用 `/health` 做 production smoke check。
 
 数据发布使用共享并发组串行执行。Checkout 使用只读工作流令牌，个人 `GH_TOKEN` 只用于业务 API 调用。Worker secrets 由部署者独立设置，不从 Actions 自动注入。
 
-上传不是整个桶的事务：对象依次上传，向量 manifest 在向量对象之后上传。Worker 验证内容哈希，遇到混合代次会报错或返回标记为陈旧的已缓存副本，不会把损坏向量当成空检索成功。变更数据格式时，先发布匹配的数据，再部署读取该格式的 Worker。
+derived 数据平面采用 generation 发布：`catalog.json`、`rankings.json`、`asset-index.json`、`asset-state.json`、向量四件套与 `readmes.json` 先写入新的不可变 `generations/<id>/`；README 正文按 SHA-256 放在全局 `readmes/<sha256>.md`，generation 只保存引用。验证完成后，单独替换 `active-generation.json` 作为提交点。Worker 先缓存 active generation，再从同一 generation 读取所有 derived 文档与 README 引用，因此回滚 generation 时 README evidence 也同步回滚。raw ingest/probe state 与内容寻址 README blobs 作为不可变 source truth 保留；派生 generation 只有通过远端校验并写入 `ready.json` 后才进入 rollback 集合，发布流程保留最近 30 个 ready generations，并清理失败/partial generation。
 
 自定义 `SILICONFLOW_URL` 时，构建和 Worker 必须使用产生相同向量空间的接口，不能只切换查询端。上游价格与额度以服务商当前说明为准。
 
@@ -130,7 +133,7 @@ pnpm dev:seed
 pnpm dev:mcp
 ```
 
-`dev:stars` 调用真实 GitHub、社区和向量 API，可能产生请求费用；它只生成本地文件，不发布向量。全新账号可以没有 Star，构建会生成空目录和零长度向量数据，无需维护者的旧文件。
+`dev:stars` 调用真实 GitHub、社区和向量 API，可能产生请求费用；它只生成本地文件，不发布向量。全新账号可以没有 Star；空语料不会生成向量 generation，直到至少有一个确认仓库需要语义索引。
 
 `dev:seed` 检查向量一致性，先读取全部必要输入，再写入 `.wrangler/state/v3` 下的本地 R2。它加载目录、社区数据、索引和 README，不操作远端桶。默认 `wrangler dev` 使用本地模拟存储，详见 [Cloudflare 本地数据文档](https://developers.cloudflare.com/workers/local-development/local-data/)。此命令覆盖同名对象，适合新的开发环境，不负责清理旧对象。
 
@@ -146,48 +149,54 @@ Bash / zsh 使用 `export WORKER_URL=...` 和 `export MCP_API_KEY=...`。
 
 ## 数据与写入职责
 
+<!-- prettier-ignore -->
 | R2 对象                                   | 内容                                         | 写入者            |
 | ----------------------------------------- | -------------------------------------------- | ----------------- |
 | `catalog.json`                            | 当前公开 Stars、Lists 和元数据               | CI                |
-| `<owner>/<repo>.md`                       | README；本地路径为 `stars/<owner>/<repo>.md` | CI                |
+| `readmes/<sha256>.md`                    | 内容寻址 README blob；本地源仍为 `stars/<owner>/<repo>.md` | CI |
 | `rankings.json`                           | 社区榜单及各来源更新时间 / 失败状态          | CI                |
 | `asset-state.json`                        | 历史资产、首次发现、上榜次数等持久状态       | CI                |
-| `asset-index.json`                        | 热集检索索引与 `ingest_snapshot`             | CI                |
-| `embeddings.bin`、`embeddings-index.json` | Float32 向量及对应槽位的仓库名               | CI                |
+| `generations/<id>/asset-index.json`       | 热集检索索引与 ingest/probe snapshots         | CI                |
+| `generations/<id>/readmes.json`           | repo → README SHA-256/blob 引用与 generation 元信息 | CI |
+| `embeddings.bin`、`embeddings-index.json` | Float32 向量及结构化 records（repo metadata / README chunks） | CI                |
 | `embeddings-fingerprints.json`            | 文本 / 模型与向量内容指纹，用于复用          | CI                |
 | `embeddings-manifest.json`                | 模型、维度、数量及 index/bin 的 SHA-256      | CI                |
 | `state/ingest-journal/*.jsonl`            | 经确认的收录和备注，每次操作追加一个对象     | Worker 或本地收割 |
-| `state/probe-captures/*.jsonl`            | `persist=true` 的实时发现元数据              | Worker            |
+| `state/probe-captures/*.jsonl`            | 经 `capture_github_discovery` 明确确认的发现元数据 | Worker            |
 
-CI 不覆盖或删除 `state/` 日志。`asset-meta.json` 是本地统计文件，不由 Worker 读取，也不上传。
+`state/` 在 Worker 写入侧保持 append-only；CI 先恢复上一代 `asset-index.json`，再列出远端 keys，只下载 snapshot 尚未覆盖的 unseen tail。state 对象本身永不删除。
 
-资产分为 `starred`、`curated`、`community`、`discovered`。前三种进入热集；一次自动发现只记录元数据，满足跨查询确认等规则后才晋升为社区资产。取消 Star 会移除个人收藏标记，历史资产可能作为社区候选保留；已明确收录的记录仍保存在日志中。
+资产分为 `starred`、`curated`、`community`、`discovered`。前三种进入热集；实时搜索本身永远不写状态，只有显式调用 `capture_github_discovery` 才记录一次发现观察，满足跨查询确认等规则后才晋升为社区资产。取消 Star 会移除个人收藏标记，历史资产可能作为社区候选保留；已明确收录的记录仍保存在日志中。
 
-`ingest_snapshot` 记录 CI 实际折叠的对象键和最新条目，Worker 只下载未被快照覆盖的日志。构建期间的新写入进入尾部，不依赖时间戳猜测范围；原始日志保留用于重建。没有快照时读取全部日志。尾部按 10 个对象一组读取，失败不会变成部分成功。
+`ingest_snapshot` 保存已折叠的 curator entries 与累计原始 key；`probe_snapshot` 保存累计已折叠的 probe keys。下一轮先用这些 key 规划远端 tail，再只下载并解析 unseen objects；新 snapshot 写回“previous keys ∪ current tail keys”。`state/ingest-journal/` 与 `state/probe-captures/` 都是 append-only 源数据，发布流程不删除其中任何对象。
 
 常规数据缓存为 30 分钟，入库日志视图为 60 秒，均是每个 Worker 实例独立的缓存。写入实例立即安装新视图，其他实例刷新后可见。大量语料或高频写入会增加内存与 R2 请求开销，当前架构适用于个人库，是单账号共享密钥服务，没有多租户隔离。
 
 ## 检索与证据
 
-向量模型固定为 `BAAI/bge-m3`，维度为 1024。输入来自仓库名称、分类、语言、备注、摘要、简介和 topics，不是整份 README。默认构建与查询都使用 SiliconFlow；查询向量接口失败时退回词法通道。
+向量模型固定为 `BAAI/bge-m3`，维度为 1024。输入 profile 固定为 `repo-metadata-readme-chunks-v3`。语义热集中的仓库至少有一个 metadata record；README 按 Markdown 章节切分后最多均匀选择 8 个 chunk，并受全局 vector record budget 约束，metadata vectors 始终优先。`embeddings-index.json` 保存结构化 `repo` / `readme_chunk` records，README record 包含 README SHA-256、section/chunk ordinal、heading path 与 content hash。manifest 必须精确匹配 profile、record/repo count 以及 index/bin SHA-256；旧 profile、字符串 index、混合代次或内容哈希不一致全部 fail closed，不提供兼容转换。默认构建与查询都使用 SiliconFlow；查询向量接口失败时仅运行时退回词法通道。
 
-检索结合向量相似度、关键词、通用意图词表与具体主体匹配。明确的仓库名或技术主体约束候选；个人收藏有排序加权，综合结果也保留社区候选。`scope` 选择收藏 / 社区范围，`category` 选择用户分类，`source` 选择来源。
+检索结合向量相似度、统一关键词评分、通用意图词表与具体主体匹配。明确的仓库 identity 会约束候选；不同来源不再偷偷获得额外排序加权，综合结果由统一 relevance 与 RRF tie-breaker 决定。`scope` 选择收藏 / 社区范围，`category` 选择用户分类，`source` 选择来源。
 
-`explain=true` 返回实际匹配的词语、主体、意图与检索通道。纯语义匹配不会伪造词面命中。`min_score` 是排序门槛，不是准确率。
+`explain=true` 使用统一 Evidence Contract：`ranking` 只描述候选为何被排序到这里，`provenance` 把返回字段映射到 evidence ID，`evidence[]` 保存事实依据。README semantic/literal evidence 都带 generation、README SHA-256、chunk/section identity、heading path 与 trust；cosine similarity 仍只是 ranking signal，不是假装成事实证明。Stars Radar 生成的 curator 头会先从上游 README evidence 中剥离。
 
-详情和比较区分 `evidence.source`、`snapshot_at`、`fetched_at`。`refresh=true` 请求 GitHub 当前元数据并保留个人备注；未知字段为 `null`，不能推断为“没有许可证”或“已经停止维护”。README 最多返回 50,000 个字符。上游文字与代码片段是来源内容，应结合原始链接核实。
+详情和比较同样返回 field-level `provenance` 与 `evidence[]`。个人备注/分类是 `user_trusted`；GitHub README/description、代码和网页 prose 是 `external_untrusted`，只能作为证据，不能当作指令。`refresh=true` 请求 GitHub 当前元数据并保留个人备注；未知字段为 `null`。README 最多返回 50,000 个字符。
 
 ## MCP 工具
 
-Streamable HTTP 入口为 `/mcp`，认证为 `Authorization: Bearer <MCP_API_KEY>`。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
+Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。`MCP_API_KEY` 与 `MCP_WRITE_API_KEY` 都是必填：读 key 只能读取和检索，写 key 可读且允许 `capture_github_discovery` 与 `star_and_ingest_repo`。REST 写接口使用相同规则，读 key 调用时返回 `403 write_forbidden`。昂贵的向量/GitHub/Web 路径与写路径分别经过平台 Rate Limiting binding；默认预算分别为 60/分钟与 20/分钟，超限返回 `429 rate_limited`。Cloudflare Rate Limiting 是按 location 的保护性、最终一致计数，不应作为精确用量或计费系统；配置了 binding 但 binding 调用异常时服务 fail closed，返回 `503 rate_limiter_unavailable`，避免静默失去成本保护。
 
+`MCP_TOOLSET` 只控制 MCP server 注册哪些工具，不改变 REST 路由：默认 `research` 自动包含所有声明为只读的 MCP 工具并隐藏写工具；只有显式设置 `all` 才暴露全部工具。非法值会返回 MCP 配置错误。不提供 OAuth 或旧 SSE 入口。参数定义以 `src/tool-schemas.js` 为准。
+
+<!-- prettier-ignore -->
 | 工具                    | 用途 / 常用参数                                                              |
 | ----------------------- | ---------------------------------------------------------------------------- |
 | `get_radar_status`      | 数据规模、状态与工具选择提示                                                 |
 | `search_github_stars`   | `query`；可选 `scope`、`category`、`source`、`limit`、`min_score`、`explain` |
 | `get_repo_readme`       | `repo`；`include_readme=false` 获取元数据，`refresh=true` 获取当前元数据     |
 | `compare_repositories`  | `repos` 数组，2–5 个不同仓库；可选 `refresh`                                 |
-| `search_github_live`    | 查询、语言、Star 数、日期、排序；`persist=true` 会写发现日志                 |
+| `search_github_live`    | 只读实时 GitHub 查询：语言、Star 数、日期、排序                               |
+| `capture_github_discovery` | 显式写入一个已选择的发现；服务端重新读取 GitHub 元数据后再决定是否记录         |
 | `search_github_code`    | 查询；可选仓库、语言、扩展名和路径                                           |
 | `search_web_tech`       | 查询；可选 `domain`、`freshness`                                             |
 | `star_and_ingest_repo`  | `repo`、`reason`、`categories`；点 Star 并追加收录                           |
@@ -200,12 +209,13 @@ Streamable HTTP 入口为 `/mcp`，认证为 `Authorization: Bearer <MCP_API_KEY
 
 收录结果分别报告 `starred_on_github` 与 `staged_in_radar`。GitHub 拒绝点 Star 时，真实仓库仍可能收录到 Radar，需要检查两个状态。服务没有取消收录或修改 GitHub Lists 的接口。
 
-网页搜索尝试 Brave、Tavily 与无密钥页面来源。无密钥来源受页面变更和访问挑战影响，并非保证可用；`freshness_applied` 表明日期过滤是否实际生效。GitHub 限流或不完整结果会在返回值中说明，不应解释成“没有项目”。
+网页搜索只使用显式配置的 Brave / Tavily API。未配置任何 provider，或所有已配置 provider 均失败时返回 `503 search_unavailable`；不再解析第三方搜索 HTML 页面。`freshness_applied` 表明日期过滤是否实际生效。GitHub 限流或不完整结果会在返回值中说明，不应解释成“没有项目”。
 
 ## REST 接口
 
 除 CORS 预检外，所有接口都需要 Bearer 密钥，包括 `/health`。成功返回 `{ "ok": true, "data": ... }`，可能包含 `meta`；失败返回 `ok=false` 和错误上下文。
 
+<!-- prettier-ignore -->
 | 方法 / 路径           | 主要参数或用途                                                             |
 | --------------------- | -------------------------------------------------------------------------- |
 | `GET /health`         | 数据状态、数量、向量模型及社区新鲜度                                       |
@@ -215,7 +225,8 @@ Streamable HTTP 入口为 `/mcp`，认证为 `Authorization: Bearer <MCP_API_KEY
 | `GET /api/categories` | 用户分类                                                                   |
 | `GET /api/trending`   | `category`，返回快照榜单                                                   |
 | `GET /api/skills`     | `type=all` 或 `repos`、`limit`                                             |
-| `GET /api/live`       | `q`、`language`、`min_stars`、`sort`、`since`、`until`、`limit`、`persist` |
+| `GET /api/live`       | 只读：`q`、`language`、`min_stars`、`sort`、`order`、`since`、`until`、`limit` |
+| `POST /api/capture`   | 写入：JSON `repo`、`query`；服务端重新校验 GitHub 元数据                     |
 | `GET /api/code`       | `q`、`repo`、`language`、`extension`、`path`、`limit`                      |
 | `GET /api/web`        | `q`、`domain`、`freshness`、`limit`                                        |
 | `POST /api/ingest`    | JSON：`repo`、可选 `reason`、字符串数组 `categories`                       |
@@ -245,11 +256,18 @@ pnpm lint
 pnpm test
 pnpm eval:retrieval
 pnpm exec wrangler deploy --dry-run --outdir dist
+
+# 使用自己的真实 Stars / 向量做离线检索质量评估（标注文件不会提交）
+cp test/fixtures/retrieval-benchmark.example.json data/retrieval-benchmark.private.json
+# 编辑 private fixture 后：
+pnpm eval:retrieval:real -- --fixture data/retrieval-benchmark.private.json --k 10
+# fixture 中配置 thresholds 后，可作为失败门禁运行
+pnpm eval:retrieval:gate -- --fixture data/retrieval-benchmark.private.json --k 10 --output retrieval-report.json
 ```
 
 行为变更需补充结果测试。工具参数变化还需检查 schema snapshot；确实改变契约时，运行跨平台命令 `pnpm test:schema:update`，不要更新快照来掩盖意外变化。
 
-测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。检索评估使用合成标注及固定向量，只验证回归行为，不能作为真实模型质量或生产准确率声明。
+常规测试不要求真实 GitHub / R2 数据。Worker 集成测试使用临时本地 R2 验证认证、REST 和实际 MCP Client。`pnpm eval:retrieval` 的合成 fixture 只负责无 secrets 的规则回归。可信 `Retrieval Quality` workflow 严格要求已有合法 active generation 和 `RETRIEVAL_BENCHMARK_B64`：它恢复 production catalog/README corpus 与 vector baseline，使用当前候选代码重新执行 `vector_pipeline.js` 生成 candidate vectors，然后运行唯一的 private human-labeled quality gate。private fixture 必须覆盖 exact identity、personal note、README-only、multi-facet、multilingual、negative、community 等 query classes，并配置 class-level thresholds。scheduled data build 在切换 `active-generation.json` 前运行同一 private candidate gate，任何失败都会阻止 activation。
 
 发布前在自己的目标环境完成：
 
@@ -263,9 +281,13 @@ pnpm exec wrangler deploy --dry-run --outdir dist
 
 ## 排查问题
 
+<!-- prettier-ignore -->
 | 现象                        | 检查与处理                                                                 |
 | --------------------------- | -------------------------------------------------------------------------- |
-| `401 unauthorized`          | 检查 Bearer 请求头与 Worker 的 `MCP_API_KEY`                               |
+| `401 unauthorized`          | 检查 Bearer 请求头与 Worker 的读取 / 写入密钥                                 |
+| `403 write_forbidden`       | capture / star / ingest 使用了读取密钥；必须改用 `MCP_WRITE_API_KEY`         |
+| `429 rate_limited`          | 当前 Cloudflare location 的该认证 key 已用完对应保护预算；稍后重试             |
+| `503 rate_limiter_unavailable` | 已配置限流 binding 但平台调用异常；检查 Wrangler binding/Cloudflare 状态     |
 | `server_misconfigured`      | 本地检查 `.dev.vars`，线上检查 Worker secrets                              |
 | 没有收藏                    | 检查 `GH_TOKEN` 是否属于你的账号，公开 Stars 是否为空                      |
 | 分类构建失败                | 检查 GraphQL 权限、限流和错误日志，修复后重跑                              |
@@ -277,4 +299,4 @@ pnpm exec wrangler deploy --dry-run --outdir dist
 | 收录成功但 GitHub 没点 Star | 检查 `starred_on_github`、令牌写权限与限流                                 |
 | 资产或日志损坏              | 保留原始对象，修复失败记录或从完整备份恢复；构建停止覆盖持久状态           |
 
-R2 是运行数据的持久存储，代码仓库不能恢复个人备注和发现历史。项目没有自动备份与整桶事务回滚；需要恢复能力时，独立备份数据集及 `state/` 原始日志。
+R2 是运行数据的持久存储，代码仓库不能恢复个人备注和发现历史。raw ingest/probe state 与内容寻址 README blobs 作为 source truth 持久保留；派生 generations 只保留最近 30 个 ready snapshots，rollback 的定义就是回到这个 retained window 内的已校验 generation。`pnpm data:rollback -- --to <generation-id>` 在切换 pointer 前会重新下载并校验 generation manifest 中每个文件的 bytes/SHA-256、vector index/bin/manifest、README manifest identity 以及所有 content-addressed README blob hashes；任一不一致都拒绝回滚。重要部署仍应独立备份 R2。

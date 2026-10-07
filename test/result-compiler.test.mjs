@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 // Result-compiler tests: source/badge derivation, info fallback order, category and
-// min_score filtering, the relevance-then-RRF ordering, and the community cap.
+// min_score filtering and the corroborated-relevance-then-RRF ordering.
 //
 // These behaviours previously lived inline in src/index.js, which imports `agents/mcp`
 // and cannot be loaded by plain Node — so nothing in the suite could fail when the sort
-// key was inverted, relevance_score was zeroed, or the cap shifted by one. Every
+// key was inverted or relevance_score was zeroed. Every
 // expected value below is a LITERAL for the same reason the ranking tests use literals:
 // deriving them from the implementation would make the assertions unable to fail.
 import { test } from 'node:test'
@@ -20,8 +20,22 @@ function compile({
   targetSource,
   minScore = 0,
   limit = 20,
+  explain = false,
+  catalogSnapshotAt = null,
+  rankingSnapshotAt = null,
 } = {}) {
-  return compileResults({ rrfMap, repos, communityMap, targetCategory, targetSource, minScore, limit })
+  return compileResults({
+    rrfMap,
+    repos,
+    communityMap,
+    targetCategory,
+    targetSource,
+    minScore,
+    limit,
+    explain,
+    catalogSnapshotAt,
+    rankingSnapshotAt,
+  })
 }
 
 // A vector-channel entry: source 'starred' is the default fuseRankings stamps on every
@@ -139,30 +153,81 @@ test('a repository with no record anywhere falls back to the github url and empt
     reason: undefined,
     summary: undefined,
     description: undefined,
-    relevance_score: 0,
-    vector_similarity: undefined,
+    ranking: { score: 0 },
   })
 })
 
-test('the results carry exactly the eleven documented fields', () => {
+test('results expose ranking separately from factual fields and explain adds provenance', () => {
   const results = compile({
     rrfMap: new Map([['a/b', vectorEntry({ vScore: 0.87654 })]]),
+    repos: {
+      'a/b': {
+        repo: 'a/b',
+        stars: 7,
+        description: 'external description',
+        reason: 'my research note',
+        categories: ['research'],
+        fieldOrigins: {
+          reason: { source: 'catalog', snapshotAt: '2026-10-05T00:00:00Z', trust: 'user_trusted' },
+          categories: { source: 'github_lists', snapshotAt: '2026-10-05T00:00:00Z', trust: 'user_trusted' },
+        },
+      },
+    },
+    explain: true,
+    catalogSnapshotAt: '2026-10-05T00:00:00Z',
   })
 
-  assert.deepEqual(Object.keys(results[0]).sort(), [
-    'categories',
-    'description',
-    'reason',
-    'relevance_score',
-    'repo',
-    'source',
-    'source_badge',
-    'stars',
-    'summary',
-    'url',
-    'vector_similarity',
-  ])
-  assert.equal(results[0].vector_similarity, 0.8765)
+  const result = results[0]
+  assert.equal(result.ranking.score, 0.846)
+  assert.equal(result.ranking.vector_similarity, 0.8765)
+  assert.ok(result.provenance.description)
+  assert.ok(result.provenance.reason)
+  assert.ok(result.provenance.categories)
+  assert.deepEqual(
+    result.evidence.map(item => item.kind).sort(),
+    ['personal_note', 'repository_description', 'repository_metadata', 'user_taxonomy'],
+  )
+  assert.equal(result.evidence.find(item => item.kind === 'personal_note').trust, 'user_trusted')
+  assert.equal(result.evidence.find(item => item.kind === 'repository_metadata').trust, 'external_structured')
+  assert.equal(result.evidence.find(item => item.kind === 'repository_description').trust, 'external_untrusted')
+})
+
+test('field origins drive personal-note source and unknown prose is never promoted to user_trusted', () => {
+  const results = compile({
+    rrfMap: new Map([['a/b', vectorEntry({ kwWeight: 10 })]]),
+    repos: {
+      'a/b': {
+        repo: 'a/b',
+        reason: 'ingest reason',
+        summary: 'catalog summary',
+        fieldOrigins: {
+          reason: { source: 'ingest_journal', snapshotAt: '2026-10-05T01:00:00Z', trust: 'user_trusted' },
+          summary: { source: 'catalog', snapshotAt: '2026-10-05T00:00:00Z', trust: 'user_trusted' },
+        },
+      },
+    },
+    explain: true,
+    catalogSnapshotAt: '2026-10-05T00:00:00Z',
+  })
+
+  const result = results[0]
+  const reason = result.evidence.find(item => item.id === result.provenance.reason)
+  const summary = result.evidence.find(item => item.id === result.provenance.summary)
+  assert.equal(reason.source.kind, 'ingest_journal')
+  assert.equal(reason.source.snapshot_at, '2026-10-05T01:00:00Z')
+  assert.equal(summary.source.kind, 'catalog')
+  assert.equal(result.trust.reason, 'user_trusted')
+  assert.equal(result.trust.summary, 'user_trusted')
+
+  const [community] = compile({
+    rrfMap: new Map([['x/y', vectorEntry({ source: 'ranking', kwWeight: 10, extraItem: { summary: 'public feed summary' } })]]),
+    explain: true,
+    rankingSnapshotAt: '2026-10-05T02:00:00Z',
+  })
+  const externalSummary = community.evidence.find(item => item.id === community.provenance.summary)
+  assert.equal(externalSummary.kind, 'community_text')
+  assert.equal(externalSummary.trust, 'external_untrusted')
+  assert.equal(community.trust.summary, 'external_untrusted')
 })
 
 test('targetCategory matches the record categories case-insensitively', () => {
@@ -307,7 +372,7 @@ test('every source a result can carry is registered, so a caller can ask for it'
 })
 
 test('a relevance exactly at min_score is kept, anything below is dropped', () => {
-  // kwWeight 8 -> keywordRelevanceScore = min(1 - 1/(1+1), 0.95) = 0.5.
+  // kwWeight 8 -> keywordRelevanceScore = 8 / (8 + 8) = 0.5.
   const rrfMap = new Map([
     ['a/edge', vectorEntry({ source: 'ranking', kwWeight: 8 })],
     ['a/low', vectorEntry({ source: 'ranking', kwWeight: 1 })],
@@ -315,24 +380,24 @@ test('a relevance exactly at min_score is kept, anything below is dropped', () =
 
   const kept = compile({ rrfMap, minScore: 0.5 })
   assert.deepEqual(kept.map(r => r.repo), ['a/edge'])
-  assert.equal(kept[0].relevance_score, 0.5)
+  assert.equal(kept[0].ranking.score, 0.5)
 
   assert.deepEqual(compile({ rrfMap, minScore: 0.5001 }), [])
 })
 
-test('relevance_score is the primary sort key, ahead of the RRF fusion score', () => {
+test('corroborated relevance is the primary sort key ahead of RRF', () => {
   const results = compile({
     rrfMap: new Map([
-      ['a/faint', vectorEntry({ rrf: 9, kwWeight: 4 })],
-      ['a/strong', vectorEntry({ rrf: 0.01, kwWeight: 40, source: 'ranking' })],
+      ['a/faint', vectorEntry({ rrf: 0.2, kwWeight: 4 })],
+      ['a/strong', vectorEntry({ rrf: 0.1, kwWeight: 40, source: 'ranking' })],
     ]),
   })
 
   assert.deepEqual(results.map(r => r.repo), ['a/strong', 'a/faint'])
-  assert.ok(results[0].relevance_score > results[1].relevance_score)
+  assert.ok(results[0].ranking.score > results[1].ranking.score)
 })
 
-test('equal relevance is broken by the larger RRF score', () => {
+test('equal corroborated relevance is broken by larger RRF', () => {
   const results = compile({
     rrfMap: new Map([
       ['a/first', vectorEntry({ rrf: 0.1, source: 'ranking', kwWeight: 8 })],
@@ -345,40 +410,35 @@ test('equal relevance is broken by the larger RRF score', () => {
   assert.ok(results.every(r => !('_rrf' in r)), 'the internal fusion score must not leak into the output')
 })
 
-test('starred results are never dropped by the community cap', () => {
-  const rrfMap = new Map()
-  for (let i = 1; i <= 6; i++)
-    rrfMap.set(`n/community-${i}`, vectorEntry({ rrf: i / 100, source: 'ranking', kwWeight: 40 - i }))
-  rrfMap.set('me/late-starred-a', vectorEntry({ rrf: 0.001, kwWeight: 4 }))
-  rrfMap.set('me/late-starred-b', vectorEntry({ rrf: 0.002, kwWeight: 4 }))
-
-  const repos = { 'me/late-starred-a': {}, 'me/late-starred-b': {} }
-  const results = compile({ rrfMap, repos, limit: 10 })
-
-  // ceil(10 * 0.4) = 4 non-starred admitted, in ranked order, then both starred hits —
-  // which rank last here and would otherwise be truncated away.
-  assert.deepEqual(results.map(r => r.repo), [
-    'n/community-1',
-    'n/community-2',
-    'n/community-3',
-    'n/community-4',
-    'me/late-starred-b',
-    'me/late-starred-a',
+test('result limit truncates only after corroborated relevance ordering', () => {
+  const rrfMap = new Map([
+    ['n/one', vectorEntry({ rrf: 0.1, source: 'ranking', kwWeight: 40 })],
+    ['n/two', vectorEntry({ rrf: 0.2, source: 'ranking', kwWeight: 30 })],
+    ['n/three', vectorEntry({ rrf: 0.3, source: 'ranking', kwWeight: 20 })],
   ])
+
+  const results = compile({ rrfMap, limit: 2 })
+  assert.deepEqual(results.map(result => result.repo), ['n/one', 'n/two'])
 })
 
-test('non-starred results are truncated to ceil(limit * 0.4) without reordering', () => {
-  const rrfMap = new Map([
-    ['s/starred', vectorEntry({ rrf: 0.001, kwWeight: 40 })],
-    ['n/one', vectorEntry({ rrf: 0.5, source: 'ranking', kwWeight: 30 })],
-    ['n/two', vectorEntry({ rrf: 0.4, source: 'ranking', kwWeight: 20 })],
-    ['n/three', vectorEntry({ rrf: 0.3, source: 'ranking', kwWeight: 10 })],
-  ])
+test('corroborating source channels are exposed without changing the primary source', () => {
+  const stats = vectorEntry({ source: 'trending', kwWeight: 20 })
+  stats.sourceChannels = ['trending', 'hellogithub', 'breakout']
+  const [result] = compile({
+    rrfMap: new Map([['acme/tool', stats]]),
+  })
 
-  const results = compile({ rrfMap, repos: { 's/starred': {} }, limit: 5 })
+  assert.equal(result.source, 'trending')
+  assert.deepEqual(result.source_channels, ['trending', 'hellogithub', 'breakout'])
+})
 
-  // ceil(5 * 0.4) = 2 non-starred kept, and the starred hit is prepended in its own
-  // ranked position rather than moved.
-  assert.deepEqual(results.map(r => r.repo), ['s/starred', 'n/one', 'n/two'])
-  assert.equal(results.filter(r => r.source !== 'starred').length, 2)
+test('source filtering matches corroborating channels without rewriting the primary source', () => {
+  const stats = vectorEntry({ source: 'trending', kwWeight: 20 })
+  stats.sourceChannels = ['trending', 'hellogithub']
+  const rrfMap = new Map([['acme/tool', stats]])
+
+  const [result] = compile({ rrfMap, targetSource: 'hellogithub' })
+  assert.equal(result.repo, 'acme/tool')
+  assert.equal(result.source, 'trending')
+  assert.deepEqual(result.source_channels, ['trending', 'hellogithub'])
 })
