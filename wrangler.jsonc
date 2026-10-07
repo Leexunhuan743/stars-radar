@@ -12,6 +12,22 @@
       "bucket_name": "github-stars"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SEARCH_DO",
+        "class_name": "StarsRadarSearch"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "StarsRadarSearch"
+      ]
+    }
+  ],
   "ratelimits": [
     {
       "name": "EXPENSIVE_RATE_LIMITER",

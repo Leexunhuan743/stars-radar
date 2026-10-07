@@ -19,7 +19,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 // Cloudflare bindings are declared in wrangler.jsonc and injected by the platform, so
 // they are not environment variables and must not appear in .env.example.
-const RUNTIME_BINDINGS = new Set(['EXPENSIVE_RATE_LIMITER', 'R2', 'WRITE_RATE_LIMITER'])
+const RUNTIME_BINDINGS = new Set(['EXPENSIVE_RATE_LIMITER', 'R2', 'SEARCH_DO', 'WRITE_RATE_LIMITER'])
 
 // Consumed by the CI workflow through the `aws s3` CLI, not by any code in the repo.
 const CI_TOOLING_ONLY = new Set(['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'])
@@ -118,11 +118,20 @@ test('every excluded configuration name really belongs to its exclusion category
   const wranglerText = fs.readFileSync(path.join(ROOT, 'wrangler.jsonc'), 'utf-8')
   const wrangler = JSON.parse(wranglerText)
   const rateLimitBindings = new Set((wrangler.ratelimits || []).map(binding => binding.name))
+  const durableObjectBindings = new Set((wrangler.durable_objects?.bindings || []).map(binding => binding.name))
   for (const name of RUNTIME_BINDINGS) {
-    if (name === 'R2')
+    if (name === 'R2') {
       assert.match(wranglerText, new RegExp(`"binding"\\s*:\\s*"${name}"`), `${name} must be declared as an R2 Worker binding`)
-    else
+    }
+    else if (durableObjectBindings.has(name)) {
+      assert.ok(
+        (wrangler.migrations || []).some(migration => (migration.new_sqlite_classes || []).length > 0),
+        `${name} is a Durable Object binding, so wrangler.jsonc must declare its class migration`,
+      )
+    }
+    else {
       assert.ok(rateLimitBindings.has(name), `${name} must be declared as a rate-limit Worker binding`)
+    }
   }
 
   const secrets = readWorkflowSecrets()

@@ -44,7 +44,6 @@ import { findReadmeEvidence, README_EVIDENCE_MAX_RESULTS } from './readme-eviden
 import { compareRepositories, getRepositoryDetails, RepositoryRequestError } from './repository-details.js'
 import { RESULT_SOURCES } from './result-compiler.js'
 import { retryUntilAcceptable } from './retry.js'
-import { searchDocuments } from './search-engine.js'
 import { DEFAULT_INGEST_CATEGORIES, INPUT_LIMITS, TOOL_DEFINITIONS } from './tool-schemas.js'
 import { resolveToolset, ToolsetConfigError, toolsetStatus } from './toolsets.js'
 import { VERSION } from './version.js'
@@ -174,6 +173,12 @@ function enrichCategoriesWithTopRepos(catalog) {
     }
   })
 }
+
+// The Durable Object class has to be exported from the Worker entry point: wrangler binds it by
+// name out of this module, and a class that is only reachable through an import is not part of the
+// script's exports. workerd reports this as "no such Durable Object class is exported from the
+// worker" and every call fails at runtime.
+export { StarsRadarSearch } from './search-do.js'
 
 export default {
   fetch: async (req, env, ctx) => {
@@ -1083,21 +1088,29 @@ async function attachReadmeEvidence(env, results, query) {
 }
 
 async function performHybridSearch(env, query, options = {}) {
-  const [catalog, rankings, assetIndex, harvested] = await Promise.all([
-    getCatalog(env),
-    getRankings(env),
-    getAssetIndex(env),
-    getHarvested(env),
-  ])
-  let vectors = { values: null, norms: null, records: null }
+  // The ranking work runs inside a Durable Object: a synchronous scan of the 9,999-record vector
+  // index plus a lexical pass over every README chunk costs ~105 ms of CPU, and an HTTP-triggered
+  // Worker on the Workers Free plan is capped at 10 ms per request, which was failing roughly half
+  // of all searches with `Worker exceeded CPU limit`. The object runs the same engine with a 30 s
+  // ceiling and keeps the documents resident across queries.
+  //
+  // Only the query embedding is computed here: it is a network call (no CPU charge) and the Worker
+  // already owns the SiliconFlow credential path. Whether a semantic pass is possible at all is
+  // decided inside the object, which has the vector index resident — asking the Worker to load it
+  // would pull 39 MB through this isolate purely to read a record count.
+  const stub = env.SEARCH_DO.get(env.SEARCH_DO.idFromName('primary'))
   let queryVector = null
-  if (options.scope !== 'rankings') {
-    const loaded = await getVectors(env)
-    vectors = { values: loaded.vectors, norms: loaded.norms, records: loaded.records }
-    if (vectors.values && vectors.records?.length > 0 && !hasHardRequirements(query, defaultIntents))
+  if (options.scope !== 'rankings' && !hasHardRequirements(query, defaultIntents)) {
+    const semanticAvailable = await stub.hasVectors()
+    if (semanticAvailable)
       queryVector = await getQueryEmbedding(query, env)
   }
-  const results = searchDocuments({ catalog, rankings, assetIndex, harvested, vectors, queryVector, intents: defaultIntents }, query, options)
+
+  const results = await stub.search(
+    query,
+    options,
+    queryVector ? Array.from(queryVector) : null,
+  )
   return options.explain ? attachReadmeEvidence(env, results, query) : results
 }
 
