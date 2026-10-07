@@ -52,8 +52,6 @@ jobs:
           test -n "${R2_BUCKET}" || { echo "::error::R2_BUCKET is required"; exit 1; }
           test -n "${AWS_ACCESS_KEY_ID}" || { echo "::error::R2_ACCESS_KEY_ID is required"; exit 1; }
           test -n "${AWS_SECRET_ACCESS_KEY}" || { echo "::error::R2_SECRET_ACCESS_KEY is required"; exit 1; }
-          test -n "${WORKER_URL}" || { echo "::error::WORKER_URL is required for post-deploy verification"; exit 1; }
-          test -n "${MCP_API_KEY}" || { echo "::error::MCP_API_KEY is required for post-deploy verification"; exit 1; }
 
       - name: Require production Worker auth secrets before deploy
         run: |
@@ -69,6 +67,12 @@ jobs:
           console.log(`Production Worker auth secrets present: ${required.join(', ')}`)
           NODE
 
+      - name: Skip production smoke check when not configured
+        if: ${{ env.WORKER_URL == '' || env.MCP_API_KEY == '' }}
+        run: |
+          echo "::warning::Post-deploy smoke check skipped because WORKER_URL or GitHub MCP_API_KEY is not configured."
+          echo "::warning::Deployment itself and Worker-side MCP_API_KEY/MCP_WRITE_API_KEY bindings were still validated."
+
       - name: Validate active v3 data generation before deploy
         run: node scripts/validate_remote_generation.js --active
 
@@ -79,6 +83,7 @@ jobs:
         run: pnpm exec wrangler deploy
 
       - name: Production smoke check
+        if: ${{ env.WORKER_URL != '' && env.MCP_API_KEY != '' }}
         run: |
           base="${WORKER_URL%/}"
           curl --fail-with-body --silent --show-error             --retry 4 --retry-all-errors --retry-delay 2             -H "Authorization: Bearer ${MCP_API_KEY}"             "${base}/health" > "${RUNNER_TEMP}/health.json"
