@@ -99,4 +99,3 @@ jobs:
         run: |
           echo "::warning::Post-deploy smoke check skipped because WORKER_URL or GitHub MCP_API_KEY is not configured."
           echo "::warning::Deployment itself and Worker-side MCP_API_KEY/MCP_WRITE_API_KEY bindings were still validated."
-
