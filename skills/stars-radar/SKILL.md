@@ -17,8 +17,9 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
 
 - **MCP 端点**：`https://stars.example.com/mcp` 是**你自己部署**的 Worker 地址，请替换为你自己的自定义域名或 `<worker-name>.<subdomain>.workers.dev`。读取请求使用 `Authorization: Bearer <YOUR_MCP_API_KEY>`；若部署者配置了独立 `MCP_WRITE_API_KEY`，则 capture / star / ingest 必须使用写密钥，读密钥不能执行副作用。`WORKER_URL` 刻意不提供默认值：`search_stars_cli.py` 与 `audit_cf_deployment.py` 在它未设置时会直接以配置错误退出，避免缺失的值把密钥发往第三方主机。
 - **本地代码库与工具路径**：
-  - 本地搜索与收割 CLI：`scripts/search_stars_cli.py`
-  - 线上部署验收与巡检脚本：`scripts/audit_cf_deployment.py`
+  - 本地搜索 CLI（随本 skill 分发，Python 标准库即可运行）：`skills/stars-radar/scripts/search_stars_cli.py`
+  - 线上部署验收与巡检脚本（随本 skill 分发）：`skills/stars-radar/scripts/audit_cf_deployment.py`
+  - 定向收割（依赖 `src/`，留在仓库根）：`scripts/harvest_and_ingest.js`
   - 部署、架构与接口文档：`docs/DEVELOPMENT.md`
   - 核心工作区与索引：`catalog.json`、`embeddings.bin`、`embeddings-index.json`
   - 社区榜单快照：`rankings/rankings.json`
@@ -71,7 +72,7 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
 3. **全网开集主动探测（Level 3 全域探针，发现收藏库以外的项目）**：
    - **全网探新库**：当私藏库没有、或用户需要全网技术选型时，**直接驱动 `search_github_live`** 搜索 GitHub 公共仓库，支持 `min_stars` 降噪与自动 Fork 过滤，并自动碰撞个人私藏标记 `⭐ Starred` 与全网发现标记 `🌐 Global Discovery`；
    - **搜源码实现**：探查内部 API、报错或具体语法写法，驱动 `search_github_code`；
-   - **搜技术文档**：查官网、报错讨论与深度长文，驱动 `search_web_tech`。
+   - **搜技术文档**：查官网、报错讨论与深度长文，驱动 `search_web_tech`；用 `intensity` 控制搜索强度——日常查文档用默认的 `low`（依次回退，最快最省额度）；怀疑单一来源覆盖不全时用 `medium`（并行赛跑，延迟与 low 相当）；需要交叉验证或要最全结果时用 `high`（全部并行并按 URL 去重合并，返回的每条结果带 `sources` 说明哪些来源都命中了它）。
 
 4. **一键 Star 并入库沉淀（Ingest Loop 闭环）**：
    - 仅在用户**明确确认收录**时调用 `star_and_ingest_repo`（`repo: "owner/repo"`）；
@@ -81,14 +82,14 @@ This skill equips agents and users to navigate the tri-level retrieval and harve
 
 在无 MCP 连接的本地终端环境中，需先配置自有部署地址与读取密钥（`export WORKER_URL="https://stars.example.com"`、`export MCP_API_KEY="..."`）。执行 capture / star 等写操作时还必须设置不同的 `MCP_WRITE_API_KEY`。
 
-- 搜私藏与全网：`python scripts/search_stars_cli.py "<query>"`
-- 全网搜仓库：`python scripts/search_stars_cli.py --live "<query>" --limit 5`
-- **显式沉淀一个已选择的发现**：`python scripts/search_stars_cli.py "<query>" --capture "owner/repo"`。先用 `--live` 找候选，再由用户明确选择一个仓库写入；服务端会重新校验 GitHub 元数据。
-- 全网搜代码：`python scripts/search_stars_cli.py --code "<code_query>" --language <lang>`
-- 全网搜文档：`python scripts/search_stars_cli.py --web "<tech_query>"`
-- 一键点星入库：`python scripts/search_stars_cli.py --star "owner/repo" --reason "<curator_note>"`
-- 定向时间段收割：`python scripts/search_stars_cli.py --harvest --source [skills|breakout|all] --days <N> --limit <N>`
-- 自有部署端点自动化巡检：`python scripts/audit_cf_deployment.py`
+- 搜私藏与全网：`python skills/stars-radar/scripts/search_stars_cli.py "<query>"`
+- 全网搜仓库：`python skills/stars-radar/scripts/search_stars_cli.py --live "<query>" --limit 5`
+- **显式沉淀一个已选择的发现**：`python skills/stars-radar/scripts/search_stars_cli.py "<query>" --capture "owner/repo"`。先用 `--live` 找候选，再由用户明确选择一个仓库写入；服务端会重新校验 GitHub 元数据。
+- 全网搜代码：`python skills/stars-radar/scripts/search_stars_cli.py --code "<code_query>" --language <lang>`
+- 全网搜文档：`python skills/stars-radar/scripts/search_stars_cli.py --web "<tech_query>"`
+- 一键点星入库：`python skills/stars-radar/scripts/search_stars_cli.py --star "owner/repo" --reason "<curator_note>"`
+- 定向时间段收割：`python skills/stars-radar/scripts/search_stars_cli.py --harvest --source [skills|breakout|all] --days <N> --limit <N>`
+- 自有部署端点自动化巡检：`python skills/stars-radar/scripts/audit_cf_deployment.py`
 
 ## 汇报
 

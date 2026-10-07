@@ -117,7 +117,7 @@ PowerShell:
 ```powershell
 $env:WORKER_URL = "https://stars.example.com"
 $env:MCP_API_KEY = "YOUR_MCP_API_KEY"
-python scripts/search_stars_cli.py "Markdown notes" --scope starred
+python skills/stars-radar/scripts/search_stars_cli.py "Markdown notes" --scope starred
 ```
 
 Bash / zsh:
@@ -125,15 +125,15 @@ Bash / zsh:
 ```sh
 export WORKER_URL="https://stars.example.com"
 export MCP_API_KEY="YOUR_MCP_API_KEY"
-python scripts/search_stars_cli.py "Markdown notes" --scope starred
+python skills/stars-radar/scripts/search_stars_cli.py "Markdown notes" --scope starred
 ```
 
 ```sh
-python scripts/search_stars_cli.py --live "markdown notes" --min-stars 50
-python scripts/search_stars_cli.py --trending overall_weekly
+python skills/stars-radar/scripts/search_stars_cli.py --live "markdown notes" --min-stars 50
+python skills/stars-radar/scripts/search_stars_cli.py --trending overall_weekly
 # Writes a GitHub star and a radar ingest record:
-python scripts/search_stars_cli.py --star owner/repo --reason "For my personal knowledge base"
-python scripts/search_stars_cli.py --help
+python skills/stars-radar/scripts/search_stars_cli.py --star owner/repo --reason "For my personal knowledge base"
+python skills/stars-radar/scripts/search_stars_cli.py --help
 ```
 
 ## Things to know

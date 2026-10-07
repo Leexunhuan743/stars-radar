@@ -477,6 +477,7 @@ async function handleRequest(req, env, ctx) {
       const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: INPUT_LIMITS.query })
       const domain = optionalString(url.searchParams.get('domain'), { parameter: 'domain', maxLength: INPUT_LIMITS.domain })
       const freshness = enumParam(url.searchParams.get('freshness'), { parameter: 'freshness', allowed: ['all', 'day', 'week', 'month', 'year'], fallback: 'all' })
+      const intensity = enumParam(url.searchParams.get('intensity'), { parameter: 'intensity', allowed: ['low', 'medium', 'high'], fallback: 'low' })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 5, min: 1, max: 10 })
       const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
       if (limited)
@@ -485,6 +486,7 @@ async function handleRequest(req, env, ctx) {
         query: q,
         domain,
         freshness,
+        intensity,
         limit,
       })
       return okResponse(result, { pretty: true })
@@ -736,12 +738,12 @@ async function handleRequest(req, env, ctx) {
     registerTool(
       TOOL_DEFINITIONS.search_web_tech.name,
       { description: TOOL_DEFINITIONS.search_web_tech.description, inputSchema: TOOL_DEFINITIONS.search_web_tech.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_web_tech.readOnly } },
-      async ({ query, domain, freshness = 'all', limit = 5 }) => {
+      async ({ query, domain, freshness = 'all', intensity = 'low', limit = 5 }) => {
         try {
           const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
           if (limited)
             return limited
-          const result = await searchWebTech(env, { query, domain, freshness, limit })
+          const result = await searchWebTech(env, { query, domain, freshness, intensity, limit })
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           }

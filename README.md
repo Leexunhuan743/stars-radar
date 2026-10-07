@@ -162,7 +162,7 @@ PowerShell：
 ```powershell
 $env:WORKER_URL = "https://stars.example.com"
 $env:MCP_API_KEY = "YOUR_MCP_API_KEY"
-python scripts/search_stars_cli.py "Markdown 笔记工具" --scope starred
+python skills/stars-radar/scripts/search_stars_cli.py "Markdown 笔记工具" --scope starred
 ```
 
 Bash / zsh：
@@ -172,26 +172,26 @@ export WORKER_URL="https://stars.example.com"
 export MCP_API_KEY="YOUR_MCP_API_KEY"
 # 仅需要写操作时：
 export MCP_WRITE_API_KEY="YOUR_MCP_WRITE_API_KEY"
-python scripts/search_stars_cli.py "Markdown 笔记工具" --scope starred
+python skills/stars-radar/scripts/search_stars_cli.py "Markdown 笔记工具" --scope starred
 ```
 
 常用命令：
 
 ```sh
 # 搜索收藏与社区候选
-python scripts/search_stars_cli.py "rust terminal music player"
+python skills/stars-radar/scripts/search_stars_cli.py "rust terminal music player"
 
 # 实时搜索 GitHub
-python scripts/search_stars_cli.py --live "markdown notes" --min-stars 50
+python skills/stars-radar/scripts/search_stars_cli.py --live "markdown notes" --min-stars 50
 
 # 浏览每周榜单
-python scripts/search_stars_cli.py --trending overall_weekly
+python skills/stars-radar/scripts/search_stars_cli.py --trending overall_weekly
 
 # 收藏项目并记录理由（会写入 GitHub 和服务）
-python scripts/search_stars_cli.py --star owner/repo --reason "用于个人知识库"
+python skills/stars-radar/scripts/search_stars_cli.py --star owner/repo --reason "用于个人知识库"
 
 # 查看完整参数
-python scripts/search_stars_cli.py --help
+python skills/stars-radar/scripts/search_stars_cli.py --help
 ```
 
 ## 常见问题

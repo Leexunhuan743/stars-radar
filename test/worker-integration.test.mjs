@@ -22,7 +22,7 @@ test('the actual Worker serves authenticated research routes and registers usabl
     main: path.join(root, 'src', 'index.js'),
     compatibility_date: '2025-04-08',
     compatibility_flags: ['nodejs_compat'],
-    vars: { MCP_API_KEY: key, MCP_WRITE_API_KEY: writeKey, GITHUB_TOKEN: '', SILICONFLOW_KEY: '', BRAVE_SEARCH_API_KEY: '', TAVILY_API_KEY: '' },
+    vars: { MCP_API_KEY: key, MCP_WRITE_API_KEY: writeKey, GITHUB_TOKEN: '', SILICONFLOW_KEY: '', BRAVE_SEARCH_API_KEY: '', TAVILY_API_KEY: '', EXA_API_KEY: '', TAVILY_PROXY_KEY: '' },
     r2_buckets: [{ binding: 'R2', bucket_name: 'fixture-research-bucket' }],
     // The search runs inside a Durable Object, so the fixture has to expose the same binding the
     // deployed Worker declares; without it every search route would fail here for a reason that

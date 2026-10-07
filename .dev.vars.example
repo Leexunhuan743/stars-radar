@@ -6,6 +6,9 @@ MCP_WRITE_API_KEY=replace_with_a_different_random_write_key
 MCP_TOOLSET=research
 GITHUB_TOKEN=replace_with_your_github_token
 SILICONFLOW_KEY=replace_with_your_siliconflow_key
-# Configure at least one provider to enable search_web_tech:
+# Brave and Tavily need a key; Exa also serves a rate-limited keyless tier.
 BRAVE_SEARCH_API_KEY=
 TAVILY_API_KEY=
+EXA_API_KEY=
+# Optional Tavily-compatible proxy (Bearer header, { code, message, data } envelope).
+TAVILY_PROXY_KEY=

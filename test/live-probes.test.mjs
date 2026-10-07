@@ -236,38 +236,130 @@ test('a valid Brave response with a nullable web section is an empty search', as
   assert.equal(result.count, 0)
 })
 
-test('web search requires an explicitly configured provider and performs no keyless request', async () => {
-  let calls = 0
+test('web search falls back to the keyless Exa MCP tier when no provider is configured', async () => {
+  const urls = []
+  const result = await searchWebTech({}, { query: 'mcp docs' }, {
+    fetcher: async (url, options) => {
+      urls.push(String(url))
+      const body = JSON.parse(options.body)
+      if (body.method === 'initialize')
+        return new Response('data: {}\n\n', { status: 200, headers: { 'mcp-session-id': 'fixture-session' } })
+      if (body.method === 'notifications/initialized')
+        return new Response('', { status: 200 })
+      return new Response(
+        `data: ${JSON.stringify({ jsonrpc: '2.0', id: 2, result: { content: [{ type: 'text', text: 'Title: MCP spec\\nURL: https://modelcontextprotocol.io/spec\\n\\nBody text.' }] } })}\n\n`,
+        { status: 200 },
+      )
+    },
+  })
+  assert.equal(result.provider, 'exa_search')
+  assert.equal(result.freshness_applied, false)
+  assert.equal(result.results.length, 1)
+  assert.equal(result.results[0].url, 'https://modelcontextprotocol.io/spec')
+  assert.ok(urls.every(url => url === 'https://mcp.exa.ai/mcp'))
+})
+
+test('a rate-limited keyless Exa response fails instead of returning the quota notice as results', async () => {
   await assert.rejects(
     searchWebTech({}, { query: 'mcp docs' }, {
-      fetcher: async () => {
-        calls++
-        throw new Error('no outbound call expected')
+      fetcher: async (url, options) => {
+        const body = JSON.parse(options.body)
+        if (body.method === 'initialize')
+          return new Response('data: {}\n\n', { status: 200, headers: { 'mcp-session-id': 'fixture-session' } })
+        if (body.method === 'notifications/initialized')
+          return new Response('', { status: 200 })
+        return new Response(
+          `data: ${JSON.stringify({ jsonrpc: '2.0', id: 2, result: { content: [{ type: 'text', text: 'You have hit the Exa free MCP rate limit. Create your own Exa API key.' }] } })}\n\n`,
+          { status: 200 },
+        )
       },
     }),
     error => error.code === 'search_unavailable' && error.status === 503,
   )
-  assert.equal(calls, 0)
+})
+
+test('a configured Exa key uses the REST endpoint instead of the keyless tier', async () => {
+  let seen
+  const result = await searchWebTech({ EXA_API_KEY: 'fixture' }, { query: 'mcp docs', domain: 'modelcontextprotocol.io', freshness: 'week' }, {
+    fetcher: async (url, options) => {
+      seen = { url: String(url), body: JSON.parse(options.body), headers: options.headers }
+      return Response.json({
+        results: [{ title: 'MCP spec', url: 'https://modelcontextprotocol.io/spec', text: 'Body text.' }],
+      })
+    },
+  })
+  assert.equal(seen.url, 'https://api.exa.ai/search')
+  assert.equal(seen.headers['x-api-key'], 'fixture')
+  assert.deepEqual(seen.body.includeDomains, ['modelcontextprotocol.io'])
+  assert.ok(seen.body.startPublishedDate)
+  assert.equal(result.provider, 'exa_search')
+  assert.equal(result.freshness_applied, true)
+  assert.equal(result.results[0].snippet, 'Body text.')
 })
 
 test('exhausted configured web providers fail visibly without a hidden HTML fallback', async () => {
   const urls = []
+  const calls = []
   await assert.rejects(
     searchWebTech(
-      { BRAVE_SEARCH_API_KEY: 'fixture', TAVILY_API_KEY: 'fixture' },
+      { BRAVE_SEARCH_API_KEY: 'fixture', TAVILY_API_KEY: 'fixture', EXA_API_KEY: 'fixture', TAVILY_PROXY_KEY: 'fixture' },
       { query: 'mcp docs' },
       {
-        fetcher: async (url) => {
+        fetcher: async (url, options) => {
           urls.push(String(url))
+          calls.push(JSON.parse(options.body).method ?? 'rest')
           return new Response(null, { status: 503 })
         },
       },
     ),
     error => error.code === 'search_unavailable' && error.status === 503,
   )
-  assert.equal(urls.length, 2)
+  assert.equal(urls.length, 4)
   assert.ok(urls.some(url => url.includes('brave.com')))
-  assert.ok(urls.some(url => url.includes('tavily.com')))
+  assert.ok(urls.some(url => url.includes('api.tavily.com')))
+  assert.ok(urls.some(url => url.includes('api.exa.ai')))
+  assert.ok(urls.some(url => url.includes('tavily.sharyuke.com')))
+  assert.ok(!calls.includes('tools/call'))
+})
+
+test('the Tavily-compatible proxy is tried after Exa and unwraps its envelope', async () => {
+  let seen
+  const result = await searchWebTech({ TAVILY_PROXY_KEY: 'thb-fixture' }, { query: 'mcp docs', freshness: 'week' }, {
+    fetcher: async (url, options) => {
+      seen = { url: String(url), body: JSON.parse(options.body), headers: options.headers }
+      return Response.json({
+        code: 0,
+        message: 'success',
+        data: { ok: true, credits: 1, data: { results: [{ title: 'MCP spec', url: 'https://modelcontextprotocol.io/spec', content: 'Body text.' }] } },
+      })
+    },
+  })
+  assert.equal(seen.url, 'https://tavily.sharyuke.com/api/proxy/search')
+  assert.equal(seen.headers.Authorization, 'Bearer thb-fixture')
+  assert.equal(seen.body.time_range, 'week')
+  assert.equal(result.provider, 'tavily_proxy_search')
+  assert.equal(result.freshness_applied, true)
+  assert.equal(result.results[0].snippet, 'Body text.')
+})
+
+test('the Tavily-compatible proxy honors a configured endpoint override', async () => {
+  let url
+  await searchWebTech({ TAVILY_PROXY_KEY: 'thb-fixture', TAVILY_PROXY_URL: 'https://proxy.example/api/proxy/search' }, { query: 'mcp docs' }, {
+    fetcher: async (u) => {
+      url = String(u)
+      return Response.json({ code: 0, data: { data: { results: [] } } })
+    },
+  })
+  assert.equal(url, 'https://proxy.example/api/proxy/search')
+})
+
+test('an exhausted-credit proxy envelope fails instead of returning an empty result list', async () => {
+  await assert.rejects(
+    searchWebTech({ TAVILY_PROXY_KEY: 'thb-fixture' }, { query: 'mcp docs' }, {
+      fetcher: async () => Response.json({ code: 42901, message: 'Credit exhausted', data: null }),
+    }),
+    error => error.code === 'search_unavailable' && error.status === 503,
+  )
 })
 
 test('Tavily receives the requested time window instead of silently dropping freshness', async () => {
@@ -279,4 +371,79 @@ test('Tavily receives the requested time window instead of silently dropping fre
     },
   })
   assert.equal(result.freshness_applied, true)
+})
+
+test('low intensity walks providers in configuration order and stops at the first success', async () => {
+  const called = []
+  const result = await searchWebTech(
+    { BRAVE_SEARCH_API_KEY: 'fixture', TAVILY_API_KEY: 'fixture' },
+    { query: 'mcp docs', intensity: 'low' },
+    {
+      fetcher: async (url) => {
+        called.push(String(url))
+        if (String(url).includes('brave.com'))
+          return new Response(null, { status: 503 })
+        return Response.json({ results: [{ title: 'T', url: 'https://t.example', content: 'body' }] })
+      },
+    },
+  )
+  assert.equal(result.provider, 'tavily_search')
+  assert.ok(!called.some(url => url.includes('exa.ai')))
+})
+
+test('medium intensity races the leading providers and reports the one that answered', async () => {
+  const started = []
+  const result = await searchWebTech(
+    { BRAVE_SEARCH_API_KEY: 'fixture', TAVILY_API_KEY: 'fixture' },
+    { query: 'mcp docs', intensity: 'medium' },
+    {
+      fetcher: async (url) => {
+        started.push(String(url))
+        if (String(url).includes('brave.com'))
+          return new Response(null, { status: 503 })
+        return Response.json({ results: [{ title: 'T', url: 'https://t.example', content: 'body' }] })
+      },
+    },
+  )
+  assert.equal(result.provider, 'tavily_search')
+  // Both racers are launched before either settles, so the healthy provider does
+  // not wait for the dead one to time out.
+  assert.ok(started.some(url => url.includes('brave.com')))
+  assert.ok(started.some(url => url.includes('tavily.com')))
+})
+
+test('high intensity merges every provider and records each corroborating source', async () => {
+  const result = await searchWebTech(
+    { BRAVE_SEARCH_API_KEY: 'fixture', TAVILY_API_KEY: 'fixture' },
+    { query: 'mcp docs', intensity: 'high', limit: 5 },
+    {
+      fetcher: async (url) => {
+        if (String(url).includes('brave.com')) {
+          return Response.json({ web: { results: [
+            { title: 'Spec', url: 'https://shared.example/doc', description: 'brave snippet' },
+            { title: 'Only Brave', url: 'https://brave-only.example' },
+          ] } })
+        }
+        if (String(url).includes('api.tavily.com')) {
+          return Response.json({ results: [
+            { title: 'Spec', url: 'https://shared.example/doc', content: 'tavily snippet' },
+          ] })
+        }
+        // Exa keyless tier still participates and fails here.
+        return new Response(null, { status: 500 })
+      },
+    },
+  )
+  assert.equal(result.provider, 'merged')
+  assert.deepEqual(result.providers_used.sort(), ['brave_search', 'tavily_search'])
+  assert.equal(result.results.length, 2)
+  const shared = result.results.find(r => r.url === 'https://shared.example/doc')
+  assert.deepEqual(shared.sources.map(s => s.provider).sort(), ['brave_search', 'tavily_search'])
+})
+
+test('an unknown intensity falls back to the low sequence', async () => {
+  const result = await searchWebTech({ TAVILY_API_KEY: 'fixture' }, { query: 'mcp docs', intensity: 'turbo' }, {
+    fetcher: async () => Response.json({ results: [{ title: 'T', url: 'https://t.example', content: 'body' }] }),
+  })
+  assert.equal(result.provider, 'tavily_search')
 })

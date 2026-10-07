@@ -149,14 +149,15 @@ Run `pnpm eval:retrieval` for deterministic synthetic regressions. Trusted `Retr
 
 ### `search_web_tech`
 
-- **Description**: Searches technical documentation, framework changelogs, error discussions, and technical teardowns through configured Brave / Tavily APIs. API calls are timeout-bounded.
+- **Description**: Searches technical documentation, framework changelogs, error discussions, and technical teardowns through configured Brave, Tavily, Exa or Tavily-compatible proxy providers. Providers are tried in that order and each falls back on failure. API calls are timeout-bounded.
 - **Inputs**:
   - `query` (string, required, max 512 characters): Technical query.
-  - `domain` (string, optional): Target domain filter (e.g. `developers.cloudflare.com`).
+  - `domain` (string, optional): Target domain filter (e.g. `developers.cloudflare.com`). Only Brave, Tavily and keyed Exa honour it; the keyless Exa tier cannot.
   - `freshness` (enum: `day` | `week` | `month` | `year` | `all`, default: `all`).
+  - `intensity` (enum: `low` | `medium` | `high`, default: `low`): `low` walks every configured provider in order until one succeeds. `medium` races the two leading providers and takes whichever answers first, then falls back to the rest only if both fail. `high` queries every configured provider in parallel and merges results by URL, which is slowest but broadest.
   - `limit` (number, default: 5, max: 10).
-- **Output**: Object with `provider`, `query`, `count`, `results` and `freshness_applied`. Each result has `title`, `url`, and `snippet`. Provider responses report whether the requested freshness filter was actually applied.
-- **Failures**: No configured provider or exhausted configured providers produce MCP `isError` / REST 503. A valid empty API result list is successful. Repository and code probes also report upstream failures explicitly; GitHub rate-limit hints are returned as `retry_after_seconds` when known.
+- **Output**: Object with `provider`, `query`, `count`, `results` and `freshness_applied`. Each result has `title`, `url`, and `snippet`. Provider responses report whether the requested freshness filter was actually applied. `intensity: high` returns `provider: "merged"`, a `providers_used` list, and a `sources` array on each result recording every provider that returned that URL together with its rank.
+- **Failures**: Exhausted providers produce MCP `isError` / REST 503. A valid empty API result list is successful. Exa's keyless tier and the Tavily-compatible proxy both signal quota exhaustion with an HTTP 200 body carrying a non-zero status code and no error flag; the provider treats those as upstream failures rather than returning the notice as a search result. Repository and code probes also report upstream failures explicitly; GitHub rate-limit hints are returned as `retry_after_seconds` when known.
 
 ### `star_and_ingest_repo`
 

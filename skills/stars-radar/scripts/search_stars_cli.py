@@ -2,16 +2,16 @@
 """📡 Stars Radar CLI: Search your GitHub Stars and explore multi-source community intelligence.
 
 Usage:
-    python scripts/search_stars_cli.py <query> [--scope all|starred|rankings] [--category <cat>]
-    python scripts/search_stars_cli.py --live <query> [--language rust] [--min-stars 20]
-    python scripts/search_stars_cli.py --code "daily-cloudcode-pa" [--language js] [--repo owner/repo]
-    python scripts/search_stars_cli.py --web "Cloudflare Workers vector Float32Array"
-    python scripts/search_stars_cli.py "terminal mcp" --capture "owner/repo"
-    python scripts/search_stars_cli.py --star "owner/repo" [--reason "Curator note"]
-    python scripts/search_stars_cli.py --since 2026-08-28 [--until 2026-09-04] [--topic agent]
-    python scripts/search_stars_cli.py --harvest --source skills --days 30 [--limit 10]
-    python scripts/search_stars_cli.py --trending [overall_daily|overall_weekly|rust_weekly|...]
-    python scripts/search_stars_cli.py --skills [--limit 20]
+    python skills/stars-radar/scripts/search_stars_cli.py <query> [--scope all|starred|rankings] [--category <cat>]
+    python skills/stars-radar/scripts/search_stars_cli.py --live <query> [--language rust] [--min-stars 20]
+    python skills/stars-radar/scripts/search_stars_cli.py --code "daily-cloudcode-pa" [--language js] [--repo owner/repo]
+    python skills/stars-radar/scripts/search_stars_cli.py --web "Cloudflare Workers vector Float32Array"
+    python skills/stars-radar/scripts/search_stars_cli.py "terminal mcp" --capture "owner/repo"
+    python skills/stars-radar/scripts/search_stars_cli.py --star "owner/repo" [--reason "Curator note"]
+    python skills/stars-radar/scripts/search_stars_cli.py --since 2026-08-28 [--until 2026-09-04] [--topic agent]
+    python skills/stars-radar/scripts/search_stars_cli.py --harvest --source skills --days 30 [--limit 10]
+    python skills/stars-radar/scripts/search_stars_cli.py --trending [overall_daily|overall_weekly|rust_weekly|...]
+    python skills/stars-radar/scripts/search_stars_cli.py --skills [--limit 20]
 """
 
 import sys
@@ -41,7 +41,7 @@ def require_api_config():
         sys.exit(2)
     if not API_KEY:
         sys.stderr.write("[Stars Radar] ERROR: MCP_API_KEY environment variable is required.\n")
-        sys.stderr.write("  Set it before running, e.g. (PowerShell): $env:MCP_API_KEY=\"...\" ; python scripts/search_stars_cli.py ...\n")
+        sys.stderr.write("  Set it before running, e.g. (PowerShell): $env:MCP_API_KEY=\"...\" ; python skills/stars-radar/scripts/search_stars_cli.py ...\n")
         sys.exit(2)
 
 def require_write_config():
@@ -195,8 +195,8 @@ def show_code_search(query, repo=None, language=None, extension=None, path=None,
             print("    " + "\n    ".join(snippet.splitlines()[:12]))
         print()
 
-def show_web_search(query, domain=None, freshness="all", limit=5):
-    params = {"q": query, "limit": limit, "freshness": freshness}
+def show_web_search(query, domain=None, freshness="all", limit=5, intensity="low"):
+    params = {"q": query, "limit": limit, "freshness": freshness, "intensity": intensity}
     if domain:
         params["domain"] = domain
 
@@ -212,10 +212,16 @@ def show_web_search(query, domain=None, freshness="all", limit=5):
         print(f"ℹ️  Web Search: {msg}")
         return
 
-    print(f"\n🔍 Technical Web Search [{provider}] for: \"{query}\" ({len(results)} hits)\n" + "=" * 70)
+    used = data.get("providers_used")
+    label = f"{provider} via {', '.join(used)}" if used else provider
+    print(f"\n🔍 Technical Web Search [{label}] for: \"{query}\" ({len(results)} hits)\n" + "=" * 70)
     for i, r in enumerate(results, 1):
         print(f"[{i}] {r.get('title')}")
         print(f"    🔗 {r.get('url')}")
+        # Merged runs report every provider that returned this URL.
+        sources = r.get("sources")
+        if sources:
+            print(f"    📡 {', '.join(s.get('provider', '?') for s in sources)}")
         if r.get("snippet"):
             print(f"    📝 {r.get('snippet')[:140]}")
         print()
@@ -375,6 +381,9 @@ def main():
     parser.add_argument("--live", "-L", nargs="?", const="", help="Search live GitHub repositories globally beyond local stars")
     parser.add_argument("--code", "-C", help="Search real-world open-source code snippets and implementations on GitHub")
     parser.add_argument("--web", "-W", help="Search technical web documentation, blogs, and forums")
+    parser.add_argument("--intensity", choices=["low", "medium", "high"], default="low", help="Web search effort: low walks providers in order, medium races the top two, high merges every provider (default: low)")
+    parser.add_argument("--domain", help="Restrict web search to a domain (e.g. developers.cloudflare.com)")
+    parser.add_argument("--freshness", choices=["day", "week", "month", "year", "all"], default="all", help="Web search recency filter (default: all)")
     parser.add_argument("--capture", help="Explicitly persist one discovered repository; requires the originating positional query")
     parser.add_argument("--star", help="One-click star a repository on GitHub and stage it into Stars Radar")
     parser.add_argument("--reason", help="Optional curator note when starring a repo")
@@ -419,7 +428,10 @@ def main():
     if args.web:
         show_web_search(
             query=args.web,
-            limit=args.limit
+            domain=args.domain,
+            freshness=args.freshness,
+            limit=args.limit,
+            intensity=args.intensity
         )
         return 0
 
@@ -440,11 +452,17 @@ def main():
     if args.harvest:
         import subprocess
         since_val = f"{args.days}d" if args.days else (args.since or "14d")
-        # Resolve relative to THIS file so the command works from any working
-        # directory and never depends on the checkout's folder name.
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "harvest_and_ingest.js")
+        # The harvester is a Node script that lives at the repository root's `scripts/`, while
+        # this client ships inside `skills/stars-radar/scripts/`. It is resolved by walking up
+        # from this file to the checkout root rather than as a sibling, so the command keeps
+        # working from any working directory and does not depend on where the skill was copied.
+        here = os.path.dirname(os.path.abspath(__file__))
+        script_path = os.path.join(here, "harvest_and_ingest.js")
         if not os.path.exists(script_path):
-            sys.stderr.write(f"[Stars Radar] ERROR: cannot find {script_path}; run --harvest from a full checkout.\n")
+            candidate = os.path.join(here, os.pardir, os.pardir, os.pardir, "scripts", "harvest_and_ingest.js")
+            script_path = os.path.normpath(candidate)
+        if not os.path.exists(script_path):
+            sys.stderr.write(f"[Stars Radar] ERROR: cannot find harvest_and_ingest.js; run --harvest from a full checkout.\n")
             return 2
 
         cmd = [

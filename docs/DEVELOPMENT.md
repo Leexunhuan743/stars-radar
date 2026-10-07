@@ -37,7 +37,7 @@ flowchart LR
 | `scripts/github_stars.js`、`github-lists.js`        | GitHub 分页、README 下载与分类同步         |
 | `scripts/vector_pipeline.js`                        | 增量向量计算与本地文件输出                 |
 | `scripts/asset_store.js`                            | 合并持久状态，生成热集索引和日志快照       |
-| `scripts/search_stars_cli.py`                       | REST 命令行客户端                          |
+| `skills/stars-radar/scripts/search_stars_cli.py`    | REST 命令行客户端                          |
 | `test/`                                             | 独立造数的单元、契约与本地 Worker 集成测试 |
 | `skills/stars-radar/`                               | 可选的 AI Agent 使用指南                   |
 
@@ -73,7 +73,7 @@ pnpm install --frozen-lockfile
 | `R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` | Actions 的 S3 读写凭据                                  |
 | `CLOUDFLARE_API_TOKEN`                     | 可选 CI 部署；本地收割与向量恢复的 REST 操作也需要它    |
 | `WORKER_URL`                               | Python 客户端的服务根地址，不含 `/mcp`，没有内置地址    |
-| `BRAVE_SEARCH_API_KEY`、`TAVILY_API_KEY`   | 可选网页搜索提供商，配置到 Worker secrets               |
+| `BRAVE_SEARCH_API_KEY`、`TAVILY_API_KEY`、`EXA_API_KEY`、`TAVILY_PROXY_KEY` | 可选网页搜索提供商，配置到 Worker secrets。Exa 可缺省 |
 | `HTTP_PROXY`、`HTTPS_PROXY`                | 可选本地出站代理，Worker 不使用本地代理                 |
 
 `ASSET_STORE_ROOT` 和 `VECTOR_STORE_ROOT` 是测试隔离入口，不是生产部署配置。生成数据使用项目内相对路径，测试在临时目录中造数并自行清理。
@@ -157,7 +157,7 @@ pnpm dev:mcp
 ```powershell
 $env:WORKER_URL = "http://127.0.0.1:8787"
 $env:MCP_API_KEY = "与.dev.vars一致的密钥"
-python scripts/search_stars_cli.py "terminal music player"
+python skills/stars-radar/scripts/search_stars_cli.py "terminal music player"
 ```
 
 Bash / zsh 使用 `export WORKER_URL=...` 和 `export MCP_API_KEY=...`。
@@ -224,7 +224,7 @@ Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。`MCP_API_KEY` 与 `MCP
 
 收录结果分别报告 `starred_on_github` 与 `staged_in_radar`。GitHub 拒绝点 Star 时，真实仓库仍可能收录到 Radar，需要检查两个状态。服务没有取消收录或修改 GitHub Lists 的接口。
 
-网页搜索只使用显式配置的 Brave / Tavily API。未配置任何 provider，或所有已配置 provider 均失败时返回 `503 search_unavailable`；不再解析第三方搜索 HTML 页面。`freshness_applied` 表明日期过滤是否实际生效。GitHub 限流或不完整结果会在返回值中说明，不应解释成“没有项目”。
+网页搜索按 Brave → Tavily → Exa → Tavily 兼容代理的顺序尝试，每个 provider 失败后自动回退，全部失败时返回 `503 search_unavailable`；不解析第三方搜索 HTML 页面。`intensity` 决定搜索强度：`low`（默认）依次回退直到某家成功；`medium` 并行发起前两家、谁先成功用谁，都失败才继续回退剩下的；`high` 全部并行调用并按 URL 去重合并，返回 `provider: "merged"`、`providers_used` 以及每条结果的 `sources`（记录每个命中该 URL 的 provider 及其排名）。Brave 和 Tavily 必须显式配置密钥。Exa 没有密钥时降级到它的 keyless MCP 层：该层按频率限流，且无法限定域名和日期窗口。Exa keyless 与 Tavily 兼容代理都用 **HTTP 200 + 非零 code** 表达限流或额度耗尽，正文不是错误状态——这两处都必须把这类响应当成上游失败，否则会把额度提示当成搜索结果返回。`freshness_applied` 表明日期过滤是否实际生效。GitHub 限流或不完整结果会在返回值中说明，不应解释成“没有项目”。
 
 ## REST 接口
 
@@ -243,7 +243,7 @@ Streamable HTTP 入口为 `/mcp`，认证为 Bearer key。`MCP_API_KEY` 与 `MCP
 | `GET /api/live`       | 只读：`q`、`language`、`min_stars`、`sort`、`order`、`since`、`until`、`limit` |
 | `POST /api/capture`   | 写入：JSON `repo`、`query`；服务端重新校验 GitHub 元数据                     |
 | `GET /api/code`       | `q`、`repo`、`language`、`extension`、`path`、`limit`                      |
-| `GET /api/web`        | `q`、`domain`、`freshness`、`limit`                                        |
+| `GET /api/web`        | `q`、`domain`、`freshness`、`intensity`、`limit`                            |
 | `POST /api/ingest`    | JSON：`repo`、可选 `reason`、字符串数组 `categories`                       |
 
 REST 与 MCP 的工具集合和可选参数不完全相同。例如 `min_score` 是 MCP 搜索参数，REST `/api/search` 没有暴露它。

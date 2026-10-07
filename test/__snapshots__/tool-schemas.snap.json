@@ -316,6 +316,15 @@
             "all"
           ]
         },
+        "intensity": {
+          "default": "low",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
         "limit": {
           "default": 5,
           "type": "integer",
@@ -326,6 +335,7 @@
       "required": [
         "query",
         "freshness",
+        "intensity",
         "limit"
       ],
       "additionalProperties": false

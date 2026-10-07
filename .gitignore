@@ -167,6 +167,7 @@ stars.opml
 # Local-only artifacts derived from the above. asset-index.json is the runtime index the Worker
 # reads, so it is uploaded to R2 and never committed.
 asset-index.json
+asset-meta.json
 previous-asset-index.json
 previous-readmes.json
 .readme-sync-status.json

@@ -17,8 +17,9 @@ import { before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const CLI = path.join(ROOT, 'scripts', 'search_stars_cli.py')
-const AUDIT = path.join(ROOT, 'scripts', 'audit_cf_deployment.py')
+// The client tools ship inside the skill folder, alongside the guidance that documents them.
+const CLI = path.join(ROOT, 'skills', 'stars-radar', 'scripts', 'search_stars_cli.py')
+const AUDIT = path.join(ROOT, 'skills', 'stars-radar', 'scripts', 'audit_cf_deployment.py')
 
 /** The interpreter that will run them, or null when this machine has none. */
 function findPython() {

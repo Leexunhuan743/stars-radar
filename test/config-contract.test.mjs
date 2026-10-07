@@ -44,10 +44,15 @@ function readDeclared() {
 
 function readConsumed() {
   const consumed = new Set()
+  // The Python clients ship inside the skill folder, so their environment reads have to be
+  // collected from there: otherwise the variables they require look undocumented-and-unused,
+  // and the fail-closed check stops seeing the very credentials those tools depend on.
+  const skillScripts = path.join('skills', 'stars-radar', 'scripts')
   const sources = [
     ...fs.readdirSync(path.join(ROOT, 'src')).filter(f => f.endsWith('.js')).map(f => path.join('src', f)),
     ...fs.readdirSync(path.join(ROOT, 'scripts')).filter(f => f.endsWith('.js')).map(f => path.join('scripts', f)),
     ...fs.readdirSync(path.join(ROOT, 'scripts')).filter(f => f.endsWith('.py')).map(f => path.join('scripts', f)),
+    ...fs.readdirSync(path.join(ROOT, skillScripts)).filter(f => f.endsWith('.py')).map(f => path.join(skillScripts, f)),
   ]
 
   for (const rel of sources) {

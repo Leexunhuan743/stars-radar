@@ -26,52 +26,52 @@ Replace `https://stars.example.com` with your custom domain or `<worker-name>.<s
 
 ```bash
 # General search across personal stars and community breakout projects
-python scripts/search_stars_cli.py "antigravity 反代"
-python scripts/search_stars_cli.py "fastpotify"
-python scripts/search_stars_cli.py "rust terminal music player"
+python skills/stars-radar/scripts/search_stars_cli.py "antigravity 反代"
+python skills/stars-radar/scripts/search_stars_cli.py "fastpotify"
+python skills/stars-radar/scripts/search_stars_cli.py "rust terminal music player"
 
 # Restrict strictly to personal stars
-python scripts/search_stars_cli.py "deepseek harness" --scope starred
+python skills/stars-radar/scripts/search_stars_cli.py "deepseek harness" --scope starred
 
 # Filter by taxonomy category
-python scripts/search_stars_cli.py "proxy" --category agent-plugins
+python skills/stars-radar/scripts/search_stars_cli.py "proxy" --category agent-plugins
 ```
 
 ### Live Global Exploration (Level 3 Probes)
 
 ```bash
 # Search live GitHub repositories globally with collision detection
-python scripts/search_stars_cli.py --live "antigravity reverse proxy" --limit 5
+python skills/stars-radar/scripts/search_stars_cli.py --live "antigravity reverse proxy" --limit 5
 
 # Capture qualifying live discoveries into the continuously-growing asset database
 # (stars>=50, non-empty description, top-3 by stars -> staged for next CI asset-database merge)
-python scripts/search_stars_cli.py --live "mcp rust server" --limit 5 --persist
+python skills/stars-radar/scripts/search_stars_cli.py --live "mcp rust server" --limit 5 --persist
 
 # Search real-world code snippets across GitHub
-python scripts/search_stars_cli.py --code "daily-cloudcode-pa" --language js
-python scripts/search_stars_cli.py --code "thoughtSignature" --repo "balakumardev/antigravity-reverseproxy-api"
+python skills/stars-radar/scripts/search_stars_cli.py --code "daily-cloudcode-pa" --language js
+python skills/stars-radar/scripts/search_stars_cli.py --code "thoughtSignature" --repo "balakumardev/antigravity-reverseproxy-api"
 
 # Search technical web documentation
-python scripts/search_stars_cli.py --web "Cloudflare Workers vector Float32Array performance"
+python skills/stars-radar/scripts/search_stars_cli.py --web "Cloudflare Workers vector Float32Array performance"
 
 # One-click star on GitHub and stage into Stars Radar
-python scripts/search_stars_cli.py --star "dinobot22/antigravity-ssh-proxy" --reason "Antigravity SSH reverse proxy"
+python skills/stars-radar/scripts/search_stars_cli.py --star "dinobot22/antigravity-ssh-proxy" --reason "Antigravity SSH reverse proxy"
 ```
 
 ### Community Rankings & Intelligence
 
 ```bash
 # Trending daily and weekly
-python scripts/search_stars_cli.py --trending overall_daily
-python scripts/search_stars_cli.py --trending rust_weekly
-python scripts/search_stars_cli.py --trending breakout_weekly
+python skills/stars-radar/scripts/search_stars_cli.py --trending overall_daily
+python skills/stars-radar/scripts/search_stars_cli.py --trending rust_weekly
+python skills/stars-radar/scripts/search_stars_cli.py --trending breakout_weekly
 
 # Agent Skills leaderboard and 60-day open-source skill repos
-python scripts/search_stars_cli.py --skills --limit 10
-python scripts/search_stars_cli.py --skill-repos --limit 10
+python skills/stars-radar/scripts/search_stars_cli.py --skills --limit 10
+python skills/stars-radar/scripts/search_stars_cli.py --skill-repos --limit 10
 
 # HelloGitHub curated picks
-python scripts/search_stars_cli.py --hellogithub --category Python
+python skills/stars-radar/scripts/search_stars_cli.py --hellogithub --category Python
 ```
 
 ---
@@ -82,13 +82,13 @@ Harvests repositories across custom date windows, prints a report and appends me
 
 ```bash
 # Harvest top 10 Agent Skills from past 30 days into vector database
-python scripts/search_stars_cli.py --harvest --source skills --days 30 --limit 10
+python skills/stars-radar/scripts/search_stars_cli.py --harvest --source skills --days 30 --limit 10
 
 # Harvest top 15 breakout projects from past 14 days into vector database
-python scripts/search_stars_cli.py --harvest --source breakout --days 14 --limit 15
+python skills/stars-radar/scripts/search_stars_cli.py --harvest --source breakout --days 14 --limit 15
 
 # Harvest from exact historical date range
-python scripts/search_stars_cli.py --harvest --source all --since 2026-08-01 --until 2026-08-31 --limit 20
+python skills/stars-radar/scripts/search_stars_cli.py --harvest --source all --since 2026-08-01 --until 2026-08-31 --limit 20
 ```
 
 ---
@@ -111,5 +111,5 @@ node scripts/harvest_and_ingest.js --source all --since 2026-08-01 --until 2026-
 Runs complete end-to-end acceptance tests against the live Cloudflare Worker deployment (verifies 401 gate, `/health`, all 14 MCP tools, and live vector search):
 
 ```bash
-python scripts/audit_cf_deployment.py
+python skills/stars-radar/scripts/audit_cf_deployment.py
 ```
