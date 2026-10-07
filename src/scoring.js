@@ -6,12 +6,15 @@
 // later could weigh the same match differently from every other layer without anyone noticing,
 // because nothing compared them.
 //
-// The personal catalogue keeps its own bonuses on top of these (a match in the repository name is
-// worth more than a match in its description), so this module holds the part every layer shares.
+// Every searchable source uses this same scoring contract so source provenance does not secretly
+// change relevance.
 
 export const SUBJECT_WEIGHT = 40
 export const TOKEN_WEIGHT = 8
 export const INTENT_WEIGHT = 5
+export function intentMatchScore(words, matches) {
+  return (words || []).some(matches) ? INTENT_WEIGHT : 0
+}
 
 export function termMatcher(text) {
   const normalize = value => value.toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ')
@@ -33,6 +36,40 @@ export function containsTerm(text, term) {
   return termMatcher(text)(term)
 }
 
+export function mergeMatchEvidence(...items) {
+  const tokens = new Set()
+  const subjects = new Set()
+  const intents = new Map()
+
+  for (const item of items.filter(Boolean)) {
+    for (const token of item.matched_tokens || [])
+      tokens.add(token)
+    for (const subject of item.matched_subjects || [])
+      subjects.add(subject)
+    for (const match of item.matched_intents || []) {
+      const terms = intents.get(match.domain) || new Set()
+      for (const term of match.terms || [])
+        terms.add(term)
+      intents.set(match.domain, terms)
+    }
+  }
+
+  return {
+    matched_tokens: [...tokens],
+    matched_subjects: [...subjects],
+    matched_intents: [...intents.entries()].map(([domain, terms]) => ({
+      domain,
+      terms: [...terms],
+    })),
+  }
+}
+
+export function scoreMatchEvidence(evidence) {
+  return (evidence?.matched_subjects?.length || 0) * SUBJECT_WEIGHT
+    + (evidence?.matched_tokens?.length || 0) * TOKEN_WEIGHT
+    + (evidence?.matched_intents?.length || 0) * INTENT_WEIGHT
+}
+
 /**
  * Scores one flattened text pool against a query.
  *
@@ -52,12 +89,8 @@ export function scoreText(text, { specificSubjects, queryTokens, matchedGroups, 
     if (matches(token))
       score += TOKEN_WEIGHT
   }
-  for (const group of matchedGroups) {
-    for (const word of intents[group] || []) {
-      if (matches(word))
-        score += INTENT_WEIGHT
-    }
-  }
+  for (const group of matchedGroups)
+    score += intentMatchScore(intents[group] || [], matches)
 
   return score
 }

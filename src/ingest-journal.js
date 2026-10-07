@@ -120,7 +120,7 @@ export function embeddingRepositories(catalogRepos, harvested) {
       ...ingested,
       ...repo,
       reason: ingested?.reason || repo.reason,
-      summary: ingested?.summary || repo.summary,
+      summary: repo.summary || '',
     })
   }
   return [...inputs.values()]

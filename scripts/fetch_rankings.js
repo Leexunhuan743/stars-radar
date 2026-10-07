@@ -88,7 +88,7 @@ async function fetchTopStarred(cached = {}, sources = emptySourceReport()) {
           q: `stars:>10000 language:${lang}`,
           sort: 'stars',
           order: 'desc',
-          per_page: 25,
+          per_page: 50,
         },
         headers: {
           ...headers,

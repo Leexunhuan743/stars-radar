@@ -1,5 +1,4 @@
-import { repoFromReadmeKey } from './object-keys.js'
-import { containsTerm } from './scoring.js'
+import { containsTerm, scoreText } from './scoring.js'
 // Level-2 (archive / curated / community) candidate resolution for hybrid search.
 //
 // Extracted from src/index.js so the key-space contract between the producer
@@ -14,10 +13,6 @@ import { containsTerm } from './scoring.js'
 // an exact-match lookup against `intent_inverted` values silently drops every
 // repository whose name contains an uppercase letter.
 
-// Weight awarded to a repo that is only reachable through the archive channel.
-// Lower than any direct token hit so the archive can never outrank a real match.
-const ARCHIVE_WEIGHT = 12
-
 const TIER_PRESENTATION = {
   starred: { source: 'starred', badge: '⭐ Starred' },
   curated: { source: 'curated', badge: '💎 Curated Asset' },
@@ -25,47 +20,27 @@ const TIER_PRESENTATION = {
 }
 
 /**
- * Page the archive bucket until enough README objects are collected.
+ * Page repositories from the active generation's README reference manifest.
  *
- * `R2.list` applies `limit` to every object in the bucket, and the bucket also holds the JSON
- * state objects — `asset-index.json`, `catalog.json` and `embeddings-index.json` sort before
- * most READMEs, so a single page can consist entirely of them. Filtering such a page after the
- * fact reports an empty library while claiming more is available, which is what this helper
- * exists to prevent: `limit` means "this many repositories".
- *
- * `maxPages` bounds the work so a bucket that never yields a README cannot spin forever; when
- * the budget runs out with READMEs still unread, `has_more` stays true and `next_cursor` is
- * null, because resuming from an unread position would silently skip objects.
+ * Cursor is an integer offset encoded as a string. The manifest is immutable for a generation,
+ * so pagination cannot drift while an isolate remains bound to that generation.
  */
-export async function listReadmePage(r2, { limit = 20, cursor } = {}, maxPages = 20) {
-  const repos = []
-  let nextCursor = cursor
-  let morePages = false
+export async function listReadmePage(readmes, { limit = 20, cursor } = {}) {
+  const repos = Object.values(readmes?.repos || {})
+    .map(ref => ref.repo)
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+  const offset = cursor === undefined || cursor === null || cursor === '' ? 0 : Number(cursor)
+  if (!Number.isInteger(offset) || offset < 0)
+    throw new Error('README cursor must be a non-negative integer offset.')
 
-  for (let page = 0; page < maxPages; page++) {
-    const options = { limit }
-    if (nextCursor)
-      options.cursor = nextCursor
-
-    const listed = await r2.list(options)
-    for (const object of listed.objects || []) {
-      const repo = repoFromReadmeKey(object.key)
-      if (repo)
-        repos.push(repo)
-    }
-
-    morePages = Boolean(listed.truncated)
-    nextCursor = listed.cursor
-    if (!morePages || repos.length >= limit)
-      break
-  }
-
-  const pageOfRepos = repos.slice(0, limit)
+  const page = repos.slice(offset, offset + limit)
+  const next = offset + page.length
   return {
-    count: pageOfRepos.length,
-    repos: pageOfRepos,
-    has_more: morePages || repos.length > limit,
-    next_cursor: morePages && repos.length <= limit ? nextCursor : null,
+    count: page.length,
+    repos: page,
+    has_more: next < repos.length,
+    next_cursor: next < repos.length ? String(next) : null,
   }
 }
 
@@ -116,17 +91,31 @@ export function resolveArchiveCandidates({
       continue
 
     const displayName = record.repo || repoName
-    if (specificSubjects.length > 0) {
-      const pool = `${displayName} ${record.description || ''} ${record.reason || ''} ${record.summary || ''} ${(record.topics || []).join(' ')}`.toLowerCase()
-      if (!specificSubjects.some(sub => containsTerm(pool, sub)))
-        continue
-    }
+    const pool = [
+      displayName,
+      record.name,
+      record.description,
+      record.reason,
+      record.summary,
+      record.language,
+      ...(record.topics || []),
+      ...(record.categories || []),
+    ].filter(Boolean).join(' ').toLowerCase()
+    if (specificSubjects.length > 0 && !specificSubjects.some(sub => containsTerm(pool, sub)))
+      continue
+
+    // Archive recall should still reflect evidence strength. A flat constant made every
+    // long-tail candidate tie regardless of whether it matched one weak synonym or several
+    // explicit query terms, which becomes unstable as the archive grows.
+    const weight = scoreText(pool, { specificSubjects, queryTokens, matchedGroups, intents })
+    if (weight <= 0)
+      continue
 
     const tier = record.tier || 'community'
     const presentation = TIER_PRESENTATION[tier] || TIER_PRESENTATION.community
     resolved.push({
       repo: displayName,
-      weight: ARCHIVE_WEIGHT,
+      weight,
       source: presentation.source,
       badge: presentation.badge,
       tier,

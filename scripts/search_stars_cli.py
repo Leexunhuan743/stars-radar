@@ -6,6 +6,7 @@ Usage:
     python scripts/search_stars_cli.py --live <query> [--language rust] [--min-stars 20]
     python scripts/search_stars_cli.py --code "daily-cloudcode-pa" [--language js] [--repo owner/repo]
     python scripts/search_stars_cli.py --web "Cloudflare Workers vector Float32Array"
+    python scripts/search_stars_cli.py "terminal mcp" --capture "owner/repo"
     python scripts/search_stars_cli.py --star "owner/repo" [--reason "Curator note"]
     python scripts/search_stars_cli.py --since 2026-08-28 [--until 2026-09-04] [--topic agent]
     python scripts/search_stars_cli.py --harvest --source skills --days 30 [--limit 10]
@@ -27,6 +28,7 @@ WORKER_URL = os.environ.get("WORKER_URL")
 # NEVER hardcode a fallback key here. The worker is protected by MCP_API_KEY;
 # read it from the environment so the key never lands in source control or logs.
 API_KEY = os.environ.get("MCP_API_KEY")
+WRITE_API_KEY = os.environ.get("MCP_WRITE_API_KEY")
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def require_api_config():
@@ -41,6 +43,16 @@ def require_api_config():
         sys.stderr.write("[Stars Radar] ERROR: MCP_API_KEY environment variable is required.\n")
         sys.stderr.write("  Set it before running, e.g. (PowerShell): $env:MCP_API_KEY=\"...\" ; python scripts/search_stars_cli.py ...\n")
         sys.exit(2)
+
+def require_write_config():
+    require_api_config()
+    if not WRITE_API_KEY:
+        sys.stderr.write("[Stars Radar] ERROR: MCP_WRITE_API_KEY is required for write operations.\n")
+        sys.exit(2)
+    if WRITE_API_KEY == API_KEY:
+        sys.stderr.write("[Stars Radar] ERROR: MCP_WRITE_API_KEY must differ from MCP_API_KEY.\n")
+        sys.exit(2)
+
 
 class ApiError(Exception):
     """The Worker answered with a failure envelope, or could not be reached at all.
@@ -87,7 +99,43 @@ def fetch_json(endpoint, params=None):
         raise ApiError(f"{endpoint} failed: {payload.get('error')} — {payload.get('message')}")
     return payload.get("data")
 
-def show_live_search(query, language=None, min_stars=15, sort="stars", since=None, until=None, limit=10, persist=False):
+
+def post_json(endpoint, body):
+    """POST one authenticated JSON command and return its success payload."""
+    require_write_config()
+    url = f"{WORKER_URL}{endpoint}"
+    headers = {
+        **HEADERS,
+        "Authorization": f"Bearer {WRITE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            failure = json.loads(e.read().decode("utf-8"))
+            raise ApiError(f"{endpoint} failed: {failure.get('error')} — {failure.get('message')}")
+        except ApiError:
+            raise
+        except Exception:
+            raise ApiError(f"{endpoint} failed with HTTP {e.code}")
+    except ApiError:
+        raise
+    except Exception as e:
+        raise ApiError(f"{endpoint} could not be reached: {e}")
+
+    if not payload.get("ok"):
+        raise ApiError(f"{endpoint} failed: {payload.get('error')} — {payload.get('message')}")
+    return payload.get("data")
+
+def show_live_search(query, language=None, min_stars=15, sort="stars", since=None, until=None, limit=10):
     params = {"q": query, "limit": limit, "min_stars": min_stars, "sort": sort}
     if language:
         params["language"] = language
@@ -95,9 +143,6 @@ def show_live_search(query, language=None, min_stars=15, sort="stars", since=Non
         params["since"] = since
     if until:
         params["until"] = until
-    if persist:
-        params["persist"] = "1"
-
     data = fetch_json("/api/live", params)
     if not data or not data.get("repos"):
         print(f"No repositories found matching \"{query}\".")
@@ -175,41 +220,22 @@ def show_web_search(query, domain=None, freshness="all", limit=5):
             print(f"    📝 {r.get('snippet')[:140]}")
         print()
 
-def execute_star(repo, reason=None, categories=None):
-    require_api_config()
+def execute_capture(repo, query):
     clean_repo = repo.strip().replace("https://github.com/", "")
-    body = json.dumps({
-        "repo": clean_repo,
-        "reason": reason or f"Starred via Stars Radar CLI",
-        "categories": categories or []
-    }).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {API_KEY}",
-        **HEADERS
-    }
-    req = urllib.request.Request(
-        f"{WORKER_URL}/api/ingest",
-        data=body,
-        headers=headers
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        try:
-            failure = json.loads(e.read().decode("utf-8"))
-            raise ApiError(f"/api/ingest failed: {failure.get('error')} — {failure.get('message')}")
-        except ApiError:
-            raise
-        except Exception:
-            raise ApiError(f"/api/ingest failed with HTTP {e.code}")
-    except ApiError:
-        raise
-    except Exception as e:
-        raise ApiError(f"/api/ingest could not be reached: {e}")
+    result = post_json("/api/capture", {"repo": clean_repo, "query": query}) or {}
+    if result.get("captured") == 1:
+        print(f"\n📥 Captured discovery: {result.get('repo')}\n")
+        return
+    print(f"\nℹ️ Discovery not captured: {result.get('capture_skipped', 'capture rule not met')}\n")
 
-    result = data.get("data") or {}
+
+def execute_star(repo, reason=None, categories=None):
+    clean_repo = repo.strip().replace("https://github.com/", "")
+    result = post_json("/api/ingest", {
+        "repo": clean_repo,
+        "reason": reason or "Starred via Stars Radar CLI",
+        "categories": categories or [],
+    }) or {}
     if result.get("success"):
         print(f"\n✨ Success! Starred and Staged: {clean_repo}")
         print(f"   Badge: {result.get('badge')}")
@@ -349,6 +375,7 @@ def main():
     parser.add_argument("--live", "-L", nargs="?", const="", help="Search live GitHub repositories globally beyond local stars")
     parser.add_argument("--code", "-C", help="Search real-world open-source code snippets and implementations on GitHub")
     parser.add_argument("--web", "-W", help="Search technical web documentation, blogs, and forums")
+    parser.add_argument("--capture", help="Explicitly persist one discovered repository; requires the originating positional query")
     parser.add_argument("--star", help="One-click star a repository on GitHub and stage it into Stars Radar")
     parser.add_argument("--reason", help="Optional curator note when starring a repo")
     parser.add_argument("--repo", help="Target repository for code search (owner/repo)")
@@ -362,11 +389,16 @@ def main():
     parser.add_argument("--topic", help="Topic or keyword filter for date-based retrieval")
     parser.add_argument("--language", "--lang", help="Programming language filter for date-based retrieval")
     parser.add_argument("--min-stars", type=int, default=15, help="Minimum stars threshold for live search (default: 15)")
-    parser.add_argument("--persist", action="store_true", help="Capture qualifying live discoveries into the asset database (probes JSONL for CI accumulation)")
 
     args = parser.parse_args()
 
     # Priority 0: Star and Ingest
+    if args.capture:
+        if not args.query:
+            parser.error("--capture requires the originating search query as the positional query")
+        execute_capture(args.capture, args.query)
+        return
+
     if args.star:
         execute_star(args.star, args.reason)
         return 0
@@ -400,8 +432,7 @@ def main():
             min_stars=args.min_stars,
             since=args.since or (f"{args.days}d" if args.days else None),
             until=args.until,
-            limit=args.limit,
-            persist=args.persist
+            limit=args.limit
         )
         return 0
 
