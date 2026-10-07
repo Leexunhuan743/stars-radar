@@ -1,15 +1,29 @@
 import assert from 'node:assert/strict'
 import { beforeEach, test } from 'node:test'
+import { ACTIVE_GENERATION_KEY, createGenerationPointer, generationKey } from '../src/data-generation.js'
 import { resetDocumentCaches } from '../src/documents.js'
 import { errorResponse } from '../src/http.js'
-import { searchGithubCode, searchGithubLive, searchWebTech } from '../src/live-probes.js'
+import { captureGithubDiscovery, searchGithubCode, searchGithubLive, searchWebTech } from '../src/live-probes.js'
 import { githubFailure, ProbeRequestError, probeToolFailure } from '../src/probe-errors.js'
 
 beforeEach(resetDocumentCaches)
 
+const GENERATION_ID = '20261005T083000Z-ceaa138fd814-5151'
+const POINTER = createGenerationPointer(
+  GENERATION_ID,
+  'ceaa138fd814f70ff2a194cf050a789e7e77cf95',
+  '2026-10-05T08:30:00.000Z',
+)
+
 function environment({ put = async () => {}, catalog = { repos: {} } } = {}) {
   return { R2: {
-    get: async key => key === 'catalog.json' ? { json: async () => catalog } : null,
+    get: async (key) => {
+      if (key === ACTIVE_GENERATION_KEY)
+        return { json: async () => POINTER }
+      if (key === generationKey(GENERATION_ID, 'catalog.json'))
+        return { json: async () => catalog }
+      return null
+    },
     list: async () => ({ objects: [], truncated: false }),
     put,
   } }
@@ -106,23 +120,89 @@ test('a code result keeps its snippet, file location and total count', async () 
   assert.ok(result.matches[0].snippet.includes('server.registerTool()'))
 })
 
-test('failed repository probes never append a capture, and capture errors are explicit partial outcomes', async () => {
+test('live repository search never writes capture state', async () => {
   let writes = 0
-  const env = environment({ put: async () => {
-    writes++
-    throw new Error('R2 offline')
-  } })
-  await assert.rejects(searchGithubLive(env, { query: 'terminal', persist: true }, {
-    fetcher: async () => new Response(null, { status: 503 }),
-  }), ProbeRequestError)
-  assert.equal(writes, 0)
-  const result = await searchGithubLive(env, { query: 'terminal', persist: true }, {
+  const env = environment({
+    put: async () => {
+      writes++
+    },
+  })
+  const result = await searchGithubLive(env, { query: 'terminal' }, {
     fetcher: async () => Response.json({ total_count: 1, items: [{ full_name: 'acme/tool', stargazers_count: 100, description: 'terminal tool' }] }),
   })
-  assert.equal(writes, 1)
+
   assert.equal(result.returned, 1)
-  assert.equal(result.capture.captured, 0)
-  assert.equal(result.capture.capture_error, 'R2 offline')
+  assert.equal(writes, 0)
+  assert.equal('capture' in result, false)
+})
+
+test('explicit discovery capture re-fetches GitHub metadata before writing', async () => {
+  const writes = []
+  const env = environment({
+    put: async (key, body) => {
+      writes.push({ key, body })
+    },
+  })
+  env.GITHUB_TOKEN = 'fixture-token'
+
+  const result = await captureGithubDiscovery(env, { repo: 'acme/tool', query: 'terminal mcp' }, {
+    fetcher: async (url, options) => {
+      assert.equal(url, 'https://api.github.com/repos/acme/tool')
+      assert.equal(options.headers.Authorization, 'Bearer fixture-token')
+      return Response.json({
+        full_name: 'acme/tool',
+        html_url: 'https://github.com/acme/tool',
+        stargazers_count: 120,
+        description: 'terminal tool',
+        language: 'Rust',
+        topics: ['terminal'],
+        created_at: '2026-01-01T00:00:00Z',
+        pushed_at: '2026-10-01T00:00:00Z',
+      })
+    },
+  })
+
+  assert.equal(result.captured, 1)
+  assert.equal(result.repo, 'acme/tool')
+  assert.equal(writes.length, 1)
+  assert.match(writes[0].key, /^state\/probe-captures\//)
+  const stored = JSON.parse(writes[0].body.trim())
+  assert.equal(stored.repo, 'acme/tool')
+  assert.equal(stored.stars, 120)
+  assert.equal(stored.query, 'terminal mcp')
+})
+
+test('capture rejects weak or invalid discoveries and reports write failures', async () => {
+  await assert.rejects(
+    captureGithubDiscovery(environment(), { repo: 'not-a-repo', query: 'terminal' }),
+    error => error instanceof ProbeRequestError && error.code === 'invalid_repo' && error.status === 400,
+  )
+  await assert.rejects(
+    captureGithubDiscovery(environment(), { repo: 'acme/tool', query: '' }),
+    error => error instanceof ProbeRequestError && error.code === 'invalid_query' && error.status === 400,
+  )
+
+  let writes = 0
+  const weak = await captureGithubDiscovery(environment({
+    put: async () => {
+      writes++
+    },
+  }), { repo: 'acme/tool', query: 'terminal' }, {
+    fetcher: async () => Response.json({ full_name: 'acme/tool', stargazers_count: 12, description: 'small tool' }),
+  })
+  assert.equal(weak.captured, 0)
+  assert.equal(writes, 0)
+
+  await assert.rejects(
+    captureGithubDiscovery(environment({
+      put: async () => {
+        throw new Error('R2 offline')
+      },
+    }), { repo: 'acme/tool', query: 'terminal' }, {
+      fetcher: async () => Response.json({ full_name: 'acme/tool', stargazers_count: 100, description: 'terminal tool' }),
+    }),
+    error => error instanceof ProbeRequestError && error.code === 'capture_failed' && error.status === 503,
+  )
 })
 
 test('an explicit empty web API result is successful and does not run another provider', async () => {
@@ -156,19 +236,38 @@ test('a valid Brave response with a nullable web section is an empty search', as
   assert.equal(result.count, 0)
 })
 
-test('web provider errors and a keyless challenge page produce a visible failure', async () => {
-  await assert.rejects(searchWebTech({ BRAVE_SEARCH_API_KEY: 'fixture', TAVILY_API_KEY: 'fixture' }, { query: 'mcp docs' }, {
-    fetcher: async url => url.includes('duckduckgo') ? new Response('<html>Please complete the challenge</html>') : Response.json({ error: 'quota' }),
-  }), error => error.code === 'search_unavailable' && error.status === 503)
+test('web search requires an explicitly configured provider and performs no keyless request', async () => {
+  let calls = 0
+  await assert.rejects(
+    searchWebTech({}, { query: 'mcp docs' }, {
+      fetcher: async () => {
+        calls++
+        throw new Error('no outbound call expected')
+      },
+    }),
+    error => error.code === 'search_unavailable' && error.status === 503,
+  )
+  assert.equal(calls, 0)
 })
 
-test('keyless HTML distinguishes explicit no-results from an unparseable response', async () => {
-  const result = await searchWebTech({}, { query: 'mcp docs', freshness: 'week' }, {
-    fetcher: async () => new Response('<div class="no-results">No results found</div>'),
-  })
-  assert.equal(result.count, 0)
-  assert.equal(result.provider, 'duckduckgo_html (keyless)')
-  assert.equal(result.freshness_applied, false)
+test('exhausted configured web providers fail visibly without a hidden HTML fallback', async () => {
+  const urls = []
+  await assert.rejects(
+    searchWebTech(
+      { BRAVE_SEARCH_API_KEY: 'fixture', TAVILY_API_KEY: 'fixture' },
+      { query: 'mcp docs' },
+      {
+        fetcher: async (url) => {
+          urls.push(String(url))
+          return new Response(null, { status: 503 })
+        },
+      },
+    ),
+    error => error.code === 'search_unavailable' && error.status === 503,
+  )
+  assert.equal(urls.length, 2)
+  assert.ok(urls.some(url => url.includes('brave.com')))
+  assert.ok(urls.some(url => url.includes('tavily.com')))
 })
 
 test('Tavily receives the requested time window instead of silently dropping freshness', async () => {

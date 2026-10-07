@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-// The five community layers, as the table they now are.
+// The community layers, as the table they now are.
 //
-// Two properties are worth pinning, and neither could be tested while these were five copies of one
+// Two properties are worth pinning, and neither could be tested while these were duplicated copies of one
 // loop inside the Worker entry (which plain Node cannot import):
 //
 //   * **provenance is not a category.** Each layer used to publish a `categories` value invented from
@@ -10,8 +10,8 @@ import assert from 'node:assert/strict'
 //     filters on, so those values answered a filter about the deployer's taxonomy with a source's
 //     label. The decision (2026-09-15) is that a source's provenance travels in `source` and the
 //     badge, and never in `categories`.
-//   * **the order of the layers decides who offers a repository first**, because a key that is
-//     already scored is skipped. Reordering the table is therefore a behaviour change, not a tidy-up.
+//   * **the order of the layers decides the primary presentation source**, while duplicate
+//     observations accumulate in sourceChannels instead of being discarded.
 import { test } from 'node:test'
 import { collectCommunityHits, COMMUNITY_LAYERS } from '../src/community-layers.js'
 
@@ -25,6 +25,7 @@ function query(overrides = {}) {
 function rankings() {
   return {
     trending: { overall_daily: [{ repo: 'acme/trending-tool', url: 'https://github.com/acme/trending-tool', stars: 10, description: 'a browser tool', language: 'Rust' }] },
+    topStarred: { rust: [{ repo: 'acme/top-tool', url: 'https://github.com/acme/top-tool', stars: 100, description: 'a browser tool', language: 'Rust', topics: ['browser'] }] },
     helloGitHub: [{ repo: 'acme/hg-pick', url: 'https://github.com/acme/hg-pick', name: 'HG Pick', description_zh: 'browser 浏览器工具', category: '浏览器项目', issue: '2026-09' }],
     breakoutWeekly: [{ repo: 'acme/new-tool', url: 'https://github.com/acme/new-tool', stars: 3, description: 'brand new browser thing', language: 'Go' }],
     agentSkills: [{ skill: 'browser-helper', vendor: 'acme', url: 'https://skills.test/browser-helper', installs: 120, description: 'helps in the browser', description_zh: '浏览器助手' }],
@@ -40,7 +41,7 @@ function collect(overrides = {}) {
 
 test('every layer declares provenance, and none of them publishes a category', () => {
   // The table is the whole surface a new layer can be added through, so this is where the rule lives.
-  assert.equal(COMMUNITY_LAYERS.length, 5)
+  assert.equal(COMMUNITY_LAYERS.length, 6)
   for (const layer of COMMUNITY_LAYERS) {
     assert.ok(layer.source, 'a layer must declare the provenance its hits carry')
     assert.equal(typeof layer.badge, 'function', 'the badge is what tells a reader where a hit came from')
@@ -56,6 +57,7 @@ test('every layer declares provenance, and none of them publishes a category', (
 test('the badges say which board a hit came from', () => {
   const stats = collect({ queryTokens: ['browser'] })
   assert.equal(stats.get('acme/trending-tool').badge, '🔥 Trending (overall_daily)')
+  assert.equal(stats.get('acme/top-tool').badge, '🏆 Top Starred (rust)')
   assert.equal(stats.get('acme/hg-pick').badge, '📖 HelloGitHub (2026-09)')
   assert.equal(stats.get('acme/new-tool').badge, '🚀 Breakout New')
   assert.equal(stats.get('skill:browser-helper').badge, '⚡ Agent Skill')
@@ -73,9 +75,8 @@ test('a skill is keyed apart from a repository, and carries installs as its star
   assert.equal(skill.item.description, '浏览器助手', 'the Chinese description is preferred when present')
 })
 
-test('the first layer to offer a repository keeps it', () => {
-  // Order is behaviour: the loop skips a key that is already scored, so a repository on both the
-  // trending board and the breakout board is published once, under the earlier layer.
+test('the first layer stays primary while later layers are retained as corroborating evidence', () => {
+  // Order still decides the primary presentation, but a second independent board must not vanish.
   const doc = rankings()
   doc.breakoutWeekly.push({ repo: 'acme/trending-tool', url: 'https://github.com/acme/trending-tool', stars: 10, description: 'a browser tool' })
 
@@ -83,8 +84,9 @@ test('the first layer to offer a repository keeps it', () => {
   collectCommunityHits({ rankings: doc, query: query({ queryTokens: ['browser'] }), keywordScores })
 
   const hit = keywordScores.get('acme/trending-tool')
-  assert.equal(hit.source, 'trending', 'the earlier layer wins')
-  assert.equal([...keywordScores.keys()].filter(k => k === 'acme/trending-tool').length, 1, 'offered once')
+  assert.equal(hit.source, 'trending', 'the earlier layer remains the primary source')
+  assert.deepEqual(hit.sourceChannels, ['trending', 'breakout'])
+  assert.equal([...keywordScores.keys()].filter(k => k === 'acme/trending-tool').length, 1, 'one result carries both observations')
 })
 
 test('a named subject still gates every layer', () => {
@@ -113,4 +115,31 @@ test('the source\u2019s own classification still counts as scoring text', () => 
   const hit = collect({ queryTokens: ['项目'] }).get('acme/hg-pick')
   assert.ok(hit, 'the HelloGitHub section name participates in matching')
   assert.equal('categories' in hit.item, false)
+})
+
+test('the strongest corroborating source supplies the scoring evidence without changing primary provenance', () => {
+  const doc = rankings()
+  doc.trending.overall_daily = [{
+    repo: 'acme/shared',
+    description: 'browser helper',
+    language: 'Rust',
+  }]
+  doc.breakoutWeekly = [{
+    repo: 'acme/shared',
+    description: 'browser browser chrome chrome helper',
+    language: 'Rust',
+  }]
+
+  const keywordScores = new Map()
+  collectCommunityHits({
+    rankings: doc,
+    query: query({ queryTokens: ['browser', 'chrome'], explain: true }),
+    keywordScores,
+  })
+
+  const hit = keywordScores.get('acme/shared')
+  assert.equal(hit.source, 'trending', 'presentation provenance remains stable')
+  assert.equal(hit.scoringSource, 'breakout', 'the source that produced the stronger score is explicit')
+  assert.deepEqual(hit.sourceChannels, ['trending', 'breakout'])
+  assert.ok(hit.evidence.matched_tokens.includes('chrome'))
 })

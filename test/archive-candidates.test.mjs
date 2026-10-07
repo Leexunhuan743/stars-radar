@@ -9,97 +9,35 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { listReadmePage, resolveArchiveCandidates } from '../src/archive-candidates.js'
 
-/**
- * A bucket whose objects are the given keys, served in the order R2 returns them.
- *
- * R2's cursor is opaque, so this stub encodes the next start index in it rather than
- * pretending it is the last key: asserting on a token that happens to look like a key would
- * pin behaviour the real service does not promise.
- */
-function bucketOf(keys) {
-  const calls = []
-  return {
-    calls,
-    async list({ limit = 20, cursor } = {}) {
-      const start = cursor === undefined ? 0 : Number(cursor)
-      const slice = keys.slice(start, start + limit)
-      const truncated = start + limit < keys.length
-      calls.push({ limit, cursor, returned: slice.length })
-      return {
-        objects: slice.map(key => ({ key })),
-        truncated,
-        cursor: truncated ? String(start + limit) : undefined,
-      }
-    },
-  }
+const README_MANIFEST = {
+  repos: Object.fromEntries(
+    ['a/r0', 'a/r1', 'a/r2', 'a/r3'].map(repo => [repo, { repo }]),
+  ),
 }
 
-test('listing skips the JSON state objects instead of returning an empty page', async () => {
-  // The real bucket starts with these three, and `R2.list` limits *every* object, so a
-  // filtered single page reported count 0 with has_more true against a 772-repo archive.
-  const bucket = bucketOf([
-    'asset-index.json',
-    'catalog.json',
-    'embeddings-index.json',
-    'a/one.md',
-    'b/two.md',
-  ])
-
-  const page = await listReadmePage(bucket, { limit: 2 })
-
-  assert.deepEqual(page.repos, ['a/one', 'b/two'], 'the READMEs behind the JSON must be reached')
+test('listing pages the active generation README manifest', async () => {
+  const page = await listReadmePage(README_MANIFEST, { limit: 2 })
+  assert.deepEqual(page.repos, ['a/r0', 'a/r1'])
   assert.equal(page.count, 2)
-  assert.equal(page.has_more, false, 'nothing is left once the READMEs are exhausted')
+  assert.equal(page.has_more, true)
+  assert.equal(page.next_cursor, '2')
+})
+
+test('listing resumes from a manifest cursor', async () => {
+  const page = await listReadmePage(README_MANIFEST, { limit: 2, cursor: '2' })
+  assert.deepEqual(page.repos, ['a/r2', 'a/r3'])
+  assert.equal(page.has_more, false)
   assert.equal(page.next_cursor, null)
 })
 
-test('listing keeps paging until it has as many repositories as asked for', async () => {
-  const keys = [...Array.from({ length: 5 }, (_, i) => `state-${i}.json`), 'a/one.md']
-  const bucket = bucketOf(keys)
-
-  const page = await listReadmePage(bucket, { limit: 1 })
-
-  assert.deepEqual(page.repos, ['a/one'])
-  assert.ok(bucket.calls.length > 1, 'one page of JSON is not enough to answer')
-})
-
-test('listing stops at the page budget rather than paging forever', async () => {
-  // A bucket of pure JSON that is always truncated would otherwise loop indefinitely.
-  const bucket = bucketOf(Array.from({ length: 500 }, (_, i) => `state-${i}.json`))
-
-  const page = await listReadmePage(bucket, { limit: 5 }, 3)
-
-  assert.equal(bucket.calls.length, 3, 'the budget bounds the work')
-  assert.deepEqual(page.repos, [])
-  assert.equal(page.has_more, true, 'it must not claim the archive is empty')
-  // A null cursor would force a client to start over and hit the same wall; the cursor that
-  // resumes past the objects already read is the only useful answer here.
-  assert.equal(page.next_cursor, '15', 'the client can resume where the budget ran out')
-})
-
-test('listing reports more to come while READMEs remain', async () => {
-  const bucket = bucketOf(Array.from({ length: 10 }, (_, i) => `a/r${i}.md`))
-
-  const page = await listReadmePage(bucket, { limit: 3 })
-
-  assert.deepEqual(page.repos, ['a/r0', 'a/r1', 'a/r2'])
-  assert.equal(page.has_more, true)
-  assert.equal(page.next_cursor, '3', 'the cursor is passed through for the next call')
-})
-
-test('listing resumes from a cursor', async () => {
-  const bucket = bucketOf(['a/r0.md', 'a/r1.md', 'a/r2.md', 'a/r3.md'])
-
-  const page = await listReadmePage(bucket, { limit: 2, cursor: '2' })
-
-  assert.deepEqual(page.repos, ['a/r2', 'a/r3'])
-  assert.equal(page.has_more, false)
-})
-
-test('listing an empty bucket is empty rather than an error', async () => {
-  const page = await listReadmePage(bucketOf([]), { limit: 5 })
+test('listing an empty README manifest is empty', async () => {
+  const page = await listReadmePage({ repos: {} }, { limit: 5 })
   assert.deepEqual(page.repos, [])
   assert.equal(page.has_more, false)
+})
+
+test('listing rejects an invalid README cursor', async () => {
+  await assert.rejects(listReadmePage(README_MANIFEST, { limit: 2, cursor: 'bad' }), /cursor/)
 })
 
 const INTENTS = {
@@ -138,7 +76,7 @@ test('repos whose display name has uppercase letters still resolve', () => {
   assert.ok(hit, 'uppercase-named repo must not be dropped from the archive channel')
   assert.equal(hit.repo, 'Moriafly/SaltUI', 'the display casing must be preserved in the result')
   assert.equal(hit.item.url, 'https://github.com/Moriafly/SaltUI')
-  assert.equal(hit.weight, 12)
+  assert.equal(hit.weight, 5, 'one intent domain contributes one bounded score regardless of synonym count')
 })
 
 test('an intent word with capitals still reaches the lowercase inverted index', () => {
@@ -219,4 +157,29 @@ test('category and subject filters still apply to archive candidates', () => {
 test('an intent word absent from the inverted index yields nothing', () => {
   assert.deepEqual(resolve({ matchedGroups: ['notes'], assetIndex: { repos: {}, intent_inverted: {} } }), [])
   assert.deepEqual(resolve({ matchedGroups: ['unknown-group'] }), [])
+})
+
+test('archive ranking rewards distinct evidence channels rather than repeated intent synonyms', () => {
+  const hits = resolveArchiveCandidates({
+    assetIndex: {
+      repos: {
+        'a/strong': { repo: 'a/strong', tier: 'community', description: 'music player with player controls' },
+        'b/weak': { repo: 'b/weak', tier: 'community', description: 'music utility' },
+      },
+      intent_inverted: {
+        player: ['a/strong'],
+        music: ['a/strong', 'b/weak'],
+      },
+    },
+    intents: INTENTS,
+    matchedGroups: ['player'],
+    queryTokens: ['controls'],
+    scoredRepos: new Set(),
+    specificSubjects: [],
+  })
+
+  const byRepo = new Map(hits.map(hit => [hit.repo, hit.weight]))
+  assert.ok(byRepo.get('a/strong') > byRepo.get('b/weak'))
+  assert.equal(byRepo.get('a/strong'), 13, 'explicit query-token evidence adds to the one intent-domain score')
+  assert.equal(byRepo.get('b/weak'), 5)
 })

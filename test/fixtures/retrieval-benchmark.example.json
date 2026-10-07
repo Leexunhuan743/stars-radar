@@ -1,0 +1,96 @@
+{
+  "dataset": "replace-with-private-human-labeled-stars-benchmark",
+  "cases": [
+    {
+      "id": "exact-identity-example",
+      "query": "owner/replace-with-a-real-repo",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "forbidden": [],
+      "class": "exact_identity",
+      "options": { "scope": "starred" }
+    },
+    {
+      "id": "personal-note-example",
+      "query": "replace with a real query derived from how you remember this project",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "forbidden": [],
+      "class": "personal_note",
+      "options": { "scope": "starred" }
+    },
+    {
+      "id": "readme-only-example",
+      "query": "replace with a capability that is documented in README but not short metadata",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "forbidden": [],
+      "class": "readme_only",
+      "options": { "scope": "starred" }
+    },
+    {
+      "id": "multi-facet-example",
+      "query": "replace with a real multi-condition technical selection query",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "acceptable": ["owner/replace-with-a-real-alternative"],
+      "forbidden": ["owner/replace-with-a-confusing-wrong-repo"],
+      "class": "multi_facet",
+      "options": { "scope": "all" }
+    },
+    {
+      "id": "multilingual-example",
+      "query": "替换成真实的中英文混合检索问题，例如 offline Markdown research tool",
+      "relevant": ["owner/replace-with-a-real-repo"],
+      "forbidden": [],
+      "class": "multilingual",
+      "options": { "scope": "all" }
+    },
+    {
+      "id": "negative-example",
+      "query": "replace with a realistic query that should return no acceptable repository",
+      "relevant": [],
+      "forbidden": ["owner/replace-with-a-common-false-positive"],
+      "class": "negative",
+      "options": { "scope": "all" }
+    },
+    {
+      "id": "community-example",
+      "query": "replace with a real query whose best result is community/curated rather than starred",
+      "relevant": ["owner/replace-with-a-real-community-repo"],
+      "forbidden": [],
+      "class": "community",
+      "options": { "scope": "all" }
+    }
+  ],
+  "thresholds": {
+    "hybrid_bge_m3": {
+      "min_mean_recall_at_k": 0.7,
+      "min_mrr": 0.6,
+      "min_mean_ndcg_at_k": 0.6,
+      "min_evidence_coverage_rate": 0.9,
+      "min_provenance_completeness_rate": 0.9,
+      "min_negative_empty_success_rate": 0.8,
+      "max_forbidden_hits": 0,
+      "max_p95_latency_ms": 5000,
+      "classes": {
+        "readme_only": {
+          "min_mean_recall_at_k": 0.6,
+          "min_mrr": 0.5
+        },
+        "multi_facet": {
+          "min_mean_recall_at_k": 0.6,
+          "min_mean_ndcg_at_k": 0.5
+        },
+        "multilingual": {
+          "min_mean_recall_at_k": 0.6,
+          "min_mrr": 0.5
+        },
+        "negative": {
+          "min_negative_empty_success_rate": 0.8,
+          "max_forbidden_hits": 0
+        },
+        "community": {
+          "min_mean_recall_at_k": 0.6,
+          "min_mrr": 0.5
+        }
+      }
+    }
+  }
+}
