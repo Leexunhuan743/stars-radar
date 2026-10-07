@@ -1,0 +1,166 @@
+name: Retrieval Quality
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    paths:
+      - src/search-engine.js
+      - src/scoring.js
+      - src/ranking.js
+      - src/query-analysis.js
+      - src/readme-evidence.js
+      - src/result-compiler.js
+      - src/embeddings.js
+      - src/evidence.js
+      - data/intents.json
+      - scripts/vector_pipeline.js
+      - scripts/build_candidate_vectors.js
+      - scripts/restore_readme_corpus.js
+      - scripts/evaluate_retrieval_real.js
+      - scripts/validate_private_benchmark.js
+      - .github/workflows/retrieval-quality.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stars-radar-retrieval-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      RETRIEVAL_BENCHMARK_B64: ${{ secrets.RETRIEVAL_BENCHMARK_B64 }}
+      SILICONFLOW_KEY: ${{ secrets.SILICONFLOW_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      TRUSTED_QUALITY_EVENT: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: |
+            - recursive: true
+              args: [--frozen-lockfile, --strict-peer-dependencies]
+
+      - name: Run non-secret fork retrieval regression
+        if: env.TRUSTED_QUALITY_EVENT != 'true'
+        run: pnpm eval:retrieval
+
+      - name: Require strict candidate quality configuration
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
+        run: |
+          test -n "${SILICONFLOW_KEY}" || { echo "::error::SILICONFLOW_KEY is required"; exit 1; }
+          test -n "${R2_ACCOUNT_ID}" || { echo "::error::R2_ACCOUNT_ID is required"; exit 1; }
+          test -n "${R2_BUCKET}" || { echo "::error::R2_BUCKET is required"; exit 1; }
+          test -n "${AWS_ACCESS_KEY_ID}" || { echo "::error::R2_ACCESS_KEY_ID is required"; exit 1; }
+          test -n "${AWS_SECRET_ACCESS_KEY}" || { echo "::error::R2_SECRET_ACCESS_KEY is required"; exit 1; }
+
+      - name: Validate active production generation
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
+        run: node scripts/validate_remote_generation.js --active
+
+      - name: Restore production corpus and vector baseline
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
+        run: |
+          aws configure set default.region auto
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          mkdir -p rankings data stars
+
+          aws s3 cp "s3://${R2_BUCKET}/active-generation.json" "${RUNNER_TEMP}/active-generation.json" --endpoint-url "${endpoint}"
+          active=$(node --input-type=module -e 'import fs from "node:fs"; import { parseGenerationPointer } from "./src/data-generation.js"; console.log(parseGenerationPointer(JSON.parse(fs.readFileSync(process.argv[1],"utf8"))).id)' "${RUNNER_TEMP}/active-generation.json")
+          prefix="generations/${active}/"
+          echo "Building candidate vectors from production generation ${active}"
+
+          for spec in \
+            "catalog.json:catalog.json" \
+            "rankings.json:rankings/rankings.json" \
+            "asset-index.json:asset-index.json" \
+            "readmes.json:${RUNNER_TEMP}/readmes.json" \
+            "embeddings.bin:embeddings.bin" \
+            "embeddings-index.json:embeddings-index.json" \
+            "embeddings-fingerprints.json:embeddings-fingerprints.json" \
+            "embeddings-manifest.json:embeddings-manifest.json"; do
+            key="${spec%%:*}"
+            local_path="${spec##*:}"
+            aws s3 cp "s3://${R2_BUCKET}/${prefix}${key}" "${local_path}" --endpoint-url "${endpoint}" --only-show-errors
+          done
+
+          node scripts/restore_readme_corpus.js "${RUNNER_TEMP}/readmes.json" > "${RUNNER_TEMP}/readmes.tsv"
+
+          export endpoint R2_BUCKET
+          xargs -0 -r -P 16 -n 2 bash -c '
+            key="$1"; local_path="$2"
+            mkdir -p "$(dirname "$local_path")"
+            aws s3 cp "s3://${R2_BUCKET}/${key}" "$local_path" --endpoint-url "${endpoint}" --only-show-errors
+          ' _ < <(awk -F '\t' '{printf "%s%c%s%c",$1,0,$2,0}' "${RUNNER_TEMP}/readmes.tsv")
+
+      - name: Rebuild candidate vectors with PR code
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
+        run: |
+          node scripts/build_candidate_vectors.js
+          node scripts/verify_vector_pair.js
+
+      - name: Require private human-labeled closure benchmark
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
+        run: |
+          test -n "${RETRIEVAL_BENCHMARK_B64}" || { echo "::error::RETRIEVAL_BENCHMARK_B64 is required for Retrieval Quality Closure"; exit 1; }
+
+      - name: Materialize private human-labeled benchmark
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
+        run: |
+          printf '%s' "${RETRIEVAL_BENCHMARK_B64}" | base64 --decode > data/retrieval-benchmark.private.json
+          node scripts/validate_private_benchmark.js data/retrieval-benchmark.private.json
+
+      - name: Enforce private candidate retrieval quality gate
+        if: env.TRUSTED_QUALITY_EVENT == 'true'
+        run: |
+          pnpm eval:retrieval:gate -- \
+            --fixture data/retrieval-benchmark.private.json \
+            --output retrieval-quality-private-report.json
+
+      - name: Summarize private retrieval quality
+        if: always() && env.TRUSTED_QUALITY_EVENT == 'true'
+        run: |
+          node --input-type=module - <<'NODE' >> "${GITHUB_STEP_SUMMARY}"
+          import fs from 'node:fs'
+          const file = 'retrieval-quality-private-report.json'
+          console.log('### Retrieval Quality')
+          console.log('')
+          if (!fs.existsSync(file)) {
+            console.log('❌ Private human-labeled candidate quality report was not produced.')
+            process.exit(0)
+          }
+          const report = JSON.parse(fs.readFileSync(file, 'utf8'))
+          console.log('| Mode / class | Recall@K | MRR | NDCG@K | Evidence | Provenance | Negative empty | Forbidden | p95 ms |')
+          console.log('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+          const format = value => Number.isFinite(value) ? Number(value).toFixed(3) : '—'
+          for (const mode of report.reports || []) {
+            const rows = [[mode.mode, mode.summary], ...Object.entries(mode.classes || {}).map(([name, result]) => [`${mode.mode} / ${name}`, result])]
+            for (const [name, result] of rows) {
+              console.log(`| ${name} | ${format(result.mean_recall_at_k)} | ${format(result.mrr)} | ${format(result.mean_ndcg_at_k)} | ${format(result.evidence_coverage_rate)} | ${format(result.provenance_completeness_rate)} | ${format(result.negative_empty_success_rate)} | ${result.forbidden_hits ?? '—'} | ${format(result.p95_latency_ms)} |`)
+            }
+          }
+          console.log('')
+          console.log(report.quality_gate?.passed ? '✅ Private human-labeled candidate quality passed.' : '❌ Private human-labeled candidate quality failed.')
+          NODE
+
+      - name: Summarize fork retrieval regression
+        if: always() && env.TRUSTED_QUALITY_EVENT != 'true'
+        run: |
+          {
+            echo '### Retrieval Gate'
+            echo
+            echo 'Fork pull request: repository secrets are intentionally unavailable.'
+            echo 'The non-secret synthetic retrieval regression ran; secret-backed candidate/private quality gates are reserved for trusted events.'
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -9,8 +9,6 @@
 // 输出:
 //   - asset-index.json        → 热集索引 (starred+curated+community, 载内存)。这是 Worker
 //                               运行时唯一读取的资产文件, 由 CI 上传 R2。
-//   - asset-meta.json         → 版本/计数摘要。Worker 从不读取, 仅供本地与 CI 核查,
-//                               因此不上传 R2。
 //
 // 增量语义 (依赖 asset-state.json 持久化, 否则跨运行重置):
 //   - first_seen_at / last_seen_at 保留与更新
@@ -27,13 +25,14 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import fs from 'fs-extra'
 import { ASSET_ROW_FIELDS, HOT_TIERS, hotSetRow, mergeAssetRow } from '../src/asset-row.js'
-import { foldJournalFiles } from '../src/ingest-journal.js'
+import { foldIngestEntries, foldJournalFiles } from '../src/ingest-journal.js'
 import {
   ASSET_INDEX_KEY,
   ASSET_STATE_KEY,
   CATALOG_KEY,
   INGEST_JOURNAL_PREFIX,
   LOCAL_RANKINGS_DIR,
+  PREVIOUS_ASSET_INDEX_FILE,
   PROBE_CAPTURE_PREFIX,
   RANKINGS_KEY,
 } from '../src/object-keys.js'
@@ -47,7 +46,7 @@ const PROJECT_ROOT = process.env.ASSET_STORE_ROOT
 
 const STATE_PATH = path.resolve(PROJECT_ROOT, ASSET_STATE_KEY)
 const INDEX_PATH = path.resolve(PROJECT_ROOT, ASSET_INDEX_KEY)
-const META_PATH = path.resolve(PROJECT_ROOT, 'asset-meta.json')
+const PREVIOUS_INDEX_PATH = path.resolve(PROJECT_ROOT, PREVIOUS_ASSET_INDEX_FILE)
 
 // 意图词表是 Worker 与管线共用的数据，因此放在 data/ 下：管线按路径读它，读的必须是"数据"
 // 而不是"Worker 的源码目录"——后者是分层倒置，也让管线在只拷脚本的环境里跑不起来。
@@ -55,15 +54,36 @@ const INTENTS = fs.readJsonSync(path.resolve(PROJECT_ROOT, 'data/intents.json'))
 const ALL_INTENT_WORDS = Array.from(new Set(Object.values(INTENTS).flat()))
 
 // 读取探针捕获的 JSONL (Worker 侧写, CI 合并)。桶前缀与本地目录名相同: CI 按同一相对路径下载。
+function previousProbeSnapshot() {
+  if (!fs.existsSync(PREVIOUS_INDEX_PATH))
+    return { keys: [] }
+  const snapshot = fs.readJsonSync(PREVIOUS_INDEX_PATH).probe_snapshot || { keys: [] }
+  if (!Array.isArray(snapshot.keys))
+    throw new Error(`${PREVIOUS_ASSET_INDEX_FILE} has an invalid probe_snapshot.`)
+  return snapshot
+}
+
 function readProbeCaptures() {
   const probesDir = path.resolve(PROJECT_ROOT, PROBE_CAPTURE_PREFIX)
   if (!fs.existsSync(probesDir))
-    return []
+    return { captures: [], keys: [] }
+
+  const previousKeys = new Set(previousProbeSnapshot().keys)
+  const files = fs.readdirSync(probesDir)
+    .filter(name => name.endsWith('.jsonl'))
+    .map(name => ({
+      key: `${PROBE_CAPTURE_PREFIX}${name}`,
+      file: path.join(probesDir, name),
+      name,
+    }))
   const captures = []
-  for (const f of fs.readdirSync(probesDir)) {
-    if (!f.endsWith('.jsonl'))
+
+  // Effects of previous keys are already accumulated in asset-state.json. Only parse the raw tail
+  // that the previous active generation had not seen, so append-only captures are not replayed.
+  for (const item of files) {
+    if (previousKeys.has(item.key))
       continue
-    const lines = fs.readFileSync(path.join(probesDir, f), 'utf-8').split(/\r?\n/)
+    const lines = fs.readFileSync(item.file, 'utf-8').split(/\r?\n/)
     for (const line of lines) {
       if (!line.trim())
         continue
@@ -71,11 +91,11 @@ function readProbeCaptures() {
         captures.push(JSON.parse(line))
       }
       catch (error) {
-        throw new Error(`Could not read probe capture ${f}: ${error.message}`)
+        throw new Error(`Could not read probe capture ${item.name}: ${error.message}`)
       }
     }
   }
-  return captures
+  return { captures, keys: [...new Set([...previousKeys, ...files.map(item => item.key)])].sort() }
 }
 
 function loadStarred(assetMap) {
@@ -231,18 +251,43 @@ function loadRankings(assetMap) {
 // rankings.json 每轮被 CI 整体替换, 把"不能丢的东西"放进去等于让多个写者互相覆盖 —— 这正是
 // 入库条目被抹掉的原因。日志由 CI 下载到本地目录后在这里 fold; 与 Worker 侧共用
 // src/ingest-journal.js, 所以两边看到的集合必然一致。
-function loadIngestJournal(assetMap) {
-  const journalDir = path.resolve(PROJECT_ROOT, INGEST_JOURNAL_PREFIX)
-  if (!fs.existsSync(journalDir))
+function previousIngestSnapshot() {
+  if (!fs.existsSync(PREVIOUS_INDEX_PATH))
     return { keys: [], entries: [] }
 
-  const files = fs.readdirSync(journalDir)
-    .filter(name => name.endsWith('.jsonl'))
-    .map(name => ({ key: `${INGEST_JOURNAL_PREFIX}${name}`, text: fs.readFileSync(path.join(journalDir, name), 'utf-8') }))
+  const index = fs.readJsonSync(PREVIOUS_INDEX_PATH)
+  const snapshot = index.ingest_snapshot || { keys: [], entries: [] }
+  if (!Array.isArray(snapshot.keys) || !Array.isArray(snapshot.entries))
+    throw new Error(`${PREVIOUS_ASSET_INDEX_FILE} has an invalid ingest_snapshot.`)
+  return snapshot
+}
 
-  const { harvested, problems, snapshot } = foldJournalFiles(files)
+function loadIngestJournal(assetMap) {
+  const previous = previousIngestSnapshot()
+  const previousKeys = new Set(previous.keys)
+  const journalDir = path.resolve(PROJECT_ROOT, INGEST_JOURNAL_PREFIX)
+  const files = fs.existsSync(journalDir)
+    ? fs.readdirSync(journalDir)
+        .filter(name => name.endsWith('.jsonl'))
+        .map(name => ({
+          key: `${INGEST_JOURNAL_PREFIX}${name}`,
+          text: fs.readFileSync(path.join(journalDir, name), 'utf-8'),
+        }))
+    : []
+
+  // Previous entries are already folded and authoritative. The workflow downloads only raw tail
+  // objects not represented by the previous active generation, so this directory contains only
+  // unseen journal objects on normal incremental runs.
+  const tailFiles = files.filter(file => !previousKeys.has(file.key))
+  const { snapshot: tail, problems } = foldJournalFiles(tailFiles)
   if (problems.length > 0)
-    throw new Error(`Could not read ingest journal: ${problems.join('; ')}`)
+    throw new Error(`Could not read ingest journal tail: ${problems.join('; ')}`)
+
+  const entries = foldIngestEntries(
+    [...previous.entries, ...tail.entries],
+    { includeKeys: true },
+  )
+  const harvested = foldIngestEntries(entries)
 
   const upsert = createUpsert(assetMap)
   for (const h of harvested) {
@@ -259,12 +304,18 @@ function loadIngestJournal(assetMap) {
       pushed_at: h.pushed_at,
     })
   }
-  return snapshot
+
+  // Keys record which raw objects this snapshot already folded. Entries are the durable derived
+  // view; raw objects remain append-only source data and are not deleted by publication.
+  return {
+    keys: [...new Set([...previousKeys, ...files.map(file => file.key)])].sort(),
+    entries,
+  }
 }
 
 // 从探针 JSONL 捕获 discovered (仅元数据, 需跨查询确认晋升)
 function loadProbes(assetMap) {
-  const captures = readProbeCaptures()
+  const { captures, keys } = readProbeCaptures()
   const now = new Date().toISOString()
   const weekKey = isoWeek(new Date())
   for (const c of captures) {
@@ -298,6 +349,7 @@ function loadProbes(assetMap) {
       },
     }))
   }
+  return { keys }
 }
 
 // 跨查询确认晋升: discovered -> community
@@ -423,7 +475,7 @@ export function accumulateAssets() {
   const demoted = starredNow ? demoteUnstarred(assetMap, starredNow) : 0
   loadRankings(assetMap)
   const ingestSnapshot = loadIngestJournal(assetMap)
-  loadProbes(assetMap)
+  const probeSnapshot = loadProbes(assetMap)
   promoteDiscovered(assetMap)
   pruneDiscovered(assetMap)
 
@@ -432,24 +484,19 @@ export function accumulateAssets() {
   fs.writeJsonSync(STATE_PATH, state, { spaces: 2 })
 
   // 4. 派生热集索引 (Worker 载内存)
-  const index = { ...buildAssetIndex(assetMap), ingest_snapshot: ingestSnapshot }
+  const index = {
+    ...buildAssetIndex(assetMap),
+    ingest_snapshot: ingestSnapshot,
+    probe_snapshot: probeSnapshot,
+  }
   fs.writeJsonSync(INDEX_PATH, index, { spaces: 2 })
 
-  // 5. 元数据
-  const meta = {
-    generatedAt: index.generatedAt,
-    totalRepos: Object.keys(state.repos).length,
-    hotRepos: index.totalRepos,
-    starredCount: index.starredCount,
-    discoveredCount: Object.values(state.repos).filter(r => r.tier === 'discovered').length,
-    intentWords: ALL_INTENT_WORDS.length,
-  }
-  fs.writeJsonSync(META_PATH, meta, { spaces: 2 })
-
-  console.log(`[Asset Store] ${meta.totalRepos} total (${meta.hotRepos} hot: ${meta.starredCount} starred), ${meta.discoveredCount} discovered, ${meta.intentWords} intent words.`)
+  const totalRepos = Object.keys(state.repos).length
+  const discoveredCount = Object.values(state.repos).filter(r => r.tier === 'discovered').length
+  console.log(`[Asset Store] ${totalRepos} total (${index.totalRepos} hot: ${index.starredCount} starred), ${discoveredCount} discovered, ${ALL_INTENT_WORDS.length} intent words.`)
   if (demoted > 0)
     console.log(`[Asset Store] Demoted ${demoted} previously-starred repos to community (no longer in ${CATALOG_KEY}).`)
-  return { index, meta, state }
+  return { index, state }
 }
 
 if (process.argv[1]?.endsWith('asset_store.js')) {

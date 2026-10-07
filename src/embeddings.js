@@ -15,6 +15,11 @@
 /** The one model the vectors come from. Reported by `/health`, so it is part of the contract. */
 export const EMBEDDING_MODEL = 'BAAI/bge-m3'
 
+/** The exact semantic generation contract. Index records are repo metadata or README chunks. */
+export const EMBEDDING_INPUT_PROFILE = 'repo-metadata-readme-chunks-v3'
+
+export const VECTOR_RECORD_KINDS = new Set(['repo', 'readme_chunk'])
+
 /** Float32 components per vector. */
 export const DIMS = 1024
 
@@ -48,6 +53,27 @@ export function vectorCountFromBytes(bytes) {
   return Math.floor(bytes / BYTES_PER_VECTOR)
 }
 
+export function vectorNorms(values, recordCount) {
+  if (!(values instanceof Float32Array))
+    throw new Error('vectorNorms needs a Float32Array matrix.')
+  if (!Number.isInteger(recordCount) || recordCount < 0)
+    throw new Error(`vectorNorms needs a non-negative record count, got ${JSON.stringify(recordCount)}.`)
+  if (values.length !== recordCount * DIMS)
+    throw new Error(`Vector matrix has ${values.length} components for ${recordCount} records.`)
+
+  const norms = new Float32Array(recordCount)
+  for (let i = 0; i < recordCount; i++) {
+    let squared = 0
+    const offset = i * DIMS
+    for (let j = 0; j < DIMS; j++) {
+      const value = values[offset + j]
+      squared += value * value
+    }
+    norms[i] = Math.sqrt(squared)
+  }
+  return norms
+}
+
 /**
  * Describes why a pair cannot be used, or `null` when it can.
  *
@@ -55,15 +81,73 @@ export function vectorCountFromBytes(bytes) {
  * it as an unavailable document (which ends up in `/health`), the pipeline as a refused baseline,
  * and the CI step as a failed run. All three are reporting one fact.
  *
- * @param {{ names: string[], bytes: number }} pair
+ * @param {{ records: object[], bytes: number }} pair
  * @returns {string|null} why the pair is unusable, or `null` when it is usable.
  */
-export function describePairMismatch({ names, bytes }) {
-  const expected = expectedPairBytes(names.length)
+export function describePairMismatch({ records, bytes }) {
+  const expected = expectedPairBytes(records.length)
   if (bytes === expected)
     return null
-  return `${bytes}B holds ${vectorCountFromBytes(bytes)} vectors but the index lists ${names.length} names `
+  return `${bytes}B holds ${vectorCountFromBytes(bytes)} vectors but the index lists ${records.length} records `
     + `(expected ${expected}B). Both objects must come from the same pipeline run.`
+}
+
+export function validateVectorIndex(records) {
+  if (!Array.isArray(records))
+    throw new Error('Vector index must be an array of structured records.')
+
+  const ids = new Set()
+  const repoRecords = new Set()
+  const chunkRepos = new Set()
+  for (const [index, record] of records.entries()) {
+    if (!record || typeof record !== 'object' || Array.isArray(record))
+      throw new Error(`Vector index record ${index} must be an object.`)
+    if (typeof record.id !== 'string' || !record.id)
+      throw new Error(`Vector index record ${index} is missing id.`)
+    if (ids.has(record.id))
+      throw new Error(`Vector index contains duplicate id ${record.id}.`)
+    ids.add(record.id)
+
+    if (typeof record.repo !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(record.repo))
+      throw new Error(`Vector index record ${record.id} has invalid repo.`)
+    if (!VECTOR_RECORD_KINDS.has(record.kind))
+      throw new Error(`Vector index record ${record.id} has invalid kind ${JSON.stringify(record.kind)}.`)
+
+    const repoKey = record.repo.toLowerCase()
+    if (record.kind === 'repo') {
+      if (record.id !== `repo:${repoKey}`)
+        throw new Error(`Repo vector record ${record.id} must use canonical id repo:${repoKey}.`)
+      repoRecords.add(repoKey)
+      continue
+    }
+
+    if (!record.id.startsWith(`readme:${repoKey}:`) || record.id === `readme:${repoKey}:`)
+      throw new Error(`README vector record ${record.id} must use canonical repo-prefixed id.`)
+    chunkRepos.add(repoKey)
+    if (typeof record.heading !== 'string' || !record.heading.trim())
+      throw new Error(`README vector record ${record.id} is missing heading.`)
+    if (typeof record.text !== 'string' || !record.text.trim())
+      throw new Error(`README vector record ${record.id} is missing text.`)
+    if (record.readme_sha256 !== undefined && !/^[0-9a-f]{64}$/.test(record.readme_sha256))
+      throw new Error(`README vector record ${record.id} has invalid readme_sha256.`)
+    if (record.content_sha256 !== undefined && !/^[0-9a-f]{64}$/.test(record.content_sha256))
+      throw new Error(`README vector record ${record.id} has invalid content_sha256.`)
+    if (record.ordinal !== undefined && (!Number.isInteger(record.ordinal) || record.ordinal < 0))
+      throw new Error(`README vector record ${record.id} has invalid ordinal.`)
+    if (record.chunk_ordinal !== undefined && (!Number.isInteger(record.chunk_ordinal) || record.chunk_ordinal < 0))
+      throw new Error(`README vector record ${record.id} has invalid chunk_ordinal.`)
+    if (record.heading_path !== undefined
+      && (!Array.isArray(record.heading_path) || record.heading_path.some(part => typeof part !== 'string' || !part.trim()))) {
+      throw new Error(`README vector record ${record.id} has invalid heading_path.`)
+    }
+  }
+
+  for (const repo of chunkRepos) {
+    if (!repoRecords.has(repo))
+      throw new Error(`README vector records for ${repo} have no matching repo metadata record.`)
+  }
+
+  return { recordCount: records.length, repoCount: repoRecords.size }
 }
 
 export async function vectorDigest(bytes) {
@@ -72,18 +156,25 @@ export async function vectorDigest(bytes) {
 }
 
 /** The manifest commits both exact object contents, not merely their vector count. */
-export async function vectorManifest(names, indexBytes, binaryBytes) {
+export async function vectorManifest(records, indexBytes, binaryBytes) {
+  const { repoCount } = validateVectorIndex(records)
   return {
     model: EMBEDDING_MODEL,
+    input_profile: EMBEDDING_INPUT_PROFILE,
     dimensions: DIMS,
-    count: names.length,
+    count: records.length,
+    repo_count: repoCount,
     index_sha256: await vectorDigest(indexBytes),
     binary_sha256: await vectorDigest(binaryBytes),
   }
 }
 
-export async function verifyVectorManifest(manifest, names, indexBytes, binaryBytes) {
-  const expected = await vectorManifest(names, indexBytes, binaryBytes)
-  if (Object.keys(expected).some(key => manifest?.[key] !== expected[key]))
-    throw new Error('Vector manifest does not match the index and binary contents. Publish one complete generation through CI.')
+export async function verifyVectorManifest(manifest, records, indexBytes, binaryBytes) {
+  const expected = await vectorManifest(records, indexBytes, binaryBytes)
+  if (Object.keys(expected).some(key => manifest?.[key] !== expected[key])) {
+    throw new Error(
+      `Vector manifest does not match the required ${EMBEDDING_INPUT_PROFILE} generation. Rebuild and publish one complete vector generation through CI.`,
+    )
+  }
+  return EMBEDDING_INPUT_PROFILE
 }
