@@ -185,13 +185,83 @@ jobs:
           aws s3 cp "s3://${R2_BUCKET}/generations/${ACTIVE_GENERATION_ID}/readmes.json"             "${RUNNER_TEMP}/readmes.json" --endpoint-url "${endpoint}"
           cp "${RUNNER_TEMP}/readmes.json" previous-readmes.json
           node scripts/restore_readme_corpus.js "${RUNNER_TEMP}/readmes.json" > "${RUNNER_TEMP}/readmes.tsv"
-          export endpoint R2_BUCKET
-          xargs -0 -r -P 16 -n 2 bash -c '
-            key="$1"; local_path="$2"
-            mkdir -p "$(dirname "$local_path")"
-            aws s3 cp "s3://${R2_BUCKET}/${key}" "$local_path" --endpoint-url "${endpoint}" --only-show-errors
-          ' _ < <(awk -F '\t' '{printf "%s%c%s%c",$1,0,$2,0}' "${RUNNER_TEMP}/readmes.tsv")
+
+          # The corpus is ~20 MB across ~1,200 objects averaging 17 KB, so the cost of restoring it
+          # was never bandwidth: one `aws s3 cp` per blob spent most of its life in CLI startup and
+          # TLS handshake, and 1,137 of them serialised behind a 16-way fan-out took ~5.6 min.
+          #
+          # `s3 sync` moves the whole prefix in a single process with its own transfer pool, then
+          # the blobs are renamed into the `<owner>/<repo>.md` layout the pipeline expects. The
+          # rename is a filesystem move, not a transfer: the bytes come down once, in one pass.
+          aws s3 sync "s3://${R2_BUCKET}/readmes/" "${RUNNER_TEMP}/readme-blobs/"             --endpoint-url "${endpoint}" --only-show-errors
+
+          node --input-type=module - "${RUNNER_TEMP}/readmes.tsv" "${RUNNER_TEMP}/readme-blobs" <<'NODE'
+          import fs from 'node:fs'
+          import path from 'node:path'
+
+          const [tsvPath, blobDir] = process.argv.slice(2)
+          const rows = fs.readFileSync(tsvPath, 'utf8').split('\n').filter(Boolean)
+          let placed = 0
+          let missing = 0
+          for (const row of rows) {
+            const [key, localPath] = row.split('\t')
+            const source = path.join(blobDir, path.basename(key))
+            if (!fs.existsSync(source)) {
+              missing += 1
+              continue
+            }
+            const target = path.resolve(localPath)
+            fs.mkdirSync(path.dirname(target), { recursive: true })
+            fs.renameSync(source, target)
+            placed += 1
+          }
+          if (missing > 0)
+            throw new Error(`${missing} README blob(s) were not present in the bucket listing; the corpus is incomplete.`)
+          console.log(`Placed ${placed} README blob(s) into the corpus layout.`)
+          NODE
           echo "Restored $(find stars -name '*.md' | wc -l) README(s) from active generation ${ACTIVE_GENERATION_ID}."
+
+          # Hash every blob just downloaded and record the digests. The validation step at the end
+          # of the run would otherwise fetch this exact set again purely to confirm bytes that were
+          # already on disk here. Producing the receipt only removes work that has happened: it
+          # names what was verified, and the validator still fetches anything absent from it.
+          #
+          # The path is exported through GITHUB_ENV because `runner.temp` is not available to a
+          # job-level `env:` block, and every later step has to agree on one location.
+          receipt="${RUNNER_TEMP}/readme-verify-receipt.json"
+          echo "README_VERIFY_RECEIPT_FILE=${receipt}" >> "${GITHUB_ENV}"
+          node --input-type=module - "${RUNNER_TEMP}/readmes.json" "${receipt}" <<'NODE'
+          import fs from 'node:fs'
+          import path from 'node:path'
+          import { createHash } from 'node:crypto'
+          import { localReadmePath, readmeBlobKey } from './src/object-keys.js'
+
+          const [manifestPath, receiptPath] = process.argv.slice(2)
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+          const verified = {}
+          let missing = 0
+          for (const ref of Object.values(manifest.repos || {})) {
+            if (!ref?.sha256 || !ref.repo)
+              continue
+            const file = localReadmePath(ref.repo)
+            if (!fs.existsSync(file)) {
+              missing += 1
+              continue
+            }
+            const observed = createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+            // Only a blob whose bytes still match its own name is recorded: a mismatch here is a
+            // corrupt restore, and the absence from the receipt makes the validator fetch it and
+            // fail there, rather than this step silently vouching for a bad file.
+            if (observed === ref.sha256)
+              verified[readmeBlobKey(ref.sha256)] = ref.sha256
+          }
+          fs.writeFileSync(receiptPath, JSON.stringify({
+            schema: 1,
+            generation: manifest.generation?.id ?? null,
+            verified,
+          }))
+          console.log(`Restore receipt: ${Object.keys(verified).length} blob(s) hashed, ${missing} not present locally.`)
+          NODE
 
       - name: Fetch starred repos and READMEs (incremental)
         run: pnpm build:stars

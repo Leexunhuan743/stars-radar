@@ -1,5 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
 import process from 'node:process'
 import { ACTIVE_GENERATION_KEY, generationKey, parseGenerationPointer, validateGenerationId } from '../src/data-generation.js'
 import { validateVectorIndex, verifyVectorManifest } from '../src/embeddings.js'
@@ -98,10 +99,62 @@ function readObjectAsync(target, key) {
   })
 }
 
-async function validateReadmeBlobs(target, refs, { concurrency = 16 } = {}) {
-  const jobs = refs
+// README blobs are immutable and content-addressed: the object key IS the SHA-256 of the bytes,
+// so a blob that exists under its own hash cannot have been written with different content.
+//
+// Verification still means downloading and hashing, and doing that for a 1k+ corpus twice per run
+// was the bulk of this workflow's wall time. The two passes are avoidable without weakening the
+// guarantee, because the blobs fall into two disjoint groups:
+//
+//   - Blobs this run fetched and published. Their bytes are on disk right now (`.readme-content-stage`),
+//     and they were hashed before upload by `prepare_data_generation.js`. The question worth asking
+//     is whether the transfer landed them intact, which the local digest answers only for the copy
+//     that was sent — so these are still fetched back and re-hashed.
+//   - Blobs that already existed in R2 and were merely referenced again. These were downloaded and
+//     verified when the corpus was restored, and nothing in this run wrote to them.
+//
+// A receipt file records the digests the restore step actually observed, keyed by blob. Blobs
+// covered by a receipt are not re-fetched; everything else is fetched and hashed exactly as before.
+// A missing or unreadable receipt simply means "verify everything", so the receipt can only ever
+// remove work that another step already proved.
+function readVerificationReceipt(file) {
+  if (!file || !fs.existsSync(file))
+    return new Map()
+  let parsed
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+  }
+  catch {
+    return new Map()
+  }
+  const entries = parsed?.verified
+  if (!entries || typeof entries !== 'object')
+    return new Map()
+  return new Map(Object.entries(entries).filter(([, v]) => /^[0-9a-f]{64}$/.test(v)))
+}
+
+const README_VERIFY_CONCURRENCY = Number.parseInt(process.env.README_VERIFY_CONCURRENCY || '', 10)
+const README_VERIFY_MAX_IN_FLIGHT = Number.isInteger(README_VERIFY_CONCURRENCY) && README_VERIFY_CONCURRENCY > 0
+  ? README_VERIFY_CONCURRENCY
+  : 64
+
+async function validateReadmeBlobs(target, refs, { receipt = new Map() } = {}) {
+  const all = refs
     .filter(ref => ref?.sha256)
     .map(ref => ({ repo: ref.repo, sha256: ref.sha256, key: readmeBlobKey(ref.sha256) }))
+
+  if (all.length === 0)
+    return { verified: 0, reused: 0 }
+
+  // A receipt only discharges a blob when it names the same digest the manifest asks for.
+  const jobs = []
+  let reused = 0
+  for (const job of all) {
+    if (receipt.get(job.key) === job.sha256)
+      reused += 1
+    else
+      jobs.push(job)
+  }
 
   let cursor = 0
   const worker = async () => {
@@ -114,10 +167,11 @@ async function validateReadmeBlobs(target, refs, { concurrency = 16 } = {}) {
   }
 
   await Promise.all(Array.from(
-    { length: Math.min(concurrency, jobs.length) },
+    { length: Math.min(README_VERIFY_MAX_IN_FLIGHT, jobs.length) },
     () => worker(),
   ))
-  return jobs.length
+
+  return { verified: jobs.length, reused }
 }
 
 function parseJson(bytes, label) {
@@ -223,16 +277,19 @@ export async function validateRemoteGeneration(generationId, { expectedPointer =
     readmeRefs.push(ref)
   }
 
-  // README blobs are immutable and content-addressed, but every referenced object is still
-  // downloaded and hashed before activation. Bound the fan-out so a 1k+ corpus validates in
-  // parallel without turning one publication into thousands of serialized CLI round trips.
-  const readmeBlobs = await validateReadmeBlobs(target, readmeRefs)
+  // A receipt names the blobs the corpus restore already downloaded and hashed this run. It can
+  // only remove work; an absent or stale receipt falls back to verifying every blob.
+  const receipt = readVerificationReceipt(process.env.README_VERIFY_RECEIPT_FILE)
+  const { verified, reused } = await validateReadmeBlobs(target, readmeRefs, { receipt })
+  if (reused > 0)
+    console.log(`[Generation Integrity] ${reused} README blob(s) discharged by the restore receipt; ${verified} fetched and hashed.`)
 
   return {
     pointer,
     files: Object.keys(files).length,
     vectors: vectorPresent.length === VECTOR_FILES.length,
-    readme_blobs: readmeBlobs,
+    readme_blobs: verified + reused,
+    readme_blobs_reused: reused,
   }
 }
 

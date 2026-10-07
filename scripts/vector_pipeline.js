@@ -36,6 +36,19 @@ const EMBED_ATTEMPTS = 3
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 
 const METADATA_TEXT_LIMIT = 2400
+
+// Embedding batches are network-bound: a 16-record batch costs ~850 ms whether the provider
+// spends it on compute or on the round trip, and the provider accepts several in flight. The
+// loop used to await one batch at a time, so a full corpus of 9,999 records cost 625 sequential
+// round trips (~8.9 min) of a 20-minute run. Concurrent batches keep the same request shape and
+// per-batch validation while overlapping that idle time. The ceiling is deliberately modest:
+// SiliconFlow rate-limits per key, and a rejected burst would turn into retries and cost more
+// wall time than it saves.
+const EMBED_BATCH_SIZE = 16
+const EMBED_CONCURRENCY = Number.parseInt(process.env.VECTOR_EMBED_CONCURRENCY || '', 10)
+const EMBED_MAX_IN_FLIGHT = Number.isInteger(EMBED_CONCURRENCY) && EMBED_CONCURRENCY > 0
+  ? EMBED_CONCURRENCY
+  : 6
 const configuredVectorBudget = Number.parseInt(process.env.VECTOR_CORPUS_MAX_RECORDS || '', 10)
 export const VECTOR_CORPUS_MAX_RECORDS = Number.isInteger(configuredVectorBudget) && configuredVectorBudget > 0
   ? configuredVectorBudget
@@ -188,8 +201,12 @@ export async function buildRepositoryVectors(repositories) {
   if (pending.length > 0 && !SILICONFLOW_KEY)
     throw new Error('SILICONFLOW_KEY is required to build new or changed vector records')
 
-  for (let offset = 0; offset < pending.length; offset += 16) {
-    const batch = pending.slice(offset, offset + 16)
+  const batches = []
+  for (let offset = 0; offset < pending.length; offset += EMBED_BATCH_SIZE)
+    batches.push(pending.slice(offset, offset + EMBED_BATCH_SIZE))
+
+  let cursor = 0
+  const embedBatch = async (batch) => {
     const vectors = await retryAsync(async () => {
       const payload = await $fetch(SILICONFLOW_URL, {
         method: 'POST',
@@ -214,6 +231,16 @@ export async function buildRepositoryVectors(repositories) {
       vectors[index].forEach((value, dimension) => row.binary.writeFloatLE(value, dimension * 4))
     })
   }
+
+  // Writes go to each row's own slot, so concurrent workers never touch the same buffer.
+  const worker = async () => {
+    while (cursor < batches.length)
+      await embedBatch(batches[cursor++])
+  }
+  await Promise.all(Array.from(
+    { length: Math.min(EMBED_MAX_IN_FLIGHT, batches.length) },
+    () => worker(),
+  ))
 
   const outputRecords = rows.map(row => row.record)
   validateVectorIndex(outputRecords)
