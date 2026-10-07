@@ -52,8 +52,6 @@ jobs:
           test -n "${R2_BUCKET}" || { echo "::error::R2_BUCKET is required"; exit 1; }
           test -n "${AWS_ACCESS_KEY_ID}" || { echo "::error::R2_ACCESS_KEY_ID is required"; exit 1; }
           test -n "${AWS_SECRET_ACCESS_KEY}" || { echo "::error::R2_SECRET_ACCESS_KEY is required"; exit 1; }
-          test -n "${WORKER_URL}" || { echo "::error::WORKER_URL is required for post-deploy verification"; exit 1; }
-          test -n "${MCP_API_KEY}" || { echo "::error::MCP_API_KEY is required for post-deploy verification"; exit 1; }
 
       - name: Require production Worker auth secrets before deploy
         run: |
@@ -69,8 +67,27 @@ jobs:
           console.log(`Production Worker auth secrets present: ${required.join(', ')}`)
           NODE
 
+      # A fresh install has no active generation yet: the data workflow has never run, so
+      # there is nothing to validate. Failing the deploy there made the documented order
+      # impossible to follow — the README says to deploy the Worker first, and the Worker
+      # is what lets the data workflow be verified at all. The gate still runs in full
+      # whenever a generation exists, so a corrupt or half-published pointer is caught.
       - name: Validate active v3 data generation before deploy
-        run: node scripts/validate_remote_generation.js --active
+        run: |
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          if aws s3api head-object --bucket "${R2_BUCKET}" --key "active-generation.json" \
+            --endpoint-url "${endpoint}" >/dev/null 2>gate.err; then
+            node scripts/validate_remote_generation.js --active
+          elif grep -q "HeadObject" gate.err && grep -Eq "\(404\)|NoSuchKey" gate.err; then
+            echo "No active data generation yet (fresh install). Deploying the Worker so the"
+            echo "data workflow can publish its first generation; /health will report the"
+            echo "data plane as missing until it does."
+          else
+            echo "::error::Could not inspect active-generation.json:"
+            cat gate.err
+            exit 1
+          fi
+          rm -f gate.err
 
       - name: Verify bundle
         run: pnpm exec wrangler deploy --dry-run --outdir dist
@@ -78,10 +95,37 @@ jobs:
       - name: Deploy Worker
         run: pnpm exec wrangler deploy
 
+      # The smoke check must always run. When it was conditional on WORKER_URL/MCP_API_KEY
+      # it silently skipped on the maintainer's own repository (neither was configured),
+      # so a deploy that shipped a broken Worker still reported success.
+      #
+      # It needs two values, and only one of them can be inferred:
+      #   - WORKER_URL: the deployable address. `wrangler deployments status --json` does
+      #     not carry a URL, so it cannot be derived; it must be configured. A fork that
+      #     forgets it fails loudly here instead of skipping verification.
+      #   - MCP_API_KEY: the read credential the Worker was configured with, supplied as a
+      #     repository secret. Only the deployer knows this value.
       - name: Production smoke check
+        env:
+          SMOKE_KEY: ${{ secrets.MCP_API_KEY }}
         run: |
+          missing=""
+          test -n "${WORKER_URL}" || missing="${missing} WORKER_URL(Actions variable)"
+          test -n "${SMOKE_KEY}" || missing="${missing} MCP_API_KEY(Actions secret)"
+          if [ -n "${missing}" ]; then
+            echo "::error::Post-deploy smoke check cannot run; missing:${missing}"
+            echo "::error::Configure both under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
           base="${WORKER_URL%/}"
-          curl --fail-with-body --silent --show-error             --retry 4 --retry-all-errors --retry-delay 2             -H "Authorization: Bearer ${MCP_API_KEY}"             "${base}/health" > "${RUNNER_TEMP}/health.json"
+          echo "Smoke-checking ${base}"
+
+          curl --fail-with-body --silent --show-error \
+            --retry 4 --retry-all-errors --retry-delay 2 \
+            -H "Authorization: Bearer ${SMOKE_KEY}" \
+            "${base}/health" > "${RUNNER_TEMP}/health.json"
+
           node --input-type=module - "${RUNNER_TEMP}/health.json" <<'NODE'
           import fs from 'node:fs'
           const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
@@ -90,7 +134,11 @@ jobs:
             throw new Error(`Unexpected production version: ${health.version}`)
           if (health.status !== 'ok')
             throw new Error(`Production health is ${health.status}`)
-          if (!health.dataGeneration?.id)
-            throw new Error('Production has no active data generation.')
+          // On a fresh install the first deploy legitimately precedes any data
+          // publication, so a missing generation is reported rather than failed.
+          if (!health.dataGeneration?.id) {
+            console.log('::warning::Production has no active data generation yet; run the data workflow.')
+            process.exit(0)
+          }
           console.log(`Production healthy: v${health.version}, generation ${health.dataGeneration.id}`)
           NODE

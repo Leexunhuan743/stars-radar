@@ -90,6 +90,21 @@ Fine-grained token 对 Stars 读取要求 Starring read，点 Star 要求 Starri
 
 首次部署步骤见 [README](../README.md#开始使用)。`wrangler.jsonc` 的 Worker 名称和桶名需要按部署环境填写，代码使用固定 R2 绑定名 `R2`，并声明 `EXPENSIVE_RATE_LIMITER` 与 `WRITE_RATE_LIMITER` 两个 Rate Limiting binding。R2 配置见 [Cloudflare R2 文档](https://developers.cloudflare.com/r2/get-started/workers-api/)，限流 binding 见 [Cloudflare Rate Limiting API](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)。`namespace_id` 由部署者定义且在同一 Cloudflare 账号内需要保持唯一；示例 ID 若冲突必须替换。
 
+`Deploy Worker` 有 4 个前置条件，缺一个就会失败并说明缺哪项：
+
+| 前置条件                                                                 | 位置                                 | 缺失后果                                   |
+| ------------------------------------------------------------------------ | ------------------------------------ | ------------------------------------------ |
+| `CLOUDFLARE_API_TOKEN`                                                   | Actions secret                       | 无法部署                                   |
+| `MCP_API_KEY`、`MCP_WRITE_API_KEY`                                       | **线上 Worker** 的 secrets           | 部署中止（本机需先 `wrangler secret put`） |
+| `R2_ACCOUNT_ID`、`R2_BUCKET`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` | Actions secrets                      | 无法校验数据 generation                    |
+| `WORKER_URL`、`MCP_API_KEY`                                              | Repository variable / Actions secret | smoke check 失败（不再静默跳过）           |
+
+因此 Fork 后的正确顺序是：**先配置并部署 Worker（README 第 4 节），再跑数据 workflow。** 反过来做时，`Deploy Worker` 会因线上 Worker 尚未存在而中止。
+
+全新安装的桶是空的，没有 `active-generation.json` 可校验：此时 `Deploy Worker` 放行部署，`/health` 把数据面报告为 `missing`；等第一次数据 workflow 发布 generation 后再部署一次即恢复完整校验。指针存在但内容损坏、或读取因凭据/网络失败时仍然直接 fail closed。
+
+`RETRIEVAL_BENCHMARK_B64` 是仓库私有的标注集，Fork 无法继承。可从 `test/fixtures/retrieval-benchmark.example.json` 起手，它覆盖 `validate_private_benchmark.js` 要求的全部 7 个类别且默认阈值可通过校验；`validate_private_benchmark.js` 逐条检查用例结构与阈值键，`evaluate_retrieval_real.js --enforce-thresholds` 才判断实际召回质量。该 secret 缺失或 benchmark 达不到阈值时，`Update Repos Info` 在 activation 前中止，不会切换 active pointer。
+
 `.github/workflows/build.yaml` 每 6 小时运行，也支持手动触发。Fork 后需要主动启用 Actions 和定时工作流。一次运行依次：
 
 1. 读取 `active-generation.json`，先从当前 `generations/<id>/` 恢复向量、资产状态、上一代 `asset-index.json` snapshot、社区快照与 `readmes.json`；README blob key 由 SHA-256 推导。随后列出 `state/` 远端 keys，与上一代 ingest/probe snapshot 比较，只下载 unseen tail。没有 active generation 是首次运行，指针损坏或当前 generation 缺关键文件都会停止运行。
@@ -98,7 +113,7 @@ Fine-grained token 对 Stars 读取要求 Starring read，点 Star 要求 Starri
 4. 合并持久资产状态，生成热集索引和入库日志快照。
 5. 运行 lint、测试、向量一致性检查及 Worker 打包检查。
 6. 上传派生 generation，并用 `validate_remote_generation.js` 对远端 generation manifest、对象 SHA-256、vector pair/manifest 与 README blob hashes 做统一校验；校验成功后写入 `ready.json`，再切换 active pointer。
-7. 数据 workflow 到此结束，不部署 Worker。Worker 由独立 `Deploy Worker` workflow 在主分支相关代码变化或手动触发时发布，并在发布后调用 `/health` 做 production smoke check。
+7. 数据 workflow 到此结束，不部署 Worker。Worker 由独立 `Deploy Worker` workflow 在主分支相关代码变化或手动触发时发布，并在发布后无条件调用 `/health` 做 production smoke check；`WORKER_URL` 或 `MCP_API_KEY` 缺失时该步骤失败，而不是打一条 warning 跳过。
 
 数据发布使用共享并发组串行执行。Checkout 使用只读工作流令牌，个人 `GH_TOKEN` 只用于业务 API 调用。Worker secrets 由部署者独立设置，不从 Actions 自动注入。
 

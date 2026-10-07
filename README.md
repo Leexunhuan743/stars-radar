@@ -72,11 +72,33 @@ pnpm exec wrangler r2 bucket create your-radar-bucket
 | `R2_BUCKET` | 上一步创建的桶名 |
 | `R2_ACCESS_KEY_ID` | R2 S3 访问密钥 ID |
 | `R2_SECRET_ACCESS_KEY` | R2 S3 访问密钥 |
+| `MCP_API_KEY` | 与 Worker 上设置的读取密钥相同；供 `Deploy Worker` 部署后调用 `/health` 验证 |
 | `RETRIEVAL_BENCHMARK_B64` | 私有人工标注检索 benchmark 的 base64；用于候选 generation activation 与 PR retrieval gate |
+
+`RETRIEVAL_BENCHMARK_B64` 没有公开数据可继承——它是你自己的标注集。仓库提供了一个可直接使用的模板 `test/fixtures/retrieval-benchmark.example.json`（7 个用例，覆盖全部 7 个必测类别，默认阈值可通过校验）。把它改写成针对你自己收藏的问题后生成 base64：
+
+```sh
+base64 -w0 test/fixtures/retrieval-benchmark.example.json   # Linux
+base64 -i test/fixtures/retrieval-benchmark.example.json    # macOS
+```
+
+把输出整行写入该 secret。模板里的查询命中不了你的仓库时，candidate retrieval gate 会失败并列出未达标指标——按提示换掉用例即可。**这个 secret 缺失时 `Update Repos Info` 会在 activation 前中止**，不会发布 generation。
+
+同时添加 Repository **variable**（不是 secret）：
+
+| 名称 | 内容 |
+| --- | --- |
+| `WORKER_URL` | 你的服务地址，例如 `https://stars.example.com`；不含 `/mcp` |
+
+`MCP_API_KEY` 与 `WORKER_URL` 缺失时，`Deploy Worker` 会直接失败而不是跳过部署后验证——这两种情况必须显式配置，否则部署成功与否无从判断。
 
 R2 的 S3 凭据需要能读写该桶。这里的 `GH_TOKEN` 在构建时映射为 `GITHUB_TOKEN`，GitHub 自动提供的工作流令牌不能代替你的个人令牌来同步个人收藏。
 
-在 **Actions** 中启用工作流，然后手动运行 **Update Repos Info**。第一次运行会从你的账号生成收藏目录、README 和检索索引。以后工作流每 6 小时运行一次。catalog、榜单、资产索引、candidate vectors 以及 README 引用表会作为同一个不可变 generation 发布；activation 前必须先通过 private human-labeled retrieval gate，并对 generation manifest hashes、vector manifest/index/bin 与所有 README blob SHA-256 做完整性校验。只有全部通过才切换 `active-generation.json`。`state/` 下的 ingest/probe 日志与内容寻址 README blobs 作为不可变 source truth 永久保留；构建先读取上一代 snapshot，只从 R2 下载未见过的 state tail。派生 `generations/` 只保留最近 30 个通过远端完整性校验的 ready snapshots，失败/partial generation 不占 rollback 窗口。Worker 自动部署在真正 `wrangler deploy` 前也会验证 active generation；没有合法 generation 时直接 fail closed。
+**配置顺序很重要。** `Deploy Worker` 要求线上 Worker 已存在 `MCP_API_KEY` 与 `MCP_WRITE_API_KEY` 两个 secret，因此在 Fork 上要先完成下一步（第 4 节，配置并部署服务），再在 **Actions** 中启用工作流并手动运行 **Update Repos Info**。
+
+首次 `Update Repos Info` 会从你的账号生成收藏目录、README 和检索索引。以后工作流每 6 小时运行一次。catalog、榜单、资产索引、candidate vectors 以及 README 引用表会作为同一个不可变 generation 发布；activation 前必须先通过 private human-labeled retrieval gate，并对 generation manifest hashes、vector manifest/index/bin 与所有 README blob SHA-256 做完整性校验。只有全部通过才切换 `active-generation.json`。`state/` 下的 ingest/probe 日志与内容寻址 README blobs 作为不可变 source truth 永久保留；构建先读取上一代 snapshot，只从 R2 下载未见过的 state tail。派生 `generations/` 只保留最近 30 个通过远端完整性校验的 ready snapshots，失败/partial generation 不占 rollback 窗口。
+
+`Deploy Worker` 在真正 `wrangler deploy` 前会校验 active generation；指针存在但内容损坏时直接 fail closed。桶还是空的全新安装没有指针可校验，此时允许部署 Worker（否则首次部署永远无法完成，而 Worker 正是验证数据流程的前提），`/health` 会把数据面报告为 `missing`，直到数据 workflow 发布第一代 generation。
 
 ### 4. 配置服务并部署
 
@@ -99,7 +121,7 @@ Worker secrets 与 Actions secrets 是两套配置，需要分别设置。完整
 
 `MCP_TOOLSET` 控制 **MCP 客户端可见的工具面**：默认 `research`（全部只读研究工具，不暴露 capture / star-and-ingest）；只有显式设置 `all` 才暴露写工具。该选项只改变 MCP 的工具发现与调用面，REST 路由保持不变；无效值会让 MCP 初始化失败。
 
-数据更新与 Worker 部署已经彻底分离。`Update Repos Info` 只负责 R2 数据；`Deploy Worker` 只在主分支 Worker 相关代码变化或手动触发时部署。部署 workflow 需要 Actions secrets `CLOUDFLARE_API_TOKEN`、`R2_ACCOUNT_ID`、`MCP_API_KEY`，以及 repository variable `WORKER_URL`，部署后会自动调用 `/health` 做生产 smoke check。
+数据更新与 Worker 部署已经彻底分离。`Update Repos Info` 只负责 R2 数据；`Deploy Worker` 只在主分支 Worker 相关代码变化或手动触发时部署。部署 workflow 需要 Actions secrets `CLOUDFLARE_API_TOKEN`、`R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`MCP_API_KEY`，以及 repository variable `WORKER_URL`；部署后无条件调用 `/health` 做生产 smoke check，任何一项缺失都会让 workflow 失败而不是跳过验证。
 
 ## 连接 AI 助手
 
