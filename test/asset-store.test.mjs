@@ -380,3 +380,43 @@ test('the hot index includes a snapshot of exactly the ingests folded by CI', ()
   assert.equal(snapshot.entries.find(entry => entry.repo.toLowerCase() === 'ingested/tool').reason, 'user ingested it')
   assert.ok(snapshot.entries.every(entry => snapshot.keys.includes(entry.key)))
 })
+
+test('a previous ingest snapshot seeds the incremental fold without replaying known raw keys', () => {
+  const previousPath = path.join(TMP, 'previous-asset-index.json')
+  const knownKey = 'state/ingest-journal/already-folded.jsonl'
+  const rawPath = path.join(TMP, knownKey)
+  const entry = {
+    repo: 'Incremental/Tool',
+    description: 'already folded source data',
+    reason: 'durable curator memory',
+    ingested_at: '2026-02-19T00:00:00Z',
+    key: knownKey,
+  }
+
+  fs.writeFileSync(previousPath, JSON.stringify({
+    ingest_snapshot: { keys: [knownKey], entries: [entry] },
+  }))
+  fs.writeFileSync(rawPath, `${JSON.stringify({ ...entry, reason: 'must not be replayed' })}\n`)
+
+  try {
+    store.accumulateAssets()
+    const state = readState()
+    const snapshot = readIndex().ingest_snapshot
+
+    assert.equal(state.repos['incremental/tool']?.tier, 'curated')
+    assert.equal(state.repos['incremental/tool']?.reason, 'durable curator memory')
+    assert.equal(snapshot.entries.some(item => item.repo === 'Incremental/Tool'), true)
+    assert.equal(snapshot.keys.includes(knownKey), true)
+  }
+  finally {
+    fs.rmSync(previousPath, { force: true })
+    fs.rmSync(rawPath, { force: true })
+    store.accumulateAssets()
+  }
+})
+
+test('the hot index snapshots the raw probe keys folded by this generation', () => {
+  const snapshot = readIndex().probe_snapshot
+  assert.ok(Array.isArray(snapshot.keys))
+  assert.ok(snapshot.keys.every(key => key.startsWith('state/probe-captures/')))
+})

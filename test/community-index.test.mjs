@@ -14,6 +14,7 @@ test('every community source contributes to the index', () => {
     rankings: {
       breakoutWeekly: [{ repo: 'break/Out', stars: 10 }],
       agentSkillRepos: [{ repo: 'skill/Repo', stars: 20 }],
+      helloGitHub: [{ repo: 'hello/Pick', description_zh: 'curated' }],
       trending: {
         overall_daily: [{ repo: 'trend/Daily', stars: 30 }],
         rust_weekly: [{ repo: 'trend/Rust', stars: 40 }],
@@ -23,7 +24,7 @@ test('every community source contributes to the index', () => {
 
   assert.deepEqual(
     [...index.keys()].sort(),
-    ['break/out', 'skill/repo', 'trend/daily', 'trend/rust', 'user/ingested'],
+    ['break/out', 'hello/pick', 'skill/repo', 'trend/daily', 'trend/rust', 'user/ingested'],
     'keys are lowercased so a lookup cannot depend on GitHub casing',
   )
 })
@@ -41,6 +42,7 @@ test('the user ingest supersedes boards for the same repository regardless of ca
 
   assert.equal(index.size, 1, 'one repository, one record')
   assert.equal(index.get('acme/tool').reason, 'ingested by the user')
+  assert.deepEqual(index.get('acme/tool').source_channels, ['breakout', 'trending', 'curated'])
 })
 
 test('a missing or empty document is an empty index, not a crash', () => {
@@ -55,4 +57,14 @@ test('records without a repository name are skipped rather than keyed undefined'
     rankings: { trending: { overall_daily: [undefined, { repo: 'ok/two' }] } },
   })
   assert.deepEqual([...index.keys()].sort(), ['ok/one', 'ok/two'])
+})
+
+test('HelloGitHub prose is normalized to the shared description field', () => {
+  const index = buildCommunityIndex({
+    rankings: {
+      helloGitHub: [{ repo: 'hello/pick', description_zh: '中文精选描述', issue: '123' }],
+    },
+  })
+  assert.equal(index.get('hello/pick').description, '中文精选描述')
+  assert.deepEqual(index.get('hello/pick').source_channels, ['hellogithub'])
 })

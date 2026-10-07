@@ -17,6 +17,7 @@ import {
   optionalString,
   PayloadTooLargeError,
   readJsonBody,
+  stringParam,
 } from '../src/http.js'
 
 test('an absent or empty integer parameter falls back to the documented default', () => {
@@ -56,6 +57,11 @@ test('the boolean and string readers match what the API documents', () => {
   assert.equal(optionalString(' rust '), 'rust')
   assert.equal(optionalString(''), undefined)
   assert.equal(optionalString(null), undefined)
+  assert.equal(optionalString('12345678', { parameter: 'language', maxLength: 8 }), '12345678')
+  assert.throws(
+    () => optionalString('123456789', { parameter: 'language', maxLength: 8 }),
+    BadRequestError,
+  )
 })
 
 test('responses carry the JSON content type and the CORS headers', async () => {
@@ -136,4 +142,15 @@ test('an ingest body that is legitimately sized passes', async () => {
   const body = JSON.stringify({ repo: 'owner/name', reason: 'x'.repeat(500), categories: ['cli-tools'] })
   const parsed = await readJsonBody(new Request('https://x/api/ingest', { method: 'POST', body }), { limit: 8 * 1024 })
   assert.equal(parsed.repo, 'owner/name')
+})
+
+test('bounded string parameters reject oversized search inputs before upstream work', () => {
+  const options = { parameter: 'q', fallback: '', minLength: 0, maxLength: 8 }
+  assert.equal(stringParam(null, options), '')
+  assert.equal(stringParam('  terminal  ', options), 'terminal')
+  assert.throws(() => stringParam('123456789', options), BadRequestError)
+  assert.throws(
+    () => stringParam('', { parameter: 'query', minLength: 1, maxLength: 8 }),
+    BadRequestError,
+  )
 })

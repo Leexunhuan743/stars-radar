@@ -21,7 +21,8 @@ Stars Radar 是一个自托管的开源项目研究助手。它把你的 GitHub 
 - **找回收藏**：按用途、关键词或自然语言搜索自己的 GitHub Stars，分类来自你在 GitHub 上创建的 Lists。
 - **发现项目**：浏览 GitHub Trending、近期增长的仓库、HelloGitHub 推荐和 Agent Skills 榜单，也可以直接搜索 GitHub。
 - **比较候选**：一次比较 2–5 个仓库的简介、许可证、语言、维护日期和个人备注；缺少的信息会保留为未知。
-- **查看依据**：读取仓库详情、README 和代码片段，查看检索命中的词语、数据来源与快照时间。
+- **README 章节级语义检索**：每个语义语料库仓库保留 metadata vector，并最多为 8 个均匀覆盖全文的 README chunks 建立独立 BGE-M3 vectors。被选入索引的 README-only 能力可直接参与召回，但不会宣称每一节都已向量化。
+- **查看依据**：`explain=true` 把 `ranking`（排序信号）、`provenance`（字段到证据 ID）和 `evidence[]`（事实依据）分开返回。README evidence 可定位到 generation、SHA-256、chunk/section 身份和新鲜度；第三方 README、描述、代码与网页片段均标为 `external_untrusted`，只能作为证据，不能当作指令。
 - **保存研究结果**：为仓库点 Star 并记录收藏理由。元数据先参与关键词检索，语义检索在下一次成功的数据更新后可用。
 
 检索排序用于筛选候选，不代表项目质量或结论的可信概率。社区榜单来自第三方，可能暂时不可用；请结合数据时间、README、许可证和代码做判断。
@@ -71,10 +72,11 @@ pnpm exec wrangler r2 bucket create your-radar-bucket
 | `R2_BUCKET` | 上一步创建的桶名 |
 | `R2_ACCESS_KEY_ID` | R2 S3 访问密钥 ID |
 | `R2_SECRET_ACCESS_KEY` | R2 S3 访问密钥 |
+| `RETRIEVAL_BENCHMARK_B64` | 私有人工标注检索 benchmark 的 base64；用于候选 generation activation 与 PR retrieval gate |
 
 R2 的 S3 凭据需要能读写该桶。这里的 `GH_TOKEN` 在构建时映射为 `GITHUB_TOKEN`，GitHub 自动提供的工作流令牌不能代替你的个人令牌来同步个人收藏。
 
-在 **Actions** 中启用工作流，然后手动运行 **Update Repos Info**。第一次运行会从你的账号生成收藏目录、README 和检索索引。以后工作流每 6 小时运行一次；失败的运行不会保证新向量已经发布，可手动重试。
+在 **Actions** 中启用工作流，然后手动运行 **Update Repos Info**。第一次运行会从你的账号生成收藏目录、README 和检索索引。以后工作流每 6 小时运行一次。catalog、榜单、资产索引、candidate vectors 以及 README 引用表会作为同一个不可变 generation 发布；activation 前必须先通过 private human-labeled retrieval gate，并对 generation manifest hashes、vector manifest/index/bin 与所有 README blob SHA-256 做完整性校验。只有全部通过才切换 `active-generation.json`。`state/` 下的 ingest/probe 日志与内容寻址 README blobs 作为不可变 source truth 永久保留；构建先读取上一代 snapshot，只从 R2 下载未见过的 state tail。派生 `generations/` 只保留最近 30 个通过远端完整性校验的 ready snapshots，失败/partial generation 不占 rollback 窗口。Worker 自动部署在真正 `wrangler deploy` 前也会验证 active generation；没有合法 generation 时直接 fail closed。
 
 ### 4. 配置服务并部署
 
@@ -82,16 +84,22 @@ R2 的 S3 凭据需要能读写该桶。这里的 `GH_TOKEN` 在构建时映射�
 
 ```sh
 pnpm exec wrangler secret put MCP_API_KEY
+# 必填：写操作使用独立密钥
+pnpm exec wrangler secret put MCP_WRITE_API_KEY
 pnpm exec wrangler secret put GITHUB_TOKEN
 pnpm exec wrangler secret put SILICONFLOW_KEY
 pnpm deploy
 ```
 
-`MCP_API_KEY` 请使用自己生成的随机密钥。`GITHUB_TOKEN` 使用你的 GitHub 个人令牌。部署完成后，Wrangler 会输出服务地址。
+`MCP_API_KEY` 与 `MCP_WRITE_API_KEY` 都是必填，并且必须使用两枚不同的随机密钥。读取密钥只能搜索和读取；写密钥可读且可执行 capture / Star / 收录。`GITHUB_TOKEN` 使用你的 GitHub 个人令牌。部署完成后，Wrangler 会输出服务地址。
 
-Worker secrets 与 Actions secrets 是两套配置，需要分别设置。完整环境变量示例在 [.env.example](.env.example) 中。请妥善保管访问密钥：持有它的客户端能够读取个人备注、调用外部 API，并通过你的 GitHub 令牌执行收藏操作。
+Worker secrets 与 Actions secrets 是两套配置，需要分别设置。完整环境变量示例在 [.env.example](.env.example) 中。请妥善保管两个访问密钥：普通客户端只分发 `MCP_API_KEY`；只有明确需要写操作的可信客户端才分发 `MCP_WRITE_API_KEY`。
 
-如果希望数据工作流在更新完成后自动部署 Worker，还需要在 Actions 中设置 `CLOUDFLARE_API_TOKEN`，并授予对应账号的 Worker 部署权限。未设置时，工作流只更新 R2 数据。
+`wrangler.jsonc` 还配置了两个 Cloudflare Rate Limiting binding：昂贵检索默认 60 次/分钟，写操作默认 20 次/分钟，按认证 key 在当前 Cloudflare location 计数。它们用于保护 embedding、GitHub/Web 探针和写接口，不是精确计费器；如果你的 Cloudflare 账号已经使用示例中的 `namespace_id`，部署前把两个 ID 改成该账号内未占用的正整数。
+
+`MCP_TOOLSET` 控制 **MCP 客户端可见的工具面**：默认 `research`（全部只读研究工具，不暴露 capture / star-and-ingest）；只有显式设置 `all` 才暴露写工具。该选项只改变 MCP 的工具发现与调用面，REST 路由保持不变；无效值会让 MCP 初始化失败。
+
+数据更新与 Worker 部署已经彻底分离。`Update Repos Info` 只负责 R2 数据；`Deploy Worker` 只在主分支 Worker 相关代码变化或手动触发时部署。部署 workflow 需要 Actions secrets `CLOUDFLARE_API_TOKEN`、`R2_ACCOUNT_ID`、`MCP_API_KEY`，以及 repository variable `WORKER_URL`，部署后会自动调用 `/health` 做生产 smoke check。
 
 ## 连接 AI 助手
 
@@ -125,7 +133,7 @@ Worker secrets 与 Actions secrets 是两套配置，需要分别设置。完整
 
 ## 在终端使用
 
-命令行客户端仅依赖 Python 标准库。先设置 `WORKER_URL` 和 `MCP_API_KEY`。
+命令行客户端仅依赖 Python 标准库。先设置 `WORKER_URL` 和 `MCP_API_KEY`；执行 `--capture` 或 `--star` 时必须另外设置 `MCP_WRITE_API_KEY`。
 
 PowerShell：
 
@@ -140,6 +148,8 @@ Bash / zsh：
 ```sh
 export WORKER_URL="https://stars.example.com"
 export MCP_API_KEY="YOUR_MCP_API_KEY"
+# 仅需要写操作时：
+export MCP_WRITE_API_KEY="YOUR_MCP_WRITE_API_KEY"
 python scripts/search_stars_cli.py "Markdown 笔记工具" --scope starred
 ```
 
@@ -166,13 +176,15 @@ python scripts/search_stars_cli.py --help
 
 **搜索不到刚收藏的项目？**
 
-通过 Stars Radar 收藏的项目先进入入库日志，通常在一分钟内被其他服务实例的关键词检索读到。语义向量由下一次成功的 CI 构建生成。直接在 GitHub 点 Star 的项目，要等收藏同步完成才会进入本服务。
+通过 Stars Radar 收藏的项目先进入入库日志，通常在一分钟内被其他服务实例的关键词检索读到。语义向量由下一次成功的 CI 构建生成。语义热集只覆盖当前 Stars 与明确收录的 curated 项目；社区榜单和 archive 长尾仍可通过词法/资产索引参与候选生成，但并不承诺全部向量化。直接在 GitHub 点 Star 的项目，要等收藏同步完成才会进入本服务。
 
 **为什么分类和示例不一样？**
 
 分类来自你自己的 GitHub Lists，没有固定的分类数量。未放进任何 List 的公开收藏归入 `everything-else`。通过服务填写的收录标签保存在本服务，不会自动修改 GitHub Lists。
 
 **数据会公开吗？**
+
+检索质量只认一套真实门禁：必填的 `RETRIEVAL_BENCHMARK_B64` 人工 relevance labels，并要求 README-only、多条件、多语言、negative、community 等 class-level thresholds。可信 workflow 会先恢复 production corpus，再用当前候选代码重新生成 candidate vectors，然后运行 private quality gate；scheduled data build 也在 generation activation 前执行同一门禁。fork PR 只运行不需要 secrets 的 synthetic regression。
 
 生成的数据保存在你的 R2 桶中，不提交到代码仓库；服务接口需要访问密钥。同步管线排除私有仓库。请保持桶为私有，并只把密钥交给受信任的客户端。这是单个账号的个人服务，所有使用同一密钥的客户端共享数据和操作权限。
 

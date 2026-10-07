@@ -40,12 +40,17 @@ test('every registered tool definition is actually registered with the MCP serve
   )
 })
 
-test('registration count matches the declaration count exactly', () => {
-  const wired = [...workerSource.matchAll(/registerTool\(/g)]
+test('registration wrapper is called once per declared tool', () => {
+  const wired = [...workerSource.matchAll(/registerTool\(\s*TOOL_DEFINITIONS\.(\w+)\.name/g)]
   assert.equal(
     wired.length,
     Object.keys(TOOL_DEFINITIONS).length,
-    'one registerTool call per declared tool — an extra call means a tool bypasses the single source of truth',
+    'one conditional wrapper call per declared tool keeps toolset filtering on the single registry',
+  )
+  assert.match(
+    workerSource,
+    /const registerTool = \(name, config, handler\) => \{[\s\S]*?activeToolset\.tools\.has\(name\)[\s\S]*?server\.registerTool\(name, config, handler\)/,
+    'the wrapper must gate the real MCP registration through the active toolset',
   )
 })
 
@@ -70,13 +75,13 @@ test('every tool passes its OWN schema by reference, never inline or borrowed', 
   }
 })
 
-test('the extraction above parses every registerTool call', () => {
-  // Guards the previous test from silently matching nothing after the call shape
-  // changes: an unparsed call would otherwise be reported as compliant.
-  const calls = [...workerSource.matchAll(/registerTool\(/g)].length
+test('the extraction above parses every tool-definition wrapper call', () => {
+  // The wrapper itself delegates once to server.registerTool; only calls carrying a TOOL_DEFINITIONS
+  // entry represent public tools and therefore belong in this registry accounting.
+  const calls = [...workerSource.matchAll(/registerTool\(\s*TOOL_DEFINITIONS\./g)].length
   assert.equal(
     registrations().length,
     calls,
-    'every registerTool call must be parseable by this test',
+    'every public tool wrapper call must be parseable by this test',
   )
 })

@@ -15,13 +15,14 @@ test('the actual Worker serves authenticated research routes and registers usabl
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'stars-radar-worker-'))
   const config = path.join(directory, 'wrangler.json')
   const state = path.join(directory, 'state')
-  const key = 'fixture-integration-key'
+  const key = 'fixture-integration-read-key'
+  const writeKey = 'fixture-integration-write-key'
   fs.writeFileSync(config, JSON.stringify({
     name: 'fixture-research-worker',
     main: path.join(root, 'src', 'index.js'),
     compatibility_date: '2025-04-08',
     compatibility_flags: ['nodejs_compat'],
-    vars: { MCP_API_KEY: key, GITHUB_TOKEN: '', SILICONFLOW_KEY: '', BRAVE_SEARCH_API_KEY: '', TAVILY_API_KEY: '' },
+    vars: { MCP_API_KEY: key, MCP_WRITE_API_KEY: writeKey, GITHUB_TOKEN: '', SILICONFLOW_KEY: '', BRAVE_SEARCH_API_KEY: '', TAVILY_API_KEY: '' },
     r2_buckets: [{ binding: 'R2', bucket_name: 'fixture-research-bucket' }],
   }))
   let proxy
@@ -36,19 +37,25 @@ test('the actual Worker serves authenticated research routes and registers usabl
     const writeArtifact = async (key, content) => fs.writeFileSync(path.join(directory, key), typeof content === 'string' ? content : new Uint8Array(content))
     await writeArtifact('catalog.json', JSON.stringify({ repos, totalRepos: 2, categories: [], generatedAt: '2026-10-03T00:00:00Z' }))
     await writeArtifact('asset-index.json', JSON.stringify({ repos: {}, intent_inverted: {}, totalRepos: 0 }))
-    const names = Object.keys(repos)
-    const index = new TextEncoder().encode(JSON.stringify(names))
-    const binary = new Float32Array(DIMS * names.length)
+    await writeArtifact('asset-state.json', JSON.stringify({ repos: {} }))
+    const records = Object.keys(repos).map(repo => ({
+      id: `repo:${repo.toLowerCase()}`,
+      repo,
+      kind: 'repo',
+    }))
+    const index = new TextEncoder().encode(JSON.stringify(records))
+    const binary = new Float32Array(DIMS * records.length)
     binary[0] = 1
     binary[DIMS] = 1
     await writeArtifact('embeddings-index.json', index)
     await writeArtifact('embeddings.bin', binary.buffer)
-    await writeArtifact('embeddings-manifest.json', JSON.stringify(await vectorManifest(names, index, binary)))
+    await writeArtifact('embeddings-fingerprints.json', JSON.stringify({}))
+    await writeArtifact('embeddings-manifest.json', JSON.stringify(await vectorManifest(records, index, binary)))
     fs.mkdirSync(path.join(directory, 'rankings'))
     fs.writeFileSync(path.join(directory, 'rankings', 'rankings.json'), '{}')
     fs.mkdirSync(path.join(directory, 'stars', 'fixture'), { recursive: true })
-    fs.writeFileSync(path.join(directory, 'stars', 'fixture', 'one.md'), '# Local README\nVerified seed data.')
-    assert.equal(await seedLocalR2(proxy.env.R2, directory), 7)
+    fs.writeFileSync(path.join(directory, 'stars', 'fixture', 'one.md'), '# Local README\nVerified terminal music player seed data.')
+    assert.ok(await seedLocalR2(proxy.env.R2, directory) >= 10)
     await proxy.dispose()
     proxy = null
     worker = await unstable_dev(path.join(root, 'src', 'index.js'), {
@@ -63,30 +70,78 @@ test('the actual Worker serves authenticated research routes and registers usabl
       experimental: { disableExperimentalWarning: true, disableDevRegistry: true, watch: false, showInteractiveDevSession: false },
     })
     const headers = { Authorization: `Bearer ${key}` }
+    const writeHeaders = { Authorization: `Bearer ${writeKey}` }
     assert.equal((await worker.fetch('/health')).status, 401)
     const health = await (await worker.fetch('/health', { headers })).json()
     assert.equal(health.ok, true)
     assert.equal(health.data.totalStarred, 2, 'temporary R2 data must be loaded before any candidate lookup')
+    assert.ok(health.data.dataGeneration?.id, 'health must expose the generation serving this isolate')
     assert.equal(health.data.vectorCount, 2)
+    assert.equal(health.data.repoVectorCount, 2)
+    assert.equal(health.data.readmeChunkVectorCount, 0)
+    assert.deepEqual(health.data.rateLimits, {
+      expensive_requests: false,
+      write_requests: false,
+      locality: 'cloudflare_location',
+    })
+    assert.deepEqual(health.data.mcpToolset, {
+      name: 'research',
+      valid: true,
+      tool_count: 13,
+      write_tools_exposed: false,
+    })
     const compared = await (await worker.fetch('/api/compare?repos=fixture/one,fixture/two', { headers })).json()
     assert.deepEqual(compared.data.repositories.map(repo => repo.license), ['MIT', 'Apache-2.0'])
     assert.equal((await worker.fetch('/api/compare?repos=fixture/one,FIXTURE/ONE', { headers })).status, 400)
+    assert.equal(
+      (await worker.fetch(`/api/search?q=${'x'.repeat(513)}`, { headers })).status,
+      400,
+      'oversized REST search input must fail before embedding or document work',
+    )
+    assert.equal(
+      (await worker.fetch(`/api/repository?repo=${'x'.repeat(201)}`, { headers })).status,
+      400,
+      'oversized repository identifiers must be rejected at the HTTP boundary',
+    )
+    assert.equal(
+      (await worker.fetch('/api/trending?category=not-a-board', { headers })).status,
+      400,
+      'unknown trending boards must not masquerade as successful empty lists',
+    )
     assert.equal((await worker.fetch('/api/ingest', {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: 'fixture/one' }),
+    })).status, 403, 'read credentials must be rejected before any write-side work')
+    assert.equal((await worker.fetch('/api/ingest', {
+      method: 'POST',
+      headers: { ...writeHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo: 'fixture/one', categories: 'incorrect-type' }),
-    })).status, 400, 'malformed permanent metadata must be rejected before upstream calls or journal writes')
+    })).status, 400, 'the write credential reaches validation but malformed metadata is still rejected before upstream work')
+    assert.equal((await worker.fetch('/api/ingest', {
+      method: 'POST',
+      headers: { ...writeHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: 'fixture/one', reason: 'x'.repeat(1001) }),
+    })).status, 400, 'oversized curator notes fail schema validation before any GitHub write')
     const metadata = await (await worker.fetch('/api/repository?repo=fixture/one', { headers })).json()
     assert.equal('readme' in metadata.data, false)
     const search = await (await worker.fetch('/api/search?q=music%20player&explain=true', { headers })).json()
     assert.equal(search.data[0].repo, 'fixture/one')
-    assert.ok(search.data[0].explanation.matched_tokens.includes('music'))
+    assert.ok(search.data[0].ranking.literal_matches.tokens.includes('music'))
+    assert.equal(search.data[0].evidence_state.readme.status, 'ok')
+    assert.ok(search.data[0].evidence_state.readme.literal_hits >= 1)
+    const literalEvidence = search.data[0].evidence.find(item => item.kind === 'readme_literal')
+    assert.ok(literalEvidence)
+    assert.match(literalEvidence.content.snippet, /terminal music player/)
     client = new Client({ name: 'fixture-research-client', version: '1.0.0' })
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://${worker.address}:${worker.port}/mcp`), { requestInit: { headers } }))
     const tools = await client.listTools()
-    assert.equal(tools.tools.length, 14)
+    assert.equal(tools.tools.length, 13)
     assert.equal(tools.tools.find(tool => tool.name === 'compare_repositories').annotations.readOnlyHint, true)
-    assert.equal(tools.tools.find(tool => tool.name === 'search_github_live').annotations.readOnlyHint, false)
+    assert.equal(tools.tools.find(tool => tool.name === 'search_github_live').annotations.readOnlyHint, true)
+    assert.equal(tools.tools.some(tool => tool.name === 'capture_github_discovery'), false)
+    assert.equal(tools.tools.some(tool => tool.name === 'star_and_ingest_repo'), false)
+
     const result = await client.callTool({ name: 'compare_repositories', arguments: { repos: ['fixture/one', 'fixture/two'] } })
     assert.notEqual(result.isError, true)
     assert.equal(JSON.parse(result.content[0].text).repositories.length, 2)

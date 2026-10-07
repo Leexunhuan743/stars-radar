@@ -10,21 +10,14 @@
 /**
  * @param {object} params
  * @param {boolean} params.fileExists Whether `stars/<owner>/<repo>.md` is already on disk.
- * @param {object|undefined} params.cachedEntry The catalogue entry from the previous run.
+ * @param {string|undefined} params.sourcePushedAt The upstream push timestamp represented by the cached README.
  * @param {string|undefined} params.pushedAt The repository's current `pushed_at` from GitHub.
  * @returns {boolean} true when the README must be fetched again.
  */
-export function needsReadmeDownload({ fileExists, cachedEntry, pushedAt }) {
-  // A missing file always wins: the corpus is what the Worker reads, and the catalogue alone is
-  // not enough to answer get_repo_readme.
+export function needsReadmeDownload({ fileExists, sourcePushedAt, pushedAt }) {
   if (!fileExists)
     return true
-  // No cached entry means this repository is new to the catalogue.
-  if (!cachedEntry)
+  if (!pushedAt || !sourcePushedAt)
     return true
-  // An unchanged push date means the rendered README cannot have changed. A missing date on
-  // either side makes that comparison impossible, and re-downloading is the safe answer.
-  if (!pushedAt || !cachedEntry.pushedAt)
-    return true
-  return cachedEntry.pushedAt !== pushedAt
+  return sourcePushedAt !== pushedAt
 }

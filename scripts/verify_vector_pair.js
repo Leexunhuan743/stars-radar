@@ -2,7 +2,7 @@
 
 import fs from 'node:fs'
 import process from 'node:process'
-import { describePairMismatch, expectedPairBytes, vectorCountFromBytes, verifyVectorManifest } from '../src/embeddings.js'
+import { describePairMismatch, expectedPairBytes, validateVectorIndex, vectorCountFromBytes, verifyVectorManifest } from '../src/embeddings.js'
 import { embeddingRepositories, foldJournalFiles } from '../src/ingest-journal.js'
 import { CATALOG_KEY, EMBEDDINGS_BIN_KEY, EMBEDDINGS_INDEX_KEY, EMBEDDINGS_MANIFEST_KEY, INGEST_JOURNAL_PREFIX } from '../src/object-keys.js'
 
@@ -35,12 +35,17 @@ export async function verifyVectorPair(root = '.') {
     return 'No vector pair and an empty catalogue (fresh install), nothing to verify.'
   }
 
-  const names = JSON.parse(fs.readFileSync(indexPath, 'utf-8'))
+  const records = JSON.parse(fs.readFileSync(indexPath, 'utf-8'))
+  validateVectorIndex(records)
   const bytes = fs.statSync(binPath).size
-  const problem = describePairMismatch({ names, bytes })
+  const problem = describePairMismatch({ records, bytes })
   if (problem)
     throw new Error(problem)
-  const indexed = new Set(names.map(name => name.toLowerCase()))
+  const indexed = new Set(
+    records
+      .filter(record => record.kind === 'repo')
+      .map(record => record.repo.toLowerCase()),
+  )
   const missing = requiredRepos.filter(repo => !indexed.has(repo.repo.toLowerCase()))
   if (missing.length > 0)
     throw new Error(`Vector corpus is missing confirmed repositories: ${missing.map(repo => repo.repo).join(', ')}`)
@@ -48,9 +53,11 @@ export async function verifyVectorPair(root = '.') {
   const manifestPath = `${root}/${EMBEDDINGS_MANIFEST_KEY}`
   if (!fs.existsSync(manifestPath))
     throw new Error('Vector manifest is missing; build vectors before publishing.')
-  await verifyVectorManifest(JSON.parse(fs.readFileSync(manifestPath, 'utf-8')), names, fs.readFileSync(indexPath), fs.readFileSync(binPath))
+  await verifyVectorManifest(JSON.parse(fs.readFileSync(manifestPath, 'utf-8')), records, fs.readFileSync(indexPath), fs.readFileSync(binPath))
 
-  return `${names.length} names * ${expectedPairBytes(1)}B = ${bytes}B (${vectorCountFromBytes(bytes)} vectors)`
+  const repoRecords = records.filter(record => record.kind === 'repo').length
+  const chunkRecords = records.length - repoRecords
+  return `${records.length} records (${repoRecords} repo + ${chunkRecords} README) * ${expectedPairBytes(1)}B = ${bytes}B (${vectorCountFromBytes(bytes)} vectors)`
 }
 
 if (process.argv[1]?.endsWith('verify_vector_pair.js')) {

@@ -2,10 +2,17 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { compareRepositories, getRepositoryDetails, repositoryName, RepositoryRequestError } from '../src/repository-details.js'
 
+const README_SHA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const DOCUMENTS = {
   catalog: { generatedAt: '2026-10-01T00:00:00Z', repos: { 'Acme/Tool': { repo: 'Acme/Tool', stars: 0, language: 'Rust', reason: 'works offline', pushedAt: '2026-09-30T00:00:00Z' } } },
   assetIndex: { generatedAt: '2026-10-02T00:00:00Z', repos: { 'other/tool': { repo: 'Other/Tool', license: 'MIT', description: 'community utility', topics: ['cli'] } } },
   harvested: [],
+  readmes: {
+    generation: { published_at: '2026-10-02T12:00:00Z' },
+    repos: {
+      'acme/tool': { repo: 'Acme/Tool', sha256: README_SHA },
+    },
+  },
 }
 
 const NO_README = { R2: { get: () => {
@@ -23,7 +30,13 @@ test('compact metadata does not read a README or use the network for known repos
   assert.equal(result.pushed_at, '2026-09-30T00:00:00Z')
   assert.equal(result.reason, 'works offline')
   assert.equal('readme' in result, false)
-  assert.deepEqual(result.evidence, { source: 'catalog', fetched_at: null, snapshot_at: '2026-10-01T00:00:00Z', url: 'https://github.com/Acme/Tool' })
+  assert.equal(result.evidence[0].kind, 'repository_metadata')
+  assert.equal(result.evidence[0].source.kind, 'catalog')
+  assert.equal(result.evidence[0].source.snapshot_at, '2026-10-01T00:00:00Z')
+  assert.equal(result.provenance.stars, result.evidence[0].id)
+  const note = result.evidence.find(item => item.kind === 'personal_note')
+  assert.equal(note.source.kind, 'catalog')
+  assert.equal(result.provenance.reason, note.id)
 })
 
 test('comparison has identical fields, keeps input order and labels unknown facts', async () => {
@@ -32,7 +45,7 @@ test('comparison has identical fields, keeps input order and labels unknown fact
   assert.deepEqual(Object.keys(result.repositories[0]), Object.keys(result.repositories[1]))
   assert.equal(result.repositories[0].license, 'MIT')
   assert.equal(result.repositories[1].license, null)
-  assert.equal(result.repositories[0].evidence.source, 'asset_index')
+  assert.equal(result.repositories[0].evidence[0].source.kind, 'asset_index')
   assert.equal('score' in result.repositories[0], false)
 })
 
@@ -40,7 +53,42 @@ test('ingested metadata outranks the accumulated community copy', async () => {
   const documents = { ...DOCUMENTS, harvested: [{ repo: 'Other/Tool', reason: 'selected for research', ingested_at: '2026-10-03T00:00:00Z' }] }
   const result = await getRepositoryDetails(NO_README, documents, 'other/tool', { ...NO_FETCH, include_readme: false })
   assert.equal(result.reason, 'selected for research')
-  assert.equal(result.evidence.source, 'ingest_journal')
+  assert.equal(result.evidence[0].source.kind, 'ingest_journal')
+  const note = result.evidence.find(item => item.kind === 'personal_note')
+  assert.equal(note.source.kind, 'ingest_journal')
+  assert.equal(result.provenance.reason, note.id)
+})
+
+test('merged personal fields retain independent source provenance', async () => {
+  const documents = {
+    ...DOCUMENTS,
+    catalog: {
+      ...DOCUMENTS.catalog,
+      repos: {
+        ...DOCUMENTS.catalog.repos,
+        'Acme/Tool': {
+          ...DOCUMENTS.catalog.repos['Acme/Tool'],
+          reason: 'catalog reason',
+          summary: 'catalog summary',
+        },
+      },
+    },
+    harvested: [{
+      repo: 'Acme/Tool',
+      reason: 'ingest reason',
+      ingested_at: '2026-10-03T00:00:00Z',
+    }],
+  }
+  const result = await getRepositoryDetails(NO_README, documents, 'acme/tool', { ...NO_FETCH, include_readme: false })
+  assert.equal(result.reason, 'ingest reason')
+  assert.equal(result.summary, 'catalog summary')
+
+  const reasonEvidence = result.evidence.find(item => item.id === result.provenance.reason)
+  const summaryEvidence = result.evidence.find(item => item.id === result.provenance.summary)
+  assert.equal(reasonEvidence.source.kind, 'ingest_journal')
+  assert.equal(reasonEvidence.source.snapshot_at, '2026-10-03T00:00:00Z')
+  assert.equal(summaryEvidence.source.kind, 'catalog')
+  assert.equal(summaryEvidence.source.snapshot_at, '2026-10-01T00:00:00Z')
 })
 
 test('missing compact metadata is fetched from GitHub with provenance but without README calls', async () => {
@@ -56,29 +104,75 @@ test('missing compact metadata is fetched from GitHub with provenance but withou
   assert.deepEqual(calls, ['https://api.github.com/repos/fresh/project'])
   assert.equal(result.archived, false)
   assert.equal(result.license, null)
-  assert.equal(result.evidence.source, 'github')
-  assert.equal(result.evidence.fetched_at, '2026-10-03T00:00:00.000Z')
+  assert.equal(result.evidence[0].source.kind, 'github')
+  assert.equal(result.evidence[0].source.fetched_at, '2026-10-03T00:00:00.000Z')
 })
 
 test('archived README is wrapped and capped while metadata comes from the catalogue', async () => {
   const env = { R2: { get: async (key) => {
-    assert.equal(key, 'Acme/Tool.md')
+    assert.equal(key, `readmes/${README_SHA}.md`)
     return { text: async () => `# Tool\n${'x'.repeat(51000)}` }
   } } }
   const result = await getRepositoryDetails(env, DOCUMENTS, 'acme/tool', NO_FETCH)
   assert.equal(result.truncated, true)
-  assert.equal(result.readme_source, 'archive')
+  assert.equal(result.readme_source, 'generation')
+  const readmeEvidence = result.evidence.find(item => item.kind === 'readme_document')
+  assert.ok(readmeEvidence)
+  assert.equal(readmeEvidence.content.readme_sha256, README_SHA)
+  assert.equal(result.provenance.readme, readmeEvidence.id)
   assert.ok(result.readme.startsWith('<untrusted_content'))
   assert.ok(result.readme.endsWith('</untrusted_content>'))
 })
 
-test('a missing archive falls back to GitHub README and 404 is explicitly unavailable', async () => {
+test('a missing archive falls back to GitHub README without reusing archived content identity', async () => {
   const env = { R2: { get: async () => null } }
-  const success = await getRepositoryDetails(env, DOCUMENTS, 'acme/tool', { fetcher: async () => new Response('# Live README') })
+  const success = await getRepositoryDetails(env, DOCUMENTS, 'acme/tool', {
+    now: () => new Date('2026-10-03T00:00:00Z'),
+    fetcher: async () => new Response('# Live README'),
+  })
   assert.equal(success.readme_source, 'github')
+  const evidence = success.evidence.find(item => item.kind === 'readme_document')
+  assert.match(evidence.content.readme_sha256, /^[0-9a-f]{64}$/)
+  assert.notEqual(evidence.content.readme_sha256, README_SHA)
+  assert.equal(evidence.content.object_key, null)
+  assert.equal(evidence.generation, null)
+  assert.equal(evidence.source.fetched_at, '2026-10-03T00:00:00.000Z')
+
   const absent = await getRepositoryDetails(env, DOCUMENTS, 'acme/tool', { fetcher: async () => new Response(null, { status: 404 }) })
   assert.equal(absent.readme_available, false)
   assert.equal(absent.readme, null)
+})
+
+test('generation README absence is returned as absence without loading or refetching fake content', async () => {
+  const documents = {
+    ...DOCUMENTS,
+    readmes: {
+      generation: {
+        id: '20261005T080000Z-ceaa138fd814-777',
+        commit: 'ceaa138fd814f70ff2a194cf050a789e7e77cf95',
+        published_at: '2026-10-05T08:00:00.000Z',
+      },
+      repos: {
+        'acme/tool': {
+          repo: 'Acme/Tool',
+          sha256: null,
+          status: 'absent',
+          source_pushed_at: '2026-10-01T00:00:00Z',
+        },
+      },
+    },
+  }
+  const env = { R2: { get: async () => assert.fail('absent README must not read a blob') } }
+  const result = await getRepositoryDetails(env, documents, 'acme/tool', {
+    fetcher: async () => assert.fail('unchanged absent README must not be refetched'),
+  })
+  assert.equal(result.readme_available, false)
+  assert.equal(result.readme_source, 'generation')
+  assert.equal(result.readme_status, 'absent')
+  const evidence = result.evidence.find(item => item.kind === 'readme_document')
+  assert.equal(evidence.content.readme_sha256, null)
+  assert.equal(evidence.content.object_key, null)
+  assert.equal(evidence.content.status, 'absent')
 })
 
 test('upstream failure is not returned as empty metadata or an absent README', async () => {
@@ -106,17 +200,32 @@ test('refresh compares current GitHub facts without losing personal reasons', as
   assert.equal(result.repositories[0].stars, 200)
   assert.equal(result.repositories[0].license, 'Apache-2.0')
   assert.equal(result.repositories[0].reason, 'works offline')
-  assert.equal(result.repositories[0].evidence.source, 'github')
+  assert.equal(result.repositories[0].evidence[0].source.kind, 'github')
 })
 
 test('frontmatter metadata survives when only a README archive knows the repository', async () => {
-  const env = { R2: { get: async () => ({ text: async () => '---\nstars: 42\nlanguage: Go\nreason: useful offline\ncategories: ["research"]\n---\n# Archive' }) } }
-  const result = await getRepositoryDetails(env, DOCUMENTS, 'archive/only', NO_FETCH)
+  const env = { R2: { get: async (key) => {
+    assert.equal(key, `readmes/${README_SHA}.md`)
+    return { text: async () => '---\nstars: 42\nlanguage: Go\nreason: useful offline\ncategories: ["research"]\n---\n# Archive' }
+  } } }
+  const documents = {
+    ...DOCUMENTS,
+    readmes: {
+      generation: { published_at: '2026-10-02T12:00:00Z' },
+      repos: {
+        'archive/only': { repo: 'archive/only', sha256: README_SHA },
+      },
+    },
+  }
+  const result = await getRepositoryDetails(env, documents, 'archive/only', NO_FETCH)
   assert.equal(result.stars, 42)
   assert.equal(result.reason, 'useful offline')
   assert.deepEqual(result.categories, ['research'])
-  assert.equal(result.evidence.source, 'readme_archive')
-  assert.equal(result.evidence.fetched_at, null)
+  assert.equal(result.evidence[0].source.kind, 'readme_generation')
+  assert.equal(result.evidence[0].source.fetched_at, null)
+  const note = result.evidence.find(item => item.kind === 'personal_note')
+  assert.equal(note.source.kind, 'readme_generation')
+  assert.equal(result.provenance.reason, note.id)
 })
 
 test('repository lookup errors distinguish missing projects, rate limits and transport failures', async () => {

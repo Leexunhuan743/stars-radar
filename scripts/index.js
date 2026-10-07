@@ -1,14 +1,18 @@
 import process from 'node:process'
 import fs from 'fs-extra'
-import { embeddingRepositories, foldJournalFiles } from '../src/ingest-journal.js'
-import { CATALOG_KEY, INGEST_JOURNAL_PREFIX, LOCAL_STARS_DIR, localReadmePath } from '../src/object-keys.js'
+import {
+  CATALOG_KEY,
+  LOCAL_STARS_DIR,
+  localReadmePath,
+  PREVIOUS_READMES_MANIFEST_FILE,
+  README_SYNC_STATUS_FILE,
+} from '../src/object-keys.js'
 import { needsReadmeDownload } from './download-plan.js'
 import { collectAllRankings } from './fetch_rankings.js'
 import { fetchUserLists, summarizeCategories } from './github-lists.js'
 import { fetchReadme, getAllStarredRepos, mapLimit } from './github_stars.js'
 import { useEnvProxy } from './outbound-proxy.js'
 import { renderEnrichedMarkdown } from './star_export.js'
-import { buildRepositoryVectors } from './vector_pipeline.js'
 
 const CONCURRENCY = 10
 
@@ -36,6 +40,16 @@ async function main() {
         // re-download all 900+ READMEs and, worse, publish a catalogue that has lost every
         // cached category and reason.
         throw new Error(`Could not read ${CATALOG_KEY}: ${e.message}. Fix or remove the file before syncing.`)
+      }
+    }
+
+    let previousReadmes = { repos: {} }
+    if (fs.existsSync(PREVIOUS_READMES_MANIFEST_FILE)) {
+      try {
+        previousReadmes = fs.readJsonSync(PREVIOUS_READMES_MANIFEST_FILE)
+      }
+      catch (e) {
+        throw new Error(`Could not read ${PREVIOUS_READMES_MANIFEST_FILE}: ${e.message}. Fix or remove the file before syncing.`)
       }
     }
 
@@ -77,12 +91,19 @@ async function main() {
     // 2. Identify new or modified repositories
     const toDownload = []
     const updatedCatalogRepos = {}
+    const readmeSync = {
+      generated_at: new Date().toISOString(),
+      active_generation: process.env.ACTIVE_GENERATION_ID || null,
+      repos: {},
+    }
 
     for (const repo of liveStarred) {
       const name = repo.full_name
       const cached = oldCatalog.repos?.[name]
+      const previousReadme = previousReadmes.repos?.[name.toLowerCase()] || null
       const targetFilePath = localReadmePath(name)
       const fileExists = fs.existsSync(targetFilePath)
+      const reusableReadmeState = fileExists || previousReadme?.status === 'absent'
 
       // Retain or initialize metadata (prioritizing live cloud lists over stale cache)
       const categories = liveMemberships[name] || ['everything-else']
@@ -102,9 +123,6 @@ async function main() {
         summary: cached?.summary || '',
         language: repo.language || cached?.language || '',
         topics: repo.topics || cached?.topics || [],
-        primaryFunction: cached?.primaryFunction || null,
-        platforms: cached?.platforms || [],
-        facets: cached?.facets || [],
         pushedAt: repo.pushed_at,
         starredAt: repo.starred_at || cached?.starredAt,
       }
@@ -112,44 +130,75 @@ async function main() {
       updatedCatalogRepos[name] = repoInfo
 
       const needsDownload = needsReadmeDownload({
-        fileExists,
-        cachedEntry: cached,
+        fileExists: reusableReadmeState,
+        sourcePushedAt: previousReadme?.source_pushed_at,
         pushedAt: repo.pushed_at,
       })
 
       if (needsDownload) {
         toDownload.push(repoInfo)
       }
+      else if (reusableReadmeState) {
+        readmeSync.repos[name.toLowerCase()] = {
+          repo: name,
+          status: previousReadme?.status === 'absent' ? 'absent' : 'ok',
+          upstream_pushed_at: repoInfo.pushedAt || null,
+          source_pushed_at: previousReadme?.source_pushed_at || null,
+        }
+      }
     }
 
     console.log(`Repos needing README download: ${toDownload.length} / ${liveStarred.length}`)
 
-    // A README that could not be fetched must leave NO file behind. `needsReadmeDownload` treats an
-    // existing file as up to date, so writing an empty document here would make the failure
-    // permanent: the corpus would keep a README-less entry for a repository that has one, and the
-    // next run would skip it. Leaving the file absent means the next run retries, and the failures
-    // are reported below rather than counted as successes.
+    // README refreshes degrade independently from repository metadata. A transient failure keeps an
+    // existing README blob as stale evidence and preserves the README manifest's source clock; a new
+    // repository with no cached README is marked unavailable. Either state retries on the next run,
+    // while vector/generation integrity failures later in the pipeline still stop publication.
     let readmeFailures = []
     if (toDownload.length > 0) {
       const run = await mapLimit(toDownload, CONCURRENCY, async (repoInfo) => {
         const readme = await fetchReadme(TOKEN, repoInfo.repo)
-        const content = renderEnrichedMarkdown(repoInfo, readme || '')
-        const ownerDir = `${LOCAL_STARS_DIR}/${repoInfo.owner}`
-        fs.ensureDirSync(ownerDir)
-        fs.writeFileSync(`stars/${repoInfo.repo}.md`, content, 'utf-8')
+        const target = localReadmePath(repoInfo.repo)
+        if (readme === null) {
+          fs.removeSync(target)
+        }
+        else {
+          const content = renderEnrichedMarkdown(repoInfo, readme)
+          const ownerDir = `${LOCAL_STARS_DIR}/${repoInfo.owner}`
+          fs.ensureDirSync(ownerDir)
+          fs.writeFileSync(target, content, 'utf-8')
+        }
+        readmeSync.repos[repoInfo.repo.toLowerCase()] = {
+          repo: repoInfo.repo,
+          status: readme === null ? 'absent' : 'ok',
+          fetched_at: new Date().toISOString(),
+          upstream_pushed_at: repoInfo.pushedAt || null,
+          source_pushed_at: repoInfo.pushedAt || null,
+        }
       })
       readmeFailures = run.failures
       if (readmeFailures.length > 0) {
+        for (const failure of readmeFailures) {
+          const target = localReadmePath(failure.item.repo)
+          const staleAvailable = fs.existsSync(target)
+          readmeSync.repos[failure.item.repo.toLowerCase()] = {
+            repo: failure.item.repo,
+            status: staleAvailable ? 'stale' : 'unavailable',
+            upstream_pushed_at: failure.item.pushedAt || null,
+            source_pushed_at: previousReadmes.repos?.[failure.item.repo.toLowerCase()]?.source_pushed_at || null,
+            error: failure.error?.message || String(failure.error),
+          }
+        }
         const named = readmeFailures.slice(0, 10).map(f => f.item.repo).join(', ')
         console.warn(
-          `Could not fetch ${readmeFailures.length} README(s); they were left out of the corpus and will be `
-          + `retried on the next run: ${named}${readmeFailures.length > 10 ? ', …' : ''}`,
+          `Could not refresh ${readmeFailures.length} README(s); stale cached blobs are preserved when available, `
+          + `otherwise the repository is published without README evidence and retried next run: `
+          + `${named}${readmeFailures.length > 10 ? ', …' : ''}`,
         )
       }
     }
 
-    if (readmeFailures.length > 0)
-      throw new Error(`README sync failed for ${readmeFailures.length} repositories; refusing to publish a partial corpus. Retry the build.`)
+    fs.writeJsonSync(README_SYNC_STATUS_FILE, readmeSync, { spaces: 2 })
 
     const categoriesList = summarizeCategories(liveCategories, updatedCatalogRepos)
 
@@ -161,24 +210,9 @@ async function main() {
       repos: updatedCatalogRepos,
     }
 
-    // 3.5 Auto-embed any new starred repositories into Vector DB.
-    // Deliberately NOT wrapped in try/catch: a swallowed embedding failure leaves the
-    // vector pair stale while the export artifacts move ahead, which silently costs
-    // every newly starred repo its semantic search. The vector pipeline refuses to
-    // write or upload a pair whose bin and index disagree, so failing here stops the
-    // run instead of shipping a false success. (Note: the bin and index are two
-    // separate writes, so an interruption between them can leave a mismatched pair
-    // on disk — the next run detects that and rebuilds rather than propagating it.)
-    const journalFiles = fs.existsSync(INGEST_JOURNAL_PREFIX)
-      ? fs.readdirSync(INGEST_JOURNAL_PREFIX).filter(name => name.endsWith('.jsonl')).map(name => ({ key: name, text: fs.readFileSync(`${INGEST_JOURNAL_PREFIX}${name}`, 'utf-8') }))
-      : []
-    const { harvested, problems } = foldJournalFiles(journalFiles)
-    if (problems.length > 0)
-      throw new Error(`Could not read the ingest journal for embedding: ${problems.join('; ')}`)
-    await buildRepositoryVectors(embeddingRepositories(updatedCatalogRepos, harvested))
-
-    // catalog.json is written only once the vector stage has succeeded: failing after
-    // it used to leave a half-updated product set on disk.
+    // Persist the repository snapshot before building the unified hot asset index. Semantic
+    // vectors are deliberately built later, after asset_store.js has merged starred, curated,
+    // and community rows into the exact hot set the Worker can return.
     fs.writeJsonSync(CATALOG_KEY, newCatalog, { spaces: 2 })
     console.log(`Saved updated ${CATALOG_KEY}`)
 

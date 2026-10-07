@@ -1,55 +1,29 @@
-// Keyword-only relevance normalization for hybrid search.
-//
-// Standalone, dependency-free module so it can be unit-tested under plain Node
-// (src/index.js itself imports `agents/mcp` which resolves a `cloudflare:` scheme
-// that Node cannot load). The Worker imports this via src/index.js; the G2
-// regression test imports it directly — one source of truth, no replica drift.
-//
-// Mapping min(1 - 1/(1+kwWeight/8), 0.95):
-//   - low end passes default min_score 0.25 (weight>=5 -> >=0.38)
-//   - high end keeps rank discrimination (w19->0.70, w40->0.83, w130->0.94)
-//     so relevance_score does not saturate and collapse top-N ordering
+// Relevance lives on one 0..1 scale. Lexical and semantic evidence are calibrated
+// independently, then corroborating evidence is combined without source-specific bonuses.
+
 export function keywordRelevanceScore(kwWeight) {
-  return Number(Math.min(1 - 1 / (1 + kwWeight / 8), 0.95).toFixed(3))
+  const weight = Number.isFinite(kwWeight) ? Math.max(0, kwWeight) : 0
+  if (weight === 0)
+    return 0
+  return Number((weight / (weight + 8)).toFixed(3))
 }
 
-// Combined relevance for one result, given whichever channels scored it.
-//
-// Extracted from src/index.js so the confidence-bonus arithmetic and the three
-// branches are unit-testable: the +0.35 keyword bonus and the separate 0.98 / 0.95
-// ceilings previously existed only inside the file that cannot be imported.
-export function relevanceScore({ vScore = 0, kwWeight = 0 }) {
-  if (vScore > 0 && kwWeight > 0) {
-    const kwBonus = Math.min((kwWeight / 100) * 0.35, 0.35)
-    return Number(Math.min(vScore + kwBonus, 0.98).toFixed(3))
-  }
-  if (vScore > 0)
-    return Number(Math.min(vScore, 0.95).toFixed(3))
-  if (kwWeight > 0)
-    return keywordRelevanceScore(kwWeight)
-  return 0
+export function vectorRelevanceScore(vScore) {
+  const similarity = Number.isFinite(vScore) ? Math.max(0, Math.min(vScore, 1)) : 0
+  if (similarity <= 0.2)
+    return 0
+
+  // Search only admits cosine similarities above 0.2. Map that retrieval floor to zero relevance
+  // instead of pretending a raw cosine is already calibrated on the same scale as lexical evidence.
+  return Number(((similarity - 0.2) / 0.8).toFixed(3))
 }
 
-// Community cap: at most ceil(limit*0.4) community/archive results per query.
-export function communityCap(limit) {
-  return Math.ceil(limit * 0.4)
-}
+export function relevanceScore({ vScore = 0, kwWeight = 0 } = {}) {
+  const semantic = vectorRelevanceScore(vScore)
+  const lexical = keywordRelevanceScore(kwWeight)
 
-// Applies the cap to an already-ranked result list: starred hits are never
-// dropped, and non-starred ones are admitted until the cap is reached. Extracted
-// so the truncation order — not just the cap arithmetic — is unit-testable
-// outside the Cloudflare worker runtime.
-export function applyCommunityCap(rankedResults, limit) {
-  const cap = communityCap(limit)
-  const capped = []
-  let communityCount = 0
-  for (const result of rankedResults) {
-    const isStarred = result.source === 'starred'
-    if (!isStarred && communityCount >= cap)
-      continue
-    if (!isStarred)
-      communityCount++
-    capped.push(result)
-  }
-  return capped.slice(0, limit)
+  // A single channel keeps exactly its calibrated score. When independent lexical and semantic
+  // evidence corroborate the same repository, noisy-OR raises confidence without letting repeated
+  // synonyms or source provenance manufacture score. This is monotonic, bounded, and symmetric.
+  return Number((1 - (1 - semantic) * (1 - lexical)).toFixed(3))
 }

@@ -17,19 +17,36 @@
  */
 export function buildCommunityIndex({ rankings, harvested } = {}) {
   const byRepo = new Map()
-  const add = (items) => {
+  const add = (items, source) => {
     for (const item of items || []) {
-      if (item?.repo)
-        byRepo.set(item.repo.toLowerCase(), item)
+      if (!item?.repo)
+        continue
+      const key = item.repo.toLowerCase()
+      const previous = byRepo.get(key)
+      const sourceChannels = [...new Set([
+        ...(previous?.source_channels || []),
+        ...(source ? [source] : []),
+      ])]
+      const normalized = {
+        ...item,
+        // HelloGitHub names its prose field description_zh; consumers use one stable description
+        // field regardless of which community feed supplied the record.
+        description: item.description ?? item.description_zh ?? previous?.description,
+      }
+      byRepo.set(key, { ...(previous || {}), ...normalized, source_channels: sourceChannels })
     }
   }
 
-  // Weakest first: each later source supersedes the previous one for the same repository.
-  add((rankings || {}).breakoutWeekly)
-  add((rankings || {}).agentSkillRepos)
+  // Weakest first: each later source supersedes the previous record's fields for the same
+  // repository, while source_channels accumulates every independent observation.
+  add((rankings || {}).breakoutWeekly, 'breakout')
+  add((rankings || {}).agentSkillRepos, 'skill_repo')
+  add((rankings || {}).helloGitHub, 'hellogithub')
+  for (const list of Object.values((rankings || {}).topStarred || {}))
+    add(list, 'top_starred')
   for (const list of Object.values((rankings || {}).trending || {}))
-    add(list)
-  add(harvested)
+    add(list, 'trending')
+  add(harvested, 'curated')
 
   return byRepo
 }

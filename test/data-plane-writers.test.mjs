@@ -57,16 +57,16 @@ test('a missing baseline starts empty, an unreadable one fails', async () => {
   }
 })
 
-test('the upload step refuses a run that produced no asset index', async () => {
+test('generation staging refuses a run that produced no asset index', () => {
   const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
-  assert.ok(
-    !/was not produced by this run and is not being uploaded/.test(workflow),
-    'the silent warning branch is back: an object that this run was supposed to produce would be skipped while the job still succeeds',
-  )
+  const prepare = fs.readFileSync(path.join(ROOT, 'scripts', 'prepare_data_generation.js'), 'utf-8')
+
+  assert.match(workflow, /node scripts\/prepare_data_generation\.js/)
+  assert.match(prepare, /ASSET_INDEX_KEY/)
   assert.match(
-    workflow,
-    /::error::asset-index\.json was not produced by this run[\s\S]{0,200}?\n\s*exit 1/,
-    'asset-index.json must be fatal when missing: scripts/asset_store.js writes it unconditionally, so its absence means R2 keeps serving a stale index',
+    prepare,
+    /Generation is missing required documents/,
+    'a build that failed to produce asset-index.json must stop before any generation can activate',
   )
 })
 
@@ -111,57 +111,19 @@ test('the publishing job cannot write to the repository', () => {
   )
 })
 
-test('the sweep is gated on a non-empty corpus, and every upload is read back', () => {
-  // Two guards that exist because the bucket is now the only copy:
-  //   * `sync --delete` with an empty stars/ deletes the whole README corpus while reporting
-  //     success, so the sweep must be refused when there is nothing to sweep with;
-  //   * an upload that silently truncated would leave the Worker serving the previous revision
-  //     of a document this job claims to have published, so each document is read back.
+test('README blobs and immutable generation are validated before activation', () => {
   const build = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
 
-  const emptyCorpusGuard = build.match(/local_readmes[\s\S]{0,400}?exit 1/)
-  assert.ok(emptyCorpusGuard, 'the sweep is no longer gated on a non-empty corpus')
-  assert.ok(
-    build.indexOf('local_readmes') < build.indexOf('aws s3 sync stars/'),
-    'the corpus check must precede the sync that uses --delete',
-  )
+  assert.match(build, /Restore active generation README corpus/)
+  assert.match(build, /generations\/\$\{ACTIVE_GENERATION_ID\}\/readmes\.json/)
+  assert.match(build, /Publish content-addressed README blobs/)
+  assert.match(build, /s3:\/\/\$\{R2_BUCKET\}\/readmes\//)
+  assert.doesNotMatch(build, /aws s3 sync stars\/ "s3:\/\/\$\{R2_BUCKET\}\//)
 
-  assert.match(build, /head-object --bucket "\$\{R2_BUCKET\}" --key "\$\{key\}"[\s\S]{0,200}ContentLength/, 'uploaded documents must be read back and sized')
-  assert.match(build, /BEFORE_INGEST_OBJECTS/, 'the run must record the ingest journal size it started with')
-  assert.match(
-    build,
-    /ingests were destroyed/,
-    'the read-back step must fail when the journal shrank during the run',
-  )
-
-  // Prefix counts decide whether a prefix is empty or unreadable, and the first version of this
-  // got both halves wrong in ways only a live run exposed:
-  //   * `aws s3 ls` exits non-zero for an absent prefix, so a first run looked like a credentials
-  //     failure and the job stopped;
-  //   * `--query KeyCount` prints the literal "None" for an empty listing, and "None" compared as
-  //     a string against a number meant the zero-backup guard never fired.
-  // Match the quoted form commands use; the comment above the helper names the query on purpose.
-  assert.ok(!/--query\s+['"]KeyCount['"]/.test(build), '--query KeyCount returns "None" for an empty prefix; count the JSON listing instead')
-  assert.match(build, /count_objects\(\) \{[\s\S]{0,400}?\|\| return 1/, 'the counting helper must fail only when the request itself failed')
-  // Each step runs in its own shell, so the helper must be defined in every step that calls it —
-  // using it without the definition failed a live run with `command not found`. One definition per
-  // step that counts, and one call site per count (the read-back loop counts both prefixes from a
-  // single call).
-  assert.equal((build.match(/count_objects\(\) \{/g) || []).length, 4, 'the counting helper must be defined in every step that uses it')
-  assert.equal((build.match(/count_objects "/g) || []).length, 4, 'every prefix count must go through the helper')
-
-  // The corpus has to come back from R2 before the sync runs, otherwise every repository looks new
-  // and all ~930 READMEs are re-fetched from GitHub on every run — the incrementality the
-  // pipeline's own predicate implements never gets a chance to apply.
-  assert.match(
-    build,
-    /aws s3 sync "s3:\/\/\$\{R2_BUCKET\}\/" stars\/[\s\S]{0,200}--include "\*\/\*\.md"/,
-    'the README corpus must be restored from R2 before the incremental sync',
-  )
-  assert.ok(
-    build.indexOf('Download the README corpus from R2') < build.indexOf('Fetch starred repos and READMEs'),
-    'the corpus restore must happen before the sync that decides what to fetch',
-  )
+  const validate = build.indexOf('Validate candidate generation hashes, vectors and README refs')
+  const activate = build.indexOf('Activate verified data generation')
+  assert.ok(validate >= 0 && validate < activate)
+  assert.match(build, /validate_remote_generation\.js --generation/)
 })
 
 test('every http answer goes through the envelope helper', () => {
@@ -181,12 +143,9 @@ test('every http answer goes through the envelope helper', () => {
   )
 })
 
-test('no workflow ever deletes or sweeps the Worker-owned state prefixes', () => {
-  // Two independent hazards, both silent:
-  //   * the bucket-root `sync --delete` would remove any prefix it does not explicitly exclude,
-  //     so one schedule tick could delete every ingest and probe capture;
-  //   * the merge step used to `s3 rm --recursive` the probe prefix afterwards, which raced with
-  //     the Worker appending new captures and — with no snapshots — destroyed the only copy.
+test('no workflow deletes Worker-owned append-only state', () => {
+  // Raw ingest and probe objects are durable source data. Publication snapshots avoid replaying
+  // old objects, so the workflow has no reason to delete anything under state/.
   const workflows = fs.readdirSync(path.join(ROOT, '.github', 'workflows'))
     .filter(name => name.endsWith('.yaml') || name.endsWith('.yml'))
     .map(name => ({ name, text: fs.readFileSync(path.join(ROOT, '.github', 'workflows', name), 'utf-8') }))
@@ -194,24 +153,77 @@ test('no workflow ever deletes or sweeps the Worker-owned state prefixes', () =>
   const build = workflows.find(w => w.name === 'build.yaml')
   assert.ok(build, 'build.yaml must exist for this check to mean anything')
 
-  // Specifically the sync whose destination is the bucket root: the other `s3 sync` calls only
-  // read state prefixes into the workspace.
-  const sync = build.text.match(/aws s3 sync stars\/ "s3:\/\/\$\{R2_BUCKET\}\/"[\s\S]*?cli-connect-timeout \d+/)
-  assert.ok(sync, 'the bucket-root sync is expected to exist')
-  assert.match(sync[0], /--exclude "state\/\*"/, 'the state prefix must be excluded from the corpus sync')
-
-  // `--delete` is passed through the guarded array rather than spelled out in the sync command,
-  // so the way to check that the sweep is still gated is to check where the flag is built.
-  // (`--delete` also appears in the comment above the guard, so match the assignment itself.)
-  const deleteFlag = build.text.match(/sweep=\(--delete\)/)
-  assert.ok(deleteFlag, 'the corpus sweep disappeared, or it is no longer passed through the guard; stale READMEs would accumulate forever')
-  assert.ok(
-    build.text.indexOf('local_readmes') < build.text.indexOf('sweep=(--delete)'),
-    'the corpus check must run before the sweep flag is built',
-  )
-
   for (const { name, text } of workflows) {
-    const destructive = text.match(/aws s3 rm[^\n]*state\/[^\n]*/g) || []
+    const destructive = text.match(/(?:aws s3 rm|aws s3api delete-object)[^\n]*state\/[^\n]*/g) || []
     assert.deepEqual(destructive, [], `${name} deletes objects under state/, which has no backup: ${destructive.join(', ')}`)
   }
+})
+
+test('Worker deployment validates a complete active generation before wrangler deploy', () => {
+  const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'deploy-worker.yaml'), 'utf-8')
+  const preflight = workflow.indexOf('Validate active v3 data generation before deploy')
+  const deploy = workflow.indexOf('name: Deploy Worker', preflight + 1)
+
+  assert.ok(preflight >= 0, 'deploy workflow must validate the active generation')
+  assert.match(workflow, /node scripts\/validate_remote_generation\.js --active/)
+  assert.ok(deploy > preflight, 'active generation validation must happen before Worker deployment')
+})
+
+test('candidate retrieval quality and remote integrity validation happen before generation activation', () => {
+  const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
+  const assetIndex = workflow.indexOf('Build unified asset index (accumulate starred + community + probes)')
+  const vectors = workflow.indexOf('Build complete hot-set vector corpus')
+  const privateGate = workflow.indexOf('Enforce private candidate retrieval quality gate')
+  const remoteIntegrity = workflow.indexOf('Validate candidate generation hashes, vectors and README refs')
+  const activation = workflow.indexOf('Activate verified data generation')
+
+  assert.ok(assetIndex >= 0 && assetIndex < vectors, 'the complete hot asset index must exist before semantic vectors are built')
+  assert.ok(vectors >= 0 && vectors < privateGate, 'candidate quality must evaluate the complete hot-set vector corpus')
+  assert.ok(privateGate >= 0 && privateGate < activation, 'private candidate retrieval gate must block activation')
+  assert.ok(remoteIntegrity >= 0 && remoteIntegrity < activation, 'remote generation integrity must block activation')
+  assert.match(workflow, /validate_remote_generation\.js --generation/)
+  assert.match(workflow, /validate_private_benchmark\.js/)
+})
+
+test('publisher keeps immutable source truth and bounded validated generations', () => {
+  const build = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build.yaml'), 'utf-8')
+  const retrieval = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'retrieval-quality.yaml'), 'utf-8')
+
+  assert.match(build, /GENERATION_RETENTION: 30/)
+  assert.match(build, /Mark validated generation ready/)
+  assert.match(build, /Retain latest validated data generations/)
+  assert.match(build, /aws s3 rm "s3:\/\/\$\{R2_BUCKET\}\/\$\{prefix\}" --recursive/)
+  assert.doesNotMatch(build, /(?:aws s3 rm|aws s3api delete-object)[^\n]*state\//)
+  assert.doesNotMatch(build, /(?:aws s3 rm|aws s3api delete-object)[^\n]*readmes\//)
+  assert.match(retrieval, /Rebuild candidate vectors with PR code/)
+  assert.match(retrieval, /node scripts\/build_candidate_vectors\.js/)
+  assert.match(build, /node scripts\/restore_readme_corpus\.js/)
+  assert.match(retrieval, /node scripts\/restore_readme_corpus\.js/)
+  assert.doesNotMatch(build, /ref\.object_key/)
+  assert.doesNotMatch(retrieval, /ref\.object_key/)
+  assert.match(build, /node scripts\/state_tail_plan\.js ingest/)
+  assert.match(build, /node scripts\/state_tail_plan\.js probe/)
+  assert.doesNotMatch(retrieval, /legacy flat production plane/)
+  assert.doesNotMatch(retrieval, /string-only vector index/)
+})
+
+test('fork retrieval PRs use a non-secret regression path instead of requiring repository secrets', () => {
+  const retrieval = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'retrieval-quality.yaml'), 'utf-8')
+  assert.match(retrieval, /TRUSTED_QUALITY_EVENT/)
+  assert.match(retrieval, /Run non-secret fork retrieval regression/)
+  assert.match(retrieval, /if: env\.TRUSTED_QUALITY_EVENT != 'true'/)
+  assert.match(retrieval, /run: pnpm eval:retrieval/)
+  assert.match(retrieval, /Require strict candidate quality configuration\n\s+if: env\.TRUSTED_QUALITY_EVENT == 'true'/)
+})
+
+test('Worker deployment verifies both read and write secret bindings before wrangler deploy', () => {
+  const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'deploy-worker.yaml'), 'utf-8')
+  const secretCheck = workflow.indexOf('Require production Worker auth secrets before deploy')
+  const deploy = workflow.indexOf('name: Deploy Worker', secretCheck + 1)
+
+  assert.ok(secretCheck >= 0, 'deploy workflow must verify production Worker auth secret names')
+  assert.match(workflow, /wrangler secret list --format json/)
+  assert.match(workflow, /MCP_API_KEY/)
+  assert.match(workflow, /MCP_WRITE_API_KEY/)
+  assert.ok(deploy > secretCheck, 'Worker auth secret validation must happen before deployment')
 })

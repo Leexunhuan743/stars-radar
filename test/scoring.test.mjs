@@ -44,8 +44,15 @@ test('a group synonym weighs less than a token the user typed', () => {
   assert.ok(expanded < typed, `an expanded synonym (${expanded}) must weigh less than a typed token (${typed})`)
 })
 
-test('every word of every matched group is counted, not just the first', () => {
-  assert.equal(scoreText('chrome firefox', query({ matchedGroups: new Set(['browser']) })), 2 * INTENT_WEIGHT)
+test('an intent domain scores once regardless of how many synonyms appear', () => {
+  assert.equal(
+    scoreText('chrome firefox', query({ matchedGroups: new Set(['browser']) })),
+    INTENT_WEIGHT,
+  )
+  assert.equal(
+    scoreText('browser chrome firefox', query({ matchedGroups: new Set(['browser']) })),
+    INTENT_WEIGHT,
+  )
 })
 
 test('an unknown group contributes nothing instead of throwing', () => {

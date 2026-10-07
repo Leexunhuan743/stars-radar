@@ -12,6 +12,24 @@
       "bucket_name": "github-stars"
     }
   ],
+  "ratelimits": [
+    {
+      "name": "EXPENSIVE_RATE_LIMITER",
+      "namespace_id": "1356767481",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    },
+    {
+      "name": "WRITE_RATE_LIMITER",
+      "namespace_id": "1356767482",
+      "simple": {
+        "limit": 20,
+        "period": 60
+      }
+    }
+  ],
   "observability": {
     "enabled": true
   }

@@ -6,14 +6,17 @@
       "type": "object",
       "properties": {
         "query": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 512
         },
         "explain": {
           "default": false,
           "type": "boolean"
         },
         "category": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
         },
         "source": {
           "type": "string",
@@ -24,6 +27,7 @@
             "community",
             "ranking",
             "trending",
+            "top_starred",
             "hellogithub",
             "breakout",
             "skill",
@@ -69,7 +73,9 @@
       "type": "object",
       "properties": {
         "repo": {
-          "type": "string"
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
         },
         "include_readme": {
           "default": true,
@@ -99,7 +105,9 @@
           "maxItems": 5,
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 200
           }
         },
         "refresh": {
@@ -151,15 +159,18 @@
   },
   "search_github_live": {
     "name": "search_github_live",
-    "readOnly": false,
+    "readOnly": true,
     "schema": {
       "type": "object",
       "properties": {
         "query": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 512
         },
         "language": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         },
         "min_stars": {
           "default": 15,
@@ -185,20 +196,20 @@
           ]
         },
         "since": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         },
         "until": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         },
         "limit": {
           "default": 10,
           "type": "integer",
           "minimum": 1,
           "maximum": 30
-        },
-        "persist": {
-          "default": false,
-          "type": "boolean"
         }
       },
       "required": [
@@ -206,8 +217,31 @@
         "min_stars",
         "sort",
         "order",
-        "limit",
-        "persist"
+        "limit"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "capture_github_discovery": {
+    "name": "capture_github_discovery",
+    "readOnly": false,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "repo",
+        "query"
       ],
       "additionalProperties": false
     }
@@ -219,19 +253,28 @@
       "type": "object",
       "properties": {
         "query": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 256
         },
         "repo": {
-          "type": "string"
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
         },
         "language": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         },
         "extension": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
         },
         "limit": {
           "default": 5,
@@ -254,10 +297,13 @@
       "type": "object",
       "properties": {
         "query": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 512
         },
         "domain": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
         },
         "freshness": {
           "default": "all",
@@ -292,16 +338,22 @@
       "type": "object",
       "properties": {
         "repo": {
-          "type": "string"
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
         },
         "reason": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 1000
         },
         "categories": {
           "default": [],
+          "maxItems": 20,
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
           }
         }
       },
@@ -350,7 +402,9 @@
       "type": "object",
       "properties": {
         "category": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
         },
         "limit": {
           "default": 10,
@@ -381,7 +435,9 @@
       "type": "object",
       "properties": {
         "category": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
         },
         "limit": {
           "default": 25,
@@ -410,7 +466,8 @@
           "maximum": 50
         },
         "cursor": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 2048
         }
       },
       "required": [

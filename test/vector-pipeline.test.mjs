@@ -1,51 +1,45 @@
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-// Tests for the vector-pair restore path and the R2 configuration contract.
-//
-// Two bugs are guarded here:
-//   * a partially configured R2 used to abort the run. CI performs all of its R2 I/O
-//     through `aws s3` and deliberately does not require CLOUDFLARE_API_TOKEN, so
-//     "account set, token absent" is a supported configuration — throwing on it broke
-//     every build that added a star. The other failure mode was guessing a bucket name:
-//     the old `R2_BUCKET || 'github-stars'` default could read an unrelated bucket.
-//   * restoring only the binary left the committed index in place, so the pair disagreed
-//     by however many vectors had been appended since — a state the Worker rejects,
-//     silently disabling vector search.
-//
-// A third bug is guarded by the append tests at the bottom: the invariant `bin bytes ==
-// names * 1024 * 4` was only warned about on both sides of the append, so a run could
-// publish a mismatched pair and still report success.
-//
-// The data root is redirected with VECTOR_STORE_ROOT before the module is imported, so
-// these tests never touch the repository's own embeddings pair. `globalThis.fetch` is
-// stubbed to model both the R2 REST endpoint and the embedding provider.
 import { after, before, test } from 'node:test'
 
 const DIMS = 1024
 const BYTES_PER_VECTOR = DIMS * 4
+const PROFILE = 'repo-metadata-readme-chunks-v3'
+const GENERATION_ID = '20261005T081500Z-ceaa138fd814-4242'
+const GENERATION_SHA = 'ceaa138fd814f70ff2a194cf050a789e7e77cf95'
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'vector-pipeline-test-'))
 const R2_VARS = ['R2_ACCOUNT_ID', 'R2_BUCKET', 'CLOUDFLARE_API_TOKEN', 'VECTOR_STORE_ROOT']
 const ENV_VARS = [...R2_VARS, 'SILICONFLOW_URL', 'SILICONFLOW_KEY']
-const savedEnv = Object.fromEntries(ENV_VARS.map(k => [k, process.env[k]]))
+const savedEnv = Object.fromEntries(ENV_VARS.map(key => [key, process.env[key]]))
 const realFetch = globalThis.fetch
 
 let downloadVectorsFromR2
 let buildRepositoryVectors
+let embeddingText
+let repositoryVectorRows
+
+function repoRecord(repo) {
+  return { id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' }
+}
 
 before(async () => {
-  // Env must be set before the import: the module resolves its data root and its endpoints
-  // at load time.
   process.env.VECTOR_STORE_ROOT = TMP
   process.env.R2_ACCOUNT_ID = 'account'
   process.env.R2_BUCKET = 'bucket'
   process.env.CLOUDFLARE_API_TOKEN = 'token'
   process.env.SILICONFLOW_URL = 'https://embeddings.test/v1/embeddings'
   process.env.SILICONFLOW_KEY = 'test-key'
-  ;({ downloadVectorsFromR2, buildRepositoryVectors } = await import('../scripts/vector_pipeline.js'))
+  ;({
+    downloadVectorsFromR2,
+    buildRepositoryVectors,
+    embeddingText,
+    repositoryVectorRows,
+  } = await import('../scripts/vector_pipeline.js'))
 })
 
 after(() => {
@@ -59,13 +53,6 @@ after(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
-/**
- * Model the R2 REST endpoint plus the embedding endpoint.
- *
- * `objects` (`{ 'embeddings.bin': Buffer }`) is what the bucket holds; unknown names 404.
- * `denyPut` lists object names whose PUT is refused with 403, which is how a publish can
- * succeed on one object and fail on the other.
- */
 function stubR2(objects) {
   const bucket = { objects: { ...objects }, requests: [], embeddings: [] }
   globalThis.fetch = async (url, init = {}) => {
@@ -73,8 +60,11 @@ function stubR2(objects) {
     if (target.endsWith('/v1/embeddings')) {
       const body = JSON.parse(init.body)
       bucket.embeddings.push(body.input)
-      const data = body.input.map((_, i) => ({ embedding: Array.from({ length: DIMS }, (_, d) => (i + d) / 1000) }))
-      return new Response(JSON.stringify({ data }), { status: 200, headers: { 'content-type': 'application/json' } })
+      const data = body.input.map((_, i) => ({
+        index: i,
+        embedding: Array.from({ length: DIMS }, (_, d) => (i + d + 1) / 1000),
+      }))
+      return Response.json({ data })
     }
 
     const name = target.split('/objects/')[1]
@@ -93,130 +83,135 @@ function vectorBuffer(count) {
   return Buffer.alloc(count * BYTES_PER_VECTOR, 0x7F)
 }
 
+function manifestBytes(records, index, binary) {
+  return Buffer.from(JSON.stringify({
+    model: 'BAAI/bge-m3',
+    input_profile: PROFILE,
+    dimensions: DIMS,
+    count: records.length,
+    repo_count: records.filter(record => record.kind === 'repo').length,
+    index_sha256: createHash('sha256').update(index).digest('hex'),
+    binary_sha256: createHash('sha256').update(binary).digest('hex'),
+  }))
+}
+
+function generationObjects(records, vectorCount = records.length) {
+  const index = Buffer.from(JSON.stringify(records))
+  const binary = vectorBuffer(vectorCount)
+  return {
+    'embeddings.bin': binary,
+    'embeddings-index.json': index,
+    'embeddings-fingerprints.json': Buffer.from('{}'),
+    'embeddings-manifest.json': manifestBytes(records, index, binary),
+  }
+}
+
+function publishedGeneration(records, vectorCount = records.length) {
+  const logical = generationObjects(records, vectorCount)
+  const pointer = Buffer.from(JSON.stringify({
+    schema: 1,
+    id: GENERATION_ID,
+    published_at: '2026-10-05T08:15:00.000Z',
+    commit: GENERATION_SHA,
+  }))
+  return {
+    'active-generation.json': pointer,
+    ...Object.fromEntries(
+      Object.entries(logical).map(([key, value]) => [`generations/${GENERATION_ID}/${key}`, value]),
+    ),
+  }
+}
+
 function localFiles() {
   return {
     bin: path.join(TMP, 'embeddings.bin'),
     index: path.join(TMP, 'embeddings-index.json'),
+    fingerprints: path.join(TMP, 'embeddings-fingerprints.json'),
+    manifest: path.join(TMP, 'embeddings-manifest.json'),
   }
 }
 
-/** Lay down a local pair that may deliberately disagree: `vectors` worth of binary beside `names`. */
-function writeLocalPair(names, vectors) {
-  const { bin, index } = localFiles()
-  fs.writeFileSync(bin, vectorBuffer(vectors))
-  fs.writeFileSync(index, JSON.stringify(names))
+function clearLocalGeneration() {
+  for (const file of Object.values(localFiles()))
+    fs.rmSync(file, { force: true })
+  fs.rmSync(path.join(TMP, 'stars'), { recursive: true, force: true })
 }
 
-function readLocalPair() {
-  const { bin, index } = localFiles()
+function writeLocalGeneration(records, vectorCount = records.length) {
+  const files = localFiles()
+  const objects = generationObjects(records, vectorCount)
+  fs.writeFileSync(files.bin, objects['embeddings.bin'])
+  fs.writeFileSync(files.index, objects['embeddings-index.json'])
+  fs.writeFileSync(files.manifest, objects['embeddings-manifest.json'])
+}
+
+function readLocalGeneration() {
+  const files = localFiles()
   return {
-    binBytes: fs.existsSync(bin) ? fs.statSync(bin).size : null,
-    names: fs.existsSync(index) ? JSON.parse(fs.readFileSync(index, 'utf-8')) : null,
+    binBytes: fs.existsSync(files.bin) ? fs.statSync(files.bin).size : null,
+    records: fs.existsSync(files.index) ? JSON.parse(fs.readFileSync(files.index, 'utf-8')) : null,
   }
 }
 
-function clearLocalPair() {
-  const { bin, index } = localFiles()
-  fs.rmSync(bin, { force: true })
-  fs.rmSync(index, { force: true })
-  fs.rmSync(path.join(TMP, 'embeddings-fingerprints.json'), { force: true })
-  fs.rmSync(path.join(TMP, 'embeddings-manifest.json'), { force: true })
-}
-
-test('a consistent pair in R2 is restored, and satisfies the byte-length invariant', async () => {
-  clearLocalPair()
-  const names = ['owner/one', 'Owner/Two']
-  stubR2({
-    'embeddings.bin': vectorBuffer(names.length),
-    'embeddings-index.json': Buffer.from(JSON.stringify(names)),
-  })
+test('a current structured generation in R2 is restored with its manifest', async () => {
+  clearLocalGeneration()
+  const records = [repoRecord('owner/one'), repoRecord('Owner/Two')]
+  stubR2(publishedGeneration(records))
 
   assert.equal(await downloadVectorsFromR2(), true)
 
-  const { bin, index } = localFiles()
-  const writtenNames = JSON.parse(fs.readFileSync(index, 'utf-8'))
-  assert.deepEqual(writtenNames, names, 'display casing must survive the round trip')
-  assert.equal(
-    fs.statSync(bin).size,
-    writtenNames.length * BYTES_PER_VECTOR,
-    'the restored pair must satisfy the invariant the Worker checks',
-  )
+  const local = readLocalGeneration()
+  assert.deepEqual(local.records, records)
+  assert.equal(local.binBytes, records.length * BYTES_PER_VECTOR)
+  assert.equal(fs.existsSync(localFiles().manifest), true)
 })
 
-test('an inconsistent pair in R2 is rejected without writing anything', async () => {
-  clearLocalPair()
-  // The index claims three vectors while the binary holds two.
-  stubR2({
-    'embeddings.bin': vectorBuffer(2),
-    'embeddings-index.json': Buffer.from(JSON.stringify(['a/b', 'c/d', 'e/f'])),
-  })
-
-  assert.equal(await downloadVectorsFromR2(), false, 'a mismatched pair must never be adopted')
-
-  const { bin, index } = localFiles()
-  assert.equal(fs.existsSync(bin), false, 'validation happens before any write')
-  assert.equal(fs.existsSync(index), false, 'validation happens before any write')
-})
-
-test('a missing object leaves no partial pair behind', async () => {
-  clearLocalPair()
-  stubR2({ 'embeddings.bin': vectorBuffer(2) }) // index absent => 404
+test('an inconsistent R2 generation is rejected without writing a local baseline', async () => {
+  clearLocalGeneration()
+  const records = [repoRecord('a/b'), repoRecord('c/d')]
+  stubR2(publishedGeneration(records, 1))
 
   assert.equal(await downloadVectorsFromR2(), false)
-
-  const { bin, index } = localFiles()
-  assert.equal(fs.existsSync(bin), false, 'the binary must not be written when its index is missing')
-  assert.equal(fs.existsSync(index), false)
+  assert.equal(fs.existsSync(localFiles().bin), false)
+  assert.equal(fs.existsSync(localFiles().index), false)
+  assert.equal(fs.existsSync(localFiles().manifest), false)
 })
 
-test('an empty object is treated as absent rather than as an empty pair', async () => {
-  clearLocalPair()
-  stubR2({
-    'embeddings.bin': Buffer.alloc(0),
-    'embeddings-index.json': Buffer.from(JSON.stringify([])),
-  })
+test('a missing manifest makes an R2 baseline unusable', async () => {
+  clearLocalGeneration()
+  const records = [repoRecord('a/b')]
+  const objects = publishedGeneration(records)
+  delete objects[`generations/${GENERATION_ID}/embeddings-manifest.json`]
+  stubR2(objects)
 
   assert.equal(await downloadVectorsFromR2(), false)
-
-  const { bin } = localFiles()
-  assert.equal(fs.existsSync(bin), false, 'a zero-byte binary must not be adopted as a baseline')
+  assert.equal(fs.existsSync(localFiles().bin), false)
 })
 
-test('an unconfigured R2 is skipped rather than fatal', async () => {
-  const saved = Object.fromEntries(R2_VARS.map(k => [k, process.env[k]]))
-  try {
-    for (const key of R2_VARS)
-      delete process.env[key]
-    globalThis.fetch = () => assert.fail('an unconfigured R2 must not issue a request')
-    assert.equal(await downloadVectorsFromR2(), false)
-  }
-  finally {
-    for (const key of R2_VARS) {
-      if (saved[key] !== undefined)
-        process.env[key] = saved[key]
-    }
-  }
+test('an empty binary is not accepted as a reusable R2 generation', async () => {
+  clearLocalGeneration()
+  stubR2(publishedGeneration([]))
+  assert.equal(await downloadVectorsFromR2(), false)
+  assert.equal(fs.existsSync(localFiles().bin), false)
 })
 
-test('a partially configured R2 is skipped rather than fatal', async () => {
-  const partialShapes = [
+test('an unconfigured or partially configured R2 is skipped without issuing requests', async () => {
+  const shapes = [
+    {},
     { R2_ACCOUNT_ID: 'account-id' },
     { R2_ACCOUNT_ID: 'account-id', R2_BUCKET: 'bucket' },
     { R2_BUCKET: 'bucket', CLOUDFLARE_API_TOKEN: 'token' },
     { CLOUDFLARE_API_TOKEN: 'token' },
   ]
-  for (const shape of partialShapes) {
-    const saved = Object.fromEntries(R2_VARS.map(k => [k, process.env[k]]))
+
+  for (const shape of shapes) {
+    const saved = Object.fromEntries(R2_VARS.map(key => [key, process.env[key]]))
     try {
       for (const key of R2_VARS)
         delete process.env[key]
       Object.assign(process.env, shape)
-      globalThis.fetch = () => assert.fail('an incomplete R2 configuration must not issue a request')
-      assert.equal(
-        await downloadVectorsFromR2(),
-        false,
-        `configuration ${JSON.stringify(Object.keys(shape))} must be skipped, not fatal`,
-      )
+      globalThis.fetch = () => assert.fail('incomplete R2 configuration must not issue a request')
+      assert.equal(await downloadVectorsFromR2(), false)
     }
     finally {
       for (const key of R2_VARS) {
@@ -229,106 +224,224 @@ test('a partially configured R2 is skipped rather than fatal', async () => {
   }
 })
 
-// ---------------------------------------------------------------------------- append path
-// The pair is only valid when `bin bytes == names * 1024 * 4`. Everything below pins that
-// invariant on both sides of an append: the baseline the run starts from, and what it leaves
-// in the bucket.
-
-test('a local pair that disagrees is rebuilt, and the append builds a matched local pair', async () => {
-  clearLocalPair()
-  writeLocalPair(['owner/one', 'owner/two', 'owner/three'], 2) // three names, two vectors
-  const bucket = stubR2({}) // no usable baseline in R2 either => rebuild
+test('a malformed local generation is discarded and rebuilt from the authoritative input corpus', async () => {
+  clearLocalGeneration()
+  writeLocalGeneration([repoRecord('owner/one'), repoRecord('owner/two')], 1)
+  const bucket = stubR2({})
 
   const result = await buildRepositoryVectors([{ repo: 'brand/new', description: 'a brand new repository' }])
 
-  const local = readLocalPair()
-  assert.deepEqual(local.names, ['brand/new'], 'names without a vector behind them must be dropped, not carried over')
-  assert.equal(local.binBytes, local.names.length * BYTES_PER_VECTOR, 'the appended binary must hold exactly one vector per name')
+  const local = readLocalGeneration()
+  assert.deepEqual(local.records, [repoRecord('brand/new')])
+  assert.equal(local.binBytes, BYTES_PER_VECTOR)
   assert.equal(result.addedCount, 1)
-  assert.equal('uploaded' in result, false)
+  assert.equal(result.repoVectors, 1)
+  assert.equal(result.readmeChunkVectors, 0)
   assert.ok(bucket.requests.every(request => request.startsWith('GET ')))
 })
 
-test('an authoritative build removes vectors outside its confirmed input corpus', async () => {
-  clearLocalPair()
-  writeLocalPair(['owner/one', 'owner/two', 'owner/three'], 2)
-  const bucket = stubR2({
-    'embeddings.bin': Buffer.concat([vectorBuffer(1), vectorBuffer(1)]),
-    'embeddings-index.json': Buffer.from(JSON.stringify(['owner/one', 'owner/two'])),
-  })
+test('an authoritative build removes records outside its confirmed input corpus', async () => {
+  clearLocalGeneration()
+  stubR2({})
+  await buildRepositoryVectors([
+    { repo: 'owner/one', description: 'one' },
+    { repo: 'owner/two', description: 'two' },
+  ])
 
-  const result = await buildRepositoryVectors([{ repo: 'brand/new', description: 'a brand new repository' }])
+  const result = await buildRepositoryVectors([{ repo: 'brand/new', description: 'new' }])
+  const local = readLocalGeneration()
 
-  const local = readLocalPair()
-  assert.deepEqual(local.names, ['brand/new'])
-  assert.equal(local.binBytes, local.names.length * BYTES_PER_VECTOR)
-  assert.equal(result.totalVectors, 1)
+  assert.deepEqual(local.records, [repoRecord('brand/new')])
   assert.equal(result.removedCount, 2)
-  assert.ok(bucket.requests.every(request => request.startsWith('GET ')))
+  assert.equal(result.totalVectors, 1)
 })
 
-test('the vector builder never publishes or deletes R2 objects, even with REST credentials', async () => {
-  clearLocalPair()
-  writeLocalPair(['owner/one'], 1)
+test('the vector builder never publishes or deletes R2 objects', async () => {
+  clearLocalGeneration()
   const bucket = stubR2({})
   const result = await buildRepositoryVectors([{ repo: 'brand/new', description: 'a new project' }])
+
   assert.equal(result.addedCount, 1)
-  assert.equal('uploaded' in result, false)
-  assert.deepEqual(bucket.requests, [])
   assert.deepEqual(Object.keys(bucket.objects), [])
+  assert.ok(bucket.requests.every(request => request.startsWith('GET ')))
 })
 
-test('unchanged inputs reuse vectors, while changed descriptions refresh only the affected repository', async () => {
-  clearLocalPair()
+test('unchanged metadata reuses vectors while changed metadata refreshes only that repo record', async () => {
+  clearLocalGeneration()
   const bucket = stubR2({})
-  const inputs = [{ repo: 'acme/one', description: 'terminal' }, { repo: 'acme/two', description: 'notes' }]
+  const inputs = [
+    { repo: 'acme/one', description: 'terminal' },
+    { repo: 'acme/two', description: 'notes' },
+  ]
+
   const first = await buildRepositoryVectors(inputs)
   assert.equal(first.addedCount, 2)
   assert.equal(bucket.embeddings.length, 1)
+
   const repeated = await buildRepositoryVectors(inputs)
-  assert.equal(repeated.updatedCount, 0)
   assert.equal(repeated.addedCount, 0)
+  assert.equal(repeated.updatedCount, 0)
   assert.equal(bucket.embeddings.length, 1)
-  const changed = await buildRepositoryVectors([{ ...inputs[0], description: 'offline terminal music player' }, inputs[1]])
+
+  const changed = await buildRepositoryVectors([
+    { ...inputs[0], description: 'offline terminal music player' },
+    inputs[1],
+  ])
   assert.equal(changed.updatedCount, 1)
   assert.equal(changed.totalVectors, 2)
+  assert.equal(bucket.embeddings.length, 2)
   assert.equal(bucket.embeddings[1].length, 1)
-  assert.ok(bucket.embeddings[1][0].includes('offline terminal music player'))
+  assert.match(bucket.embeddings[1][0], /offline terminal music player/)
 })
 
-test('reordering the corpus reorders vector slots without recomputing unchanged embeddings', async () => {
-  clearLocalPair()
+test('reordering repositories reorders record slots without recomputing unchanged vectors', async () => {
+  clearLocalGeneration()
   const bucket = stubR2({})
-  const inputs = [{ repo: 'acme/one', description: 'one' }, { repo: 'acme/two', description: 'two' }]
+  const inputs = [
+    { repo: 'acme/one', description: 'one' },
+    { repo: 'acme/two', description: 'two' },
+  ]
   await buildRepositoryVectors(inputs)
   const original = fs.readFileSync(localFiles().bin)
+
   const result = await buildRepositoryVectors([...inputs].reverse())
   const reordered = fs.readFileSync(localFiles().bin)
+
   assert.equal(result.updatedCount, 0)
+  assert.equal(result.addedCount, 0)
   assert.equal(bucket.embeddings.length, 1)
   assert.deepEqual(reordered.subarray(0, BYTES_PER_VECTOR), original.subarray(BYTES_PER_VECTOR))
-  assert.deepEqual(readLocalPair().names, ['acme/two', 'acme/one'])
+  assert.deepEqual(readLocalGeneration().records.map(record => record.repo), ['acme/two', 'acme/one'])
 })
 
-test('a same-length damaged vector is refreshed instead of trusting an old text fingerprint', async () => {
-  clearLocalPair()
+test('a damaged binary invalidates the entire generation and rebuilds from source', async () => {
+  clearLocalGeneration()
   const bucket = stubR2({})
   const inputs = [{ repo: 'acme/one', description: 'one' }]
   await buildRepositoryVectors(inputs)
+
   const damaged = fs.readFileSync(localFiles().bin)
   damaged[0] ^= 255
   fs.writeFileSync(localFiles().bin, damaged)
-  assert.equal((await buildRepositoryVectors(inputs)).updatedCount, 1)
+
+  const rebuilt = await buildRepositoryVectors(inputs)
+  assert.equal(rebuilt.addedCount, 1)
+  assert.equal(rebuilt.updatedCount, 0)
   assert.equal(bucket.embeddings.length, 2)
 })
 
-test('a short embedding response fails without replacing any of the four existing artifacts', async () => {
-  clearLocalPair()
+test('a short embedding response fails atomically without replacing existing artifacts', async () => {
+  clearLocalGeneration()
   stubR2({})
   await buildRepositoryVectors([{ repo: 'acme/one', description: 'one' }])
-  const files = ['embeddings.bin', 'embeddings-index.json', 'embeddings-fingerprints.json', 'embeddings-manifest.json']
-  const before = files.map(file => fs.readFileSync(path.join(TMP, file)))
+  const files = Object.values(localFiles())
+  const before = files.map(file => fs.readFileSync(file))
+
   globalThis.fetch = async () => Response.json({ data: [] })
-  await assert.rejects(buildRepositoryVectors([{ repo: 'acme/one', description: 'changed' }]), /returned 0 vectors for 1/)
-  files.forEach((file, index) => assert.deepEqual(fs.readFileSync(path.join(TMP, file)), before[index]))
+  await assert.rejects(
+    buildRepositoryVectors([{ repo: 'acme/one', description: 'changed' }]),
+    /returned 0 vectors for 1 records/,
+  )
+
+  files.forEach((file, index) => assert.deepEqual(fs.readFileSync(file), before[index]))
+})
+
+test('README chunks are separate records and do not force the repo metadata vector to recompute', async () => {
+  clearLocalGeneration()
+  const bucket = stubR2({})
+  const inputs = [{ repo: 'acme/one', description: 'generic self-hosted app' }]
+
+  await buildRepositoryVectors(inputs)
+  assert.equal(bucket.embeddings.length, 1)
+  assert.equal(bucket.embeddings[0].length, 1)
+
+  const readmeDir = path.join(TMP, 'stars', 'acme')
+  fs.mkdirSync(readmeDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(readmeDir, 'one.md'),
+    [
+      '---',
+      'repo: acme/one',
+      '---',
+      '# Features',
+      'Supports WebDAV synchronization and S3-compatible storage for remote backups and collaborative workflows.',
+    ].join('\n'),
+  )
+
+  const rebuilt = await buildRepositoryVectors(inputs)
+  assert.equal(rebuilt.addedCount, 1, 'the new README chunk is one new vector record')
+  assert.equal(rebuilt.updatedCount, 0, 'repo metadata did not change')
+  assert.equal(rebuilt.repoVectors, 1)
+  assert.equal(rebuilt.readmeChunkVectors, 1)
+  assert.equal(bucket.embeddings.length, 2)
+  assert.equal(bucket.embeddings[1].length, 1)
+  assert.match(bucket.embeddings[1][0], /WebDAV synchronization/)
+  assert.match(bucket.embeddings[1][0], /Features/)
+
+  const records = readLocalGeneration().records
+  assert.equal(records[0].kind, 'repo')
+  assert.equal(records[1].kind, 'readme_chunk')
+  assert.equal(records[1].heading, 'Features')
+  assert.match(records[1].readme_sha256, /^[0-9a-f]{64}$/)
+  assert.match(records[1].content_sha256, /^[0-9a-f]{64}$/)
+  assert.equal(records[1].ordinal, 0)
+  assert.equal(records[1].chunk_ordinal, 0)
+  assert.deepEqual(records[1].heading_path, ['Features'])
+  assert.match(records[1].text, /S3-compatible storage/)
+
+  const stable = await buildRepositoryVectors(inputs)
+  assert.equal(stable.addedCount, 0)
+  assert.equal(stable.updatedCount, 0)
+  assert.equal(bucket.embeddings.length, 2)
+})
+
+test('changing one README chunk replaces only that chunk vector', async () => {
+  clearLocalGeneration()
+  const bucket = stubR2({})
+  const inputs = [{ repo: 'acme/one', description: 'generic app' }]
+  const readmeDir = path.join(TMP, 'stars', 'acme')
+  fs.mkdirSync(readmeDir, { recursive: true })
+  const file = path.join(readmeDir, 'one.md')
+
+  fs.writeFileSync(file, '# Features\nWebDAV synchronization is available for remote storage and collaborative workflows.')
+  await buildRepositoryVectors(inputs)
+  assert.equal(bucket.embeddings.length, 1)
+  assert.equal(bucket.embeddings[0].length, 2)
+
+  fs.writeFileSync(file, '# Features\nWebDAV and S3 synchronization are available for remote storage and collaborative workflows.')
+  const changed = await buildRepositoryVectors(inputs)
+
+  assert.equal(changed.addedCount, 1)
+  assert.equal(changed.updatedCount, 0)
+  assert.equal(changed.removedCount, 1)
+  assert.equal(bucket.embeddings.length, 2)
+  assert.equal(bucket.embeddings[1].length, 1, 'only the changed chunk is re-embedded')
+})
+
+test('repositoryVectorRows always emits one metadata record plus bounded README chunks', () => {
+  clearLocalGeneration()
+  const readmeDir = path.join(TMP, 'stars', 'acme')
+  fs.mkdirSync(readmeDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(readmeDir, 'one.md'),
+    Array.from({ length: 12 }, (_, index) => (
+      `## Section ${index}\n${'feature detail '.repeat(12)} section-${index}`
+    )).join('\n\n'),
+  )
+
+  const rows = repositoryVectorRows({ repo: 'acme/one', description: 'metadata' })
+  assert.equal(rows[0].record.kind, 'repo')
+  assert.ok(rows.length <= 13, 'one repo vector plus at most twelve README chunks')
+  assert.equal(new Set(rows.map(row => row.record.id)).size, rows.length)
+})
+
+test('embeddingText is metadata-only; README semantics live in chunk records', () => {
+  clearLocalGeneration()
+  const readmeDir = path.join(TMP, 'stars', 'acme')
+  fs.mkdirSync(readmeDir, { recursive: true })
+  fs.writeFileSync(path.join(readmeDir, 'one.md'), '# Features\nWebDAV support is documented here.')
+
+  const text = embeddingText({ repo: 'acme/one', description: 'generic app' })
+  assert.match(text, /generic app/)
+  assert.doesNotMatch(text, /WebDAV/)
 })

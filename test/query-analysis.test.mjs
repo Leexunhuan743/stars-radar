@@ -79,8 +79,30 @@ test('query tokens are lowercased and length-filtered', () => {
   assert.deepEqual(queryTokens, ['terminal', '反代'], 'single characters are dropped, the rest is lowercased')
 })
 
-test('documented named anchors and full repository names retain their subject role inside the ontology', () => {
+test('mixed-language punctuation still exposes technical feature tokens', () => {
+  const { queryTokens } = analyzeQuery(
+    '播放器要 Anime4K，抓取前 click、scroll、write，导出 figures/images，并处理 UTF-8 BOM',
+    INTENTS,
+  )
+  for (const token of ['anime4k', 'click', 'scroll', 'write', 'figures', 'images', 'utf-8', 'bom'])
+    assert.ok(queryTokens.includes(token), `missing technical token ${token}`)
+})
+
+test('ontology terms stay intents while full repository names stay subjects', () => {
   const intents = { agents: ['antigravity', 'deepseek', 'pi', 'mcp'] }
-  assert.deepEqual(analyzeQuery('antigravity', intents).specificSubjects, ['antigravity'])
+  assert.deepEqual(analyzeQuery('antigravity', intents).specificSubjects, [])
+  assert.ok(analyzeQuery('antigravity', intents).matchedGroups.has('agents'))
   assert.deepEqual(analyzeQuery('acme/mcp-server', intents).specificSubjects, ['acme/mcp-server'])
+})
+
+test('the parser hard-gates explicit repository identities only', () => {
+  const named = analyzeQuery('antigravity terminal', INTENTS)
+  assert.deepEqual(named.hardSubjects, [])
+
+  const repo = analyzeQuery('acme/mcp-server', INTENTS)
+  assert.deepEqual(repo.hardSubjects, ['acme/mcp-server'])
+
+  const feature = analyzeQuery('webdav sync', INTENTS)
+  assert.deepEqual(feature.specificSubjects.sort(), ['sync', 'webdav'])
+  assert.deepEqual(feature.hardSubjects, [], 'multi-feature queries may be evidenced semantically from README embeddings')
 })

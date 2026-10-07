@@ -14,11 +14,86 @@
 
 import { containsTerm } from './scoring.js'
 
-// These documented project anchors must keep their entity meaning even inside the intent lexicon.
-const NAMED_SUBJECTS = new Set(['antigravity', 'deepseek', 'pi'])
+// Words that carry no discriminating power. They should neither become hard
+// subjects nor earn lexical score merely because an English description contains prose glue.
+const STOPWORDS = new Set([
+  'and',
+  'app',
+  'apps',
+  'as',
+  'based',
+  'be',
+  'for',
+  'from',
+  'github',
+  'in',
+  'into',
+  'is',
+  'mcp',
+  'of',
+  'on',
+  'or',
+  'that',
+  'the',
+  'this',
+  'to',
+  'tool',
+  'tools',
+  'use',
+  'using',
+  'with',
+])
 
-// Words that carry no discriminating power and must never act as subjects.
-const STOPWORDS = new Set(['tool', 'tools', 'app', 'apps', 'github', 'mcp'])
+const REQUIREMENT_ANCHOR_STOPWORDS = new Set([
+  ...STOPWORDS,
+  'ai',
+  'api',
+  'client',
+  'compatible',
+  'complete',
+  'editor',
+  'framework',
+  'full',
+  'fully',
+  'include',
+  'includes',
+  'including',
+  'linux',
+  'llm',
+  'local',
+  'manager',
+  'model',
+  'models',
+  'must',
+  'native',
+  'only',
+  'plugin',
+  'plugins',
+  'provide',
+  'provides',
+  'reader',
+  'required',
+  'requires',
+  'run',
+  'running',
+  'runtime',
+  'server',
+  'service',
+  'support',
+  'supported',
+  'supports',
+  'use',
+  'using',
+  'web',
+  'windows',
+])
+
+function requirementAnchors(text) {
+  const tokens = String(text || '').toLowerCase().match(/[a-z0-9][a-z0-9+_.-]+/g) || []
+  return [...new Set(tokens
+    .map(token => token.replace(/^[._-]+|[._-]+$/g, ''))
+    .filter(token => token.length >= 3 && !REQUIREMENT_ANCHOR_STOPWORDS.has(token)))]
+}
 
 function buildTokenToGroupMap(intents) {
   const map = new Map()
@@ -31,12 +106,22 @@ function buildTokenToGroupMap(intents) {
 
 export function analyzeQuery(query, intents) {
   const tokenToGroup = buildTokenToGroupMap(intents)
-  const queryTokens = query.toLowerCase().split(/\s+/).filter(t => t.length > 1)
+  const lowerQuery = query.toLowerCase()
+  const whitespaceTokens = lowerQuery.split(/\s+/).filter(t => t.length > 1 && !STOPWORDS.has(t))
+  const repositoryIdentities = whitespaceTokens.filter(t => /^[\w.-]+\/[\w.-]+$/.test(t))
+  let fragmentSource = lowerQuery
+  for (const identity of repositoryIdentities)
+    fragmentSource = fragmentSource.replaceAll(identity, ' ')
+  const technicalFragments = fragmentSource.match(/[a-z0-9][a-z0-9+_.-]+/g) || []
+  const queryTokens = [...new Set([
+    ...whitespaceTokens,
+    ...technicalFragments.filter(t => t.length > 1 && !STOPWORDS.has(t)),
+  ])]
   const matchedGroups = new Set()
   const subjectCandidates = []
 
   for (const t of queryTokens) {
-    if (NAMED_SUBJECTS.has(t) || /^[\w.-]+\/[\w.-]+$/.test(t))
+    if (/^[\w.-]+\/[\w.-]+$/.test(t))
       subjectCandidates.push(t)
     else if (tokenToGroup.has(t))
       matchedGroups.add(tokenToGroup.get(t))
@@ -46,7 +131,6 @@ export function analyzeQuery(query, intents) {
 
   // Scan the whole query against every intent keyword rather than the whitespace
   // tokens, which is what makes multi-character CJK phrases match at all.
-  const lowerQuery = query.toLowerCase()
   for (const [group, words] of Object.entries(intents)) {
     if (words.some(w => containsTerm(lowerQuery, w)))
       matchedGroups.add(group)
@@ -62,7 +146,7 @@ export function analyzeQuery(query, intents) {
   }
 
   const specificSubjects = subjectCandidates.filter((subject) => {
-    if (NAMED_SUBJECTS.has(subject) || /^[\w.-]+\/[\w.-]+$/.test(subject))
+    if (/^[\w.-]+\/[\w.-]+$/.test(subject))
       return true
     if (matchedKeywords.has(subject))
       return false
@@ -73,5 +157,40 @@ export function analyzeQuery(query, intents) {
     return true
   })
 
-  return { queryTokens, matchedGroups, specificSubjects }
+  const hardSubjects = specificSubjects.filter(subject => /^[\w.-]+\/[\w.-]+$/.test(subject))
+
+  return { queryTokens, matchedGroups, specificSubjects, hardSubjects }
+}
+
+/**
+ * Splits an explicit hard-requirement query into the requested base capability and mandatory clause.
+ * ASCII technical anchors stay literal on purpose: a candidate may not satisfy "CUDA", "eBPF" or
+ * "Fever" merely by being semantically adjacent to those technologies.
+ */
+export function hardRequirementClauses(query, intents) {
+  const match = /(?:但\s*)?(?:同时\s*)?(?:必须|要求|must\b|required\b)/i.exec(query)
+  if (!match)
+    return []
+
+  const before = query.slice(0, match.index)
+    .replace(/[，,；;:\s]+$/g, '')
+    .replace(/(?:同时|并且|and)\s*$/i, '')
+    .trim()
+  let after = query.slice(match.index + match[0].length).trim()
+
+  const onlyIndex = after.lastIndexOf('只能')
+  if (onlyIndex >= 0)
+    after = after.slice(onlyIndex + '只能'.length).trim()
+
+  return [before, after]
+    .filter(Boolean)
+    .map(text => ({
+      ...analyzeQuery(text, intents),
+      anchors: requirementAnchors(text),
+      raw: text,
+    }))
+}
+
+export function hasHardRequirements(query, intents) {
+  return hardRequirementClauses(query, intents).length > 0
 }

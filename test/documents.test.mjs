@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 // one, a stale document pinned for the whole TTL, and a vector pair whose halves disagree being
 // reported as "no vectors yet".
 import { test } from 'node:test'
+import { ACTIVE_GENERATION_KEY, createGenerationPointer, generationKey } from '../src/data-generation.js'
 import { DOCUMENT_TTL_MS } from '../src/document-cache.js'
 import {
   dataPlaneStatus,
@@ -53,6 +54,23 @@ function bucket(objects = {}, { listFails = false } = {}) {
 }
 
 const CATALOG = JSON.stringify({ repos: { 'a/b': { repo: 'a/b' } }, categories: [], totalRepos: 1 })
+const GENERATION_ID = '20261005T071500Z-ceaa138fd814-12345'
+const GENERATION_SHA = 'ceaa138fd814f70ff2a194cf050a789e7e77cf95'
+
+function published(objects = {}) {
+  const result = {
+    [ACTIVE_GENERATION_KEY]: JSON.stringify(
+      createGenerationPointer(GENERATION_ID, GENERATION_SHA, '2026-10-05T07:15:00.000Z'),
+    ),
+  }
+  for (const [key, value] of Object.entries(objects))
+    result[key.startsWith('state/') ? key : generationKey(GENERATION_ID, key)] = value
+  return result
+}
+
+function repoRecord(repo) {
+  return { id: `repo:${repo.toLowerCase()}`, repo, kind: 'repo' }
+}
 const JOURNAL_ENTRY = JSON.stringify({ repo: 'acme/tool', by: 'worker', ingested_at: '2026-02-26T00:00:00.000Z' })
 
 test.beforeEach(() => {
@@ -66,14 +84,15 @@ test('an absent document is served as the documented placeholder', async () => {
   const rankings = await getRankings(env)
   assert.deepEqual(Object.keys(rankings).sort(), ['agentSkillRepos', 'agentSkills', 'breakoutWeekly', 'helloGitHub', 'topStarred', 'trending'])
   assert.deepEqual(await getHarvested(env), [])
-  assert.deepEqual(await getVectors(env), { vectors: null, names: null })
+  assert.deepEqual(await getVectors(env), { vectors: null, norms: null, records: null, inputProfile: null })
   const { statuses, degraded } = dataPlaneStatus()
+  assert.equal(statuses.generation, 'missing', 'a fresh install has no active generation yet')
   assert.equal(statuses.catalog, 'missing', 'an absent document is a first run, not a fault')
   assert.equal(degraded, false, 'nothing is published yet, so nothing is degraded')
 })
 
 test('an unreadable document is reported as unavailable instead of empty', async () => {
-  const env = { R2: bucket({ 'catalog.json': new Error('R2 unreachable') }) }
+  const env = { R2: bucket(published({ 'catalog.json': new Error('R2 unreachable') })) }
 
   await assert.rejects(getCatalog(env), /Could not read catalog\.json/, 'a failed read must not look like an empty catalogue')
   const { statuses, degraded } = dataPlaneStatus()
@@ -83,57 +102,68 @@ test('an unreadable document is reported as unavailable instead of empty', async
 
 test('a warm cache answers without touching the bucket again', async () => {
   // The whole reason these loaders exist: a request must not pay an R2 round trip per document.
-  const env = { R2: bucket({ 'catalog.json': CATALOG }) }
+  const env = { R2: bucket(published({ 'catalog.json': CATALOG })) }
   await getCatalog(env)
   await getCatalog(env)
-  assert.deepEqual(env.R2.reads, ['catalog.json'], 'the second read must come from the cache')
+  assert.deepEqual(
+    env.R2.reads,
+    [ACTIVE_GENERATION_KEY, generationKey(GENERATION_ID, 'catalog.json')],
+    'the second read must come from the generation-bound cache',
+  )
   assert.equal(dataPlaneStatus().statuses.catalog, 'fresh')
 
   // How long a cached document survives, and what happens when it expires, is
   // test/document-cache.test.mjs's subject; this module only has to wire the loaders up.
   resetDocumentCaches()
   assert.deepEqual(dataPlaneStatus().statuses, {
+    generation: 'unknown',
     catalog: 'unknown',
     rankings: 'unknown',
     assetIndex: 'unknown',
+    readmes: 'unknown',
     vectors: 'unknown',
     ingestJournal: 'unknown',
   })
 })
 
 test('a vector pair whose halves disagree is unavailable, not an empty index', async () => {
-  const names = JSON.stringify(['a/b', 'c/d'])
-  const bytes = new Uint8Array(2 * 1024 * 4) // correct length
-  const shortBytes = new Uint8Array(1024 * 4) // one vector instead of two
-  const manifest = await vectorManifest(JSON.parse(names), new TextEncoder().encode(names), bytes)
-  const env = { R2: bucket({ 'embeddings-index.json': names, 'embeddings.bin': bytes.buffer, 'embeddings-manifest.json': JSON.stringify(manifest) }) }
+  const records = [repoRecord('a/b'), repoRecord('c/d')]
+  const index = JSON.stringify(records)
+  const bytes = new Uint8Array(2 * 1024 * 4)
+  const shortBytes = new Uint8Array(1024 * 4)
+  const manifest = await vectorManifest(records, new TextEncoder().encode(index), bytes)
+  const env = { R2: bucket(published({ 'embeddings-index.json': index, 'embeddings.bin': bytes.buffer, 'embeddings-manifest.json': JSON.stringify(manifest) })) }
 
   const pair = await getVectors(env)
-  assert.equal(pair.names.length, 2, 'a consistent pair loads')
+  assert.equal(pair.records.length, 2, 'a consistent pair loads')
 
   resetDocumentCaches()
-  const broken = { R2: bucket({ 'embeddings-index.json': names, 'embeddings.bin': shortBytes.buffer }) }
+  const broken = { R2: bucket(published({ 'embeddings-index.json': index, 'embeddings.bin': shortBytes.buffer, 'embeddings-manifest.json': JSON.stringify(manifest) })) }
   await assert.rejects(getVectors(broken), /invariant violated/, 'the mismatch must surface as a fault')
   assert.equal(dataPlaneStatus().statuses.vectors, 'unavailable')
 })
 
 test('same-length mixed vector generations are rejected by their content manifest', async () => {
-  const names = JSON.stringify(['a/b'])
+  const records = [repoRecord('a/b')]
+  const index = JSON.stringify(records)
   const original = new Uint8Array(1024 * 4)
-  const manifest = await vectorManifest(['a/b'], new TextEncoder().encode(names), original)
+  const manifest = await vectorManifest(records, new TextEncoder().encode(index), original)
   const changed = new Uint8Array(1024 * 4)
   changed[0] = 1
-  const env = { R2: bucket({
-    'embeddings-index.json': names,
+  const env = { R2: bucket(published({
+    'embeddings-index.json': index,
     'embeddings.bin': changed.buffer,
     'embeddings-manifest.json': JSON.stringify(manifest),
-  }) }
+  })) }
   await assert.rejects(getVectors(env), /manifest does not match/)
   assert.equal(dataPlaneStatus().statuses.vectors, 'unavailable')
 })
 
 test('an incomplete vector generation is a fault rather than an empty successful index', async () => {
-  await assert.rejects(getVectors({ R2: bucket({ 'embeddings-index.json': '["a/b"]' }) }), /generation is incomplete/)
+  await assert.rejects(
+    getVectors({ R2: bucket(published({ 'embeddings-index.json': '["a/b"]' })) }),
+    /generation .* is incomplete/,
+  )
 })
 
 test('unreadable journal lines fail visibly instead of silently shrinking the user view', async () => {
@@ -165,11 +195,11 @@ test('a CI snapshot avoids old-object reads and includes writes arriving during 
   const newKey = `${INGEST_JOURNAL_PREFIX}new.jsonl`
   const old = { repo: 'acme/tool', reason: 'old note', ingested_at: '2026-10-01T00:00:00Z', key: oldKey }
   const current = { repo: 'acme/tool', reason: 'new note', ingested_at: '2026-10-02T00:00:00Z' }
-  const r2 = bucket({
+  const r2 = bucket(published({
     'asset-index.json': JSON.stringify({ ingest_snapshot: { keys: [oldKey], entries: [old] } }),
     [oldKey]: new Error('old objects must not be fetched again'),
     [newKey]: JSON.stringify(current),
-  })
+  }))
   assert.deepEqual(await getHarvested({ R2: r2 }), [current])
   assert.equal(r2.reads.includes(oldKey), false)
   assert.equal(r2.reads.includes(newKey), true)
@@ -202,7 +232,7 @@ test('the ingest journal is folded, and a listing failure is not an empty journa
 })
 
 test('a freshly written rankings document can be installed without waiting out the TTL', async () => {
-  const env = { R2: bucket({ 'rankings.json': JSON.stringify({ trending: { overall_daily: [{ repo: 'x/y' }] } }) }) }
+  const env = { R2: bucket(published({ 'rankings.json': JSON.stringify({ trending: { overall_daily: [{ repo: 'x/y' }] } }) })) }
   await getRankings(env)
 
   seedRankings({ trending: { overall_daily: [{ repo: 'fresh/one' }] } })
@@ -213,8 +243,8 @@ test('a freshly written rankings document can be installed without waiting out t
 test('the archive listing skips the state objects', async () => {
   // The bucket also holds JSON documents and the state prefixes; `R2.list` counts them towards its
   // limit, so a loader that failed to page would report an empty corpus.
-  const env = { R2: bucket({ 'asset-index.json': '{}', [`${INGEST_JOURNAL_PREFIX}one.jsonl`]: `${JOURNAL_ENTRY}\n` }) }
-  assert.deepEqual(await getAssetIndex(env), {}, 'asset-index.json is read by key, not by listing')
+  const env = { R2: bucket(published({ 'asset-index.json': '{}', [`${INGEST_JOURNAL_PREFIX}one.jsonl`]: `${JOURNAL_ENTRY}\n` })) }
+  assert.deepEqual(await getAssetIndex(env), {}, 'generation asset-index.json is read by key, not by listing')
 })
 
 test('the ingest journal converges far sooner than the documents a build replaces', () => {

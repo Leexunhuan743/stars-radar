@@ -6,7 +6,8 @@
 // primary sort key inverted, relevance_score zeroed, and the `_rrf` tie-breaker removed.
 // The Worker imports this via src/index.js; test/result-compiler.test.mjs imports it
 // directly, so there is one source of truth rather than a drifting replica.
-import { applyCommunityCap, relevanceScore } from './relevance.js'
+import { buildReadmeEvidence, buildRepositoryEvidence, EVIDENCE_TRUST } from './evidence.js'
+import { relevanceScore } from './relevance.js'
 
 /**
  * Every value `source` can carry in a result, declared once.
@@ -24,6 +25,7 @@ export const RESULT_SOURCES = [
   'community',
   'ranking',
   'trending',
+  'top_starred',
   'hellogithub',
   'breakout',
   'skill',
@@ -39,6 +41,8 @@ export function compileResults({
   minScore,
   limit,
   explain = false,
+  catalogSnapshotAt = null,
+  rankingSnapshotAt = null,
 }) {
   const results = []
   const reposByName = new Map(Object.entries(repos).map(([name, record]) => [name.toLowerCase(), record]))
@@ -47,6 +51,10 @@ export function compileResults({
     const isUserStarred = !!starredItem
     const commItem = communityMap.get(repoName.toLowerCase())
     const info = starredItem || commItem || stats.extraItem || {}
+    const sourceChannels = [...new Set([
+      ...(stats.sourceChannels || []),
+      ...(commItem?.source_channels || []),
+    ])]
 
     const source = isUserStarred ? 'starred' : (stats.source !== 'starred' ? stats.source : (commItem ? 'community' : 'ranking'))
     const badge = isUserStarred ? '⭐ Starred' : (stats.badge && stats.badge !== '⭐ Starred' ? stats.badge : (commItem ? '⚡ Community Ingested' : '🌐 Public Ranking'))
@@ -54,7 +62,7 @@ export function compileResults({
     // Where a hit came from is a different axis from how the deployer filed it, so it is a separate
     // filter over the same results: `category` selects the deployer's lists, `source` selects the
     // channel (a trending board, HelloGitHub, the archive, the user's own stars).
-    if (targetSource && source !== targetSource)
+    if (targetSource && source !== targetSource && !sourceChannels.includes(targetSource))
       continue
 
     if (targetCategory) {
@@ -68,8 +76,113 @@ export function compileResults({
     if (relevance < minScore)
       continue
 
+    const resultRepo = info.repo || repoName
+    const resultSourceKind = isUserStarred ? 'catalog' : source === 'curated' ? 'ingest_journal' : source
+    const fieldOrigin = field => info.fieldOrigins?.[field] || null
+    const defaultSnapshotAt = isUserStarred ? catalogSnapshotAt : rankingSnapshotAt
+    const factualEvidence = []
+    const provenance = {}
+    if (explain) {
+      const metadataFields = ['stars'].filter(field => info[field] !== undefined && info[field] !== null)
+      if (metadataFields.length > 0) {
+        const metadataEvidence = buildRepositoryEvidence({
+          kind: 'repository_metadata',
+          repo: resultRepo,
+          source: resultSourceKind,
+          trust: EVIDENCE_TRUST.EXTERNAL_STRUCTURED,
+          snapshotAt: isUserStarred ? catalogSnapshotAt : rankingSnapshotAt,
+          fields: metadataFields,
+        })
+        factualEvidence.push(metadataEvidence)
+        for (const field of metadataFields)
+          provenance[field] = metadataEvidence.id
+      }
+
+      if (info.description) {
+        const descriptionEvidence = buildRepositoryEvidence({
+          kind: 'repository_description',
+          repo: resultRepo,
+          source: resultSourceKind,
+          trust: EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
+          snapshotAt: isUserStarred ? catalogSnapshotAt : rankingSnapshotAt,
+          fields: ['description'],
+        })
+        factualEvidence.push(descriptionEvidence)
+        provenance.description = descriptionEvidence.id
+      }
+
+      for (const field of ['reason', 'summary'].filter(field => info[field])) {
+        const origin = fieldOrigin(field)
+        const trusted = origin?.trust === EVIDENCE_TRUST.USER_TRUSTED
+        const fieldEvidence = buildRepositoryEvidence({
+          kind: trusted ? 'personal_note' : 'community_text',
+          repo: resultRepo,
+          source: origin?.source || resultSourceKind,
+          trust: trusted ? EVIDENCE_TRUST.USER_TRUSTED : EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
+          snapshotAt: origin?.snapshotAt ?? defaultSnapshotAt,
+          identity: `${field}:${origin?.source || resultSourceKind}:${origin?.snapshotAt || defaultSnapshotAt || 'unknown'}`,
+          fields: [field],
+        })
+        factualEvidence.push(fieldEvidence)
+        provenance[field] = fieldEvidence.id
+      }
+
+      if ((info.categories || []).length > 0) {
+        const origin = fieldOrigin('categories')
+        const categoryEvidence = buildRepositoryEvidence({
+          kind: 'user_taxonomy',
+          repo: resultRepo,
+          source: origin?.source || (isUserStarred ? 'github_lists' : source === 'curated' ? 'ingest_journal' : 'asset_index'),
+          trust: origin?.trust || EVIDENCE_TRUST.USER_TRUSTED,
+          snapshotAt: origin?.snapshotAt ?? defaultSnapshotAt,
+          fields: ['categories'],
+        })
+        factualEvidence.push(categoryEvidence)
+        provenance.categories = categoryEvidence.id
+      }
+
+      const semanticReadme = stats.vectorEvidence?.readme_chunk
+      const lexicalReadme = stats.readmeKeywordEvidence
+      const readmeMatches = [semanticReadme, lexicalReadme]
+        .filter(Boolean)
+        .filter((item, index, list) => list.findIndex(candidate => candidate.chunk_id === item.chunk_id) === index)
+      for (const readme of readmeMatches) {
+        factualEvidence.push(buildReadmeEvidence({
+          kind: 'readme_chunk',
+          repo: resultRepo,
+          chunkId: readme.chunk_id,
+          readmeSha256: readme.readme_sha256,
+          contentSha256: readme.content_sha256,
+          ordinal: readme.ordinal,
+          chunkOrdinal: readme.chunk_ordinal,
+          heading: readme.heading,
+          headingPath: readme.heading_path,
+          snippet: readme.snippet,
+          similarity: readme.similarity,
+          keywordWeight: readme.keyword_weight,
+          matchedTokens: readme.matched_tokens || [],
+          matchedSubjects: readme.matched_subjects || [],
+          matchedIntents: readme.matched_intents || [],
+        }))
+      }
+    }
+
+    const channels = [
+      ...(stats.repoVScore > 0 ? ['repo_vector'] : []),
+      ...(stats.readmeVScore > 0 ? ['readme_vector'] : []),
+      ...((stats.vScore > 0 && !(stats.repoVScore > 0) && !(stats.readmeVScore > 0)) ? ['vector'] : []),
+      ...(stats.kwWeight > 0 ? [stats.channel || 'keyword'] : []),
+    ]
+    const trust = {}
+    if (info.reason)
+      trust.reason = fieldOrigin('reason')?.trust || EVIDENCE_TRUST.EXTERNAL_UNTRUSTED
+    if (info.summary)
+      trust.summary = fieldOrigin('summary')?.trust || EVIDENCE_TRUST.EXTERNAL_UNTRUSTED
+    if (info.description)
+      trust.description = EVIDENCE_TRUST.EXTERNAL_UNTRUSTED
+
     results.push({
-      repo: repoName.startsWith('skill:') ? repoName : (info.repo || repoName),
+      repo: repoName.startsWith('skill:') ? repoName : resultRepo,
       url: info.url || `https://github.com/${repoName}`,
       source,
       source_badge: badge,
@@ -78,34 +191,46 @@ export function compileResults({
       reason: info.reason || undefined,
       summary: info.summary || undefined,
       description: info.description || undefined,
-      relevance_score: relevance,
-      vector_similarity: stats.vScore ? Number(stats.vScore.toFixed(4)) : undefined,
+      ...(Object.keys(trust).length > 0 ? { trust } : {}),
+      ...(sourceChannels.length > 0 ? { source_channels: sourceChannels } : {}),
+      ranking: {
+        score: relevance,
+        ...(explain
+          ? {
+              channels,
+              keyword_weight: stats.kwWeight,
+              ...(stats.scoringSource ? { scoring_source: stats.scoringSource } : {}),
+              vector_similarity: stats.vScore > 0 ? Number(stats.vScore.toFixed(4)) : null,
+              repo_vector_similarity: stats.vectorEvidence?.repo_similarity > 0
+                ? Number(stats.vectorEvidence.repo_similarity.toFixed(4))
+                : null,
+              readme_vector_similarity: stats.vectorEvidence?.readme_chunk?.similarity > 0
+                ? Number(stats.vectorEvidence.readme_chunk.similarity.toFixed(4))
+                : null,
+              literal_matches: {
+                tokens: stats.evidence?.matched_tokens || [],
+                subjects: stats.evidence?.matched_subjects || [],
+                intents: stats.evidence?.matched_intents || [],
+              },
+            }
+          : {}),
+      },
       ...(explain
         ? {
-            explanation: {
-              channels: [
-                ...(stats.vScore > 0 ? ['vector'] : []),
-                ...(stats.kwWeight > 0 ? [stats.channel || 'keyword'] : []),
-              ],
-              keyword_weight: stats.kwWeight,
-              vector_similarity: stats.vScore > 0 ? Number(stats.vScore.toFixed(4)) : null,
-              matched_tokens: stats.evidence?.matched_tokens || [],
-              matched_subjects: stats.evidence?.matched_subjects || [],
-              matched_intents: stats.evidence?.matched_intents || [],
-            },
+            provenance,
+            evidence: factualEvidence,
           }
         : {}),
-      _rrf: stats.rrf || 0, // 内部融合分(含 starred ×1.5), 仅作排序键, 返回前清除
+      _rrf: stats.rrf || 0,
     })
   }
 
-  // 排序: relevance_score(相关性强度) 主键, RRF 融合分(含 starred ×1.5) 作精确 tie-breaker.
-  // 避免纯 RRF 主排序按 rank 丢绝对强度, 致弱 starred(w26) 系统性压过高分 community(w43) 的病态倒挂.
-  // 同分(非线性映射后大量并列)时 starred ×1.5 决定次序, 达成"私藏优先"而不牺牲相关性.
-  results.sort((a, b) => b.relevance_score - a.relevance_score || b._rrf - a._rrf)
+  // Calibrated relevance is the ranking authority. It preserves semantic-only and lexical-only
+  // strength while rewarding cross-channel corroboration; RRF only resolves equal fused relevance
+  // using independent repository, README and lexical rank evidence.
+  results.sort((a, b) => b.ranking.score - a.ranking.score || b._rrf - a._rrf)
   for (const r of results)
     delete r._rrf
 
-  // 已拍板: community/archive 单 query 结果数上限 = ceil(limit * 40%), 防止默认视图被社区刷屏
-  return applyCommunityCap(results, limit)
+  return results.slice(0, limit)
 }
