@@ -1,6 +1,7 @@
+import { buildReadmeEvidence, buildRepositoryEvidence, EVIDENCE_TRUST } from './evidence.js'
 import { parseFrontmatter } from './frontmatter.js'
 import { BadRequestError } from './http.js'
-import { readmeKey } from './object-keys.js'
+import { readmeBlobKey } from './object-keys.js'
 
 export class RepositoryRequestError extends Error {
   constructor(message, upstreamStatus) {
@@ -49,35 +50,53 @@ async function githubResponse(repo, suffix, headers, fetcher) {
   }
 }
 
-export async function getRepositoryDetails(env, { catalog, assetIndex, harvested }, repo, { include_readme = true, refresh = false, fetcher = fetch, now = () => new Date() } = {}) {
+async function sha256Text(text) {
+  const bytes = new TextEncoder().encode(text)
+  const hash = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(hash)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+export async function getRepositoryDetails(env, { catalog, assetIndex, harvested, readmes = { repos: {} } }, repo, { include_readme = true, refresh = false, fetcher = fetch, now = () => new Date() } = {}) {
   const name = repositoryName(repo)
   const starred = findRecord(catalog.repos || {}, name)
   const asset = findRecord(assetIndex.repos || {}, name)
   const ingest = harvested.find(item => item.repo.toLowerCase() === name.toLowerCase())
   let record = starred || ingest || asset
   if (starred && ingest)
-    record = { ...starred, reason: ingest.reason || starred.reason, summary: ingest.summary || starred.summary }
+    record = { ...starred, reason: ingest.reason || starred.reason }
   let source = starred ? 'catalog' : ingest ? 'ingest_journal' : 'asset_index'
   let snapshotAt = starred ? catalog.generatedAt : ingest ? ingest.ingested_at : assetIndex.generatedAt
   let fetchedAt = record?.metadata_fetched_at || null
   let body = null
   let readmeSource = null
+  let readmeStatus = null
+  let readmeFetchedAt = null
+  let readmeLiveSha256 = null
+  let readmeRef = null
   if (include_readme) {
-    const object = await env.R2.get(readmeKey(record?.repo || name))
-    if (object) {
-      const parsed = parseFrontmatter(await object.text())
-      body = parsed.body
-      readmeSource = 'archive'
-      if (!record) {
-        record = {
-          ...parsed.metadata,
-          repo: name,
-          stars: parsed.metadata.stars === undefined ? null : Number(parsed.metadata.stars),
-          categories: parsed.metadata.categories ? JSON.parse(parsed.metadata.categories) : [],
-          topics: parsed.metadata.topics ? JSON.parse(parsed.metadata.topics) : null,
+    const ref = readmes.repos?.[(record?.repo || name).toLowerCase()]
+    readmeRef = ref || null
+    readmeStatus = ref?.status || null
+    if (ref?.status === 'absent') {
+      readmeSource = 'generation'
+    }
+    else {
+      const object = ref?.sha256 ? await env.R2.get(readmeBlobKey(ref.sha256)) : null
+      if (object) {
+        const parsed = parseFrontmatter(await object.text())
+        body = parsed.body
+        readmeSource = 'generation'
+        if (!record) {
+          record = {
+            ...parsed.metadata,
+            repo: name,
+            stars: parsed.metadata.stars === undefined ? null : Number(parsed.metadata.stars),
+            categories: parsed.metadata.categories ? JSON.parse(parsed.metadata.categories) : [],
+            topics: parsed.metadata.topics ? JSON.parse(parsed.metadata.topics) : null,
+          }
+          source = 'readme_generation'
+          snapshotAt = readmes.generation?.published_at || null
         }
-        source = 'readme_archive'
-        snapshotAt = object.uploaded?.toISOString()
       }
     }
   }
@@ -117,22 +136,133 @@ export async function getRepositoryDetails(env, { catalog, assetIndex, harvested
     fetchedAt = now().toISOString()
     snapshotAt = null
   }
-  if (include_readme && body === null) {
+  if (include_readme && body === null && (refresh || readmeStatus !== 'absent')) {
     const response = await githubResponse(record.repo, '/readme', { ...headers, Accept: 'application/vnd.github.raw+json' }, fetcher)
     if (response.status !== 404 && !response.ok)
       throw new RepositoryRequestError(`Could not fetch README for ${record.repo}: GitHub returned HTTP ${response.status}`, response.status)
+    readmeFetchedAt = now().toISOString()
     if (response.ok) {
       body = await response.text()
+      readmeLiveSha256 = await sha256Text(body)
       readmeSource = 'github'
+      readmeStatus = 'live'
+    }
+    else if (response.status === 404) {
+      readmeStatus = 'absent'
     }
   }
+  const projected = project(record)
+  const personalFieldSource = (field) => {
+    if (ingest?.[field])
+      return { source: 'ingest_journal', snapshotAt: ingest.ingested_at || null, generation: null }
+    if (starred?.[field])
+      return { source: 'catalog', snapshotAt: catalog.generatedAt || null, generation: null }
+    if (asset?.[field])
+      return { source: 'asset_index', snapshotAt: assetIndex.generatedAt || null, generation: null }
+    if (source === 'readme_generation' && projected[field])
+      return { source: 'readme_generation', snapshotAt: readmes.generation?.published_at || null, generation: readmes.generation }
+    if (projected[field])
+      return { source, snapshotAt, generation: source === 'readme_generation' ? readmes.generation : null }
+    return null
+  }
+  const categorySource = starred
+    ? 'github_lists'
+    : (ingest?.categories?.length
+        ? 'ingest_journal'
+        : asset?.categories?.length
+          ? 'asset_index'
+          : source === 'readme_generation' ? 'readme_generation' : null)
+  const metadataFields = ['stars', 'language', 'license', 'pushed_at', 'created_at', 'archived', 'topics']
+    .filter(field => projected[field] !== null && projected[field] !== undefined)
+  const evidenceChain = []
+  const fieldProvenance = {}
+  if (metadataFields.length > 0) {
+    const metadataEvidence = buildRepositoryEvidence({
+      kind: 'repository_metadata',
+      repo: record.repo,
+      source,
+      fetchedAt,
+      snapshotAt,
+      generation: source === 'readme_generation' ? readmes.generation : null,
+      trust: EVIDENCE_TRUST.EXTERNAL_STRUCTURED,
+      fields: metadataFields,
+    })
+    evidenceChain.push(metadataEvidence)
+    for (const field of metadataFields)
+      fieldProvenance[field] = metadataEvidence.id
+  }
+
+  if (projected.description) {
+    const descriptionEvidence = buildRepositoryEvidence({
+      kind: 'repository_description',
+      repo: record.repo,
+      source,
+      fetchedAt,
+      snapshotAt,
+      generation: source === 'readme_generation' ? readmes.generation : null,
+      trust: EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
+      fields: ['description'],
+    })
+    evidenceChain.push(descriptionEvidence)
+    fieldProvenance.description = descriptionEvidence.id
+  }
+
+  const personalFields = ['reason', 'summary'].filter(field => projected[field] !== null && projected[field] !== undefined)
+  for (const field of personalFields) {
+    const origin = personalFieldSource(field)
+    const personalEvidence = buildRepositoryEvidence({
+      kind: 'personal_note',
+      repo: record.repo,
+      source: origin?.source || source,
+      trust: EVIDENCE_TRUST.USER_TRUSTED,
+      snapshotAt: origin?.snapshotAt || null,
+      generation: origin?.generation || null,
+      identity: `${field}:${origin?.source || source}:${origin?.snapshotAt || 'live'}`,
+      fields: [field],
+    })
+    evidenceChain.push(personalEvidence)
+    fieldProvenance[field] = personalEvidence.id
+  }
+
+  if (projected.categories.length > 0) {
+    const categoryEvidence = buildRepositoryEvidence({
+      kind: 'user_taxonomy',
+      repo: record.repo,
+      source: categorySource || source,
+      trust: EVIDENCE_TRUST.USER_TRUSTED,
+      snapshotAt,
+      generation: source === 'readme_generation' ? readmes.generation : null,
+      fields: ['categories'],
+    })
+    evidenceChain.push(categoryEvidence)
+    fieldProvenance.categories = categoryEvidence.id
+  }
+
+  if (include_readme && (body !== null || readmeStatus)) {
+    const generationRef = readmeSource === 'generation' ? readmeRef : null
+    const readmeEvidence = buildReadmeEvidence({
+      kind: 'readme_document',
+      repo: record.repo,
+      ref: generationRef,
+      generation: readmeSource === 'generation' ? readmes.generation : null,
+      readmeSha256: readmeSource === 'generation' ? readmeRef?.sha256 || null : readmeLiveSha256,
+      fetchedAt: readmeFetchedAt,
+    })
+    evidenceChain.push(readmeEvidence)
+    fieldProvenance.readme = readmeEvidence.id
+    fieldProvenance.readme_status = readmeEvidence.id
+  }
+
   const result = {
-    ...project(record),
-    evidence: { source, fetched_at: fetchedAt || null, snapshot_at: snapshotAt || null, url: `https://github.com/${record.repo}` },
+    ...projected,
+    provenance: fieldProvenance,
+    evidence: evidenceChain,
   }
   if (include_readme) {
     result.readme_available = body !== null
     result.readme_source = readmeSource
+    result.readme_status = readmeStatus || (body !== null ? 'unknown' : 'missing')
+    result.readme_trust = body !== null ? EVIDENCE_TRUST.EXTERNAL_UNTRUSTED : null
     result.truncated = body !== null && body.length > 50000
     result.readme = body === null ? null : `<untrusted_content source="github_readme">\n${body.trim().slice(0, 50000)}\n</untrusted_content>`
   }

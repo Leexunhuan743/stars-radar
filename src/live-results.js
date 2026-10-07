@@ -1,3 +1,4 @@
+import { EVIDENCE_TRUST } from './evidence.js'
 // Turning GitHub search results into what the caller sees.
 //
 // This is where a repository's provenance is decided — whether it is one of yours, part of the
@@ -36,7 +37,8 @@ export function enrichLiveResults(items, { reposCatalog = {}, communityIndex = n
   return (items || []).map((item, index) => {
     const fullName = item.full_name
     const userStar = findCatalogEntry(reposCatalog, fullName)
-    const isCommunity = communityIndex.has(fullName.toLowerCase())
+    const communityRecord = communityIndex.get(fullName.toLowerCase())
+    const isCommunity = !!communityRecord
 
     // Starred wins over community: the user's own choice is the stronger statement, and a
     // repository can legitimately be both.
@@ -48,6 +50,7 @@ export function enrichLiveResults(items, { reposCatalog = {}, communityIndex = n
       url: item.html_url,
       stars: item.stargazers_count,
       description: item.description || '',
+      description_trust: item.description ? EVIDENCE_TRUST.EXTERNAL_UNTRUSTED : undefined,
       language: item.language || '',
       created_at: item.created_at,
       pushed_at: item.pushed_at,
@@ -57,6 +60,7 @@ export function enrichLiveResults(items, { reposCatalog = {}, communityIndex = n
       badge: provenance.badge,
       user_categories: userStar?.categories || undefined,
       user_reason: userStar?.reason || undefined,
+      community_sources: communityRecord?.source_channels?.length ? communityRecord.source_channels : undefined,
     }
   })
 }

@@ -4,18 +4,22 @@ import { z } from 'zod'
 import defaultIntents from '../data/intents.json'
 import { appendIngest } from './append-store.js'
 import { listReadmePage } from './archive-candidates.js'
+import { AuthConfigError, authorizeCredential } from './auth.js'
 import { DocumentUnavailableError } from './document-cache.js'
 import {
   dataPlaneStatus,
   getAssetIndex,
   getCatalog,
+  getDataGeneration,
   getHarvested,
   getRankings,
+  getReadmeManifest,
   getVectors,
   JOURNAL_TTL_MS,
   seedHarvested,
 } from './documents.js'
 import { DIMS, EMBEDDING_MODEL, isEmbedding } from './embeddings.js'
+import { bindResultReadmeEvidence, buildReadmeEvidence } from './evidence.js'
 import {
   BadRequestError,
   booleanParam,
@@ -27,16 +31,23 @@ import {
   optionalString,
   PayloadTooLargeError,
   readJsonBody,
+  stringParam,
 } from './http.js'
 import { foldIngestEntries } from './ingest-journal.js'
-import { searchGithubCode, searchGithubLive, searchWebTech } from './live-probes.js'
+import { captureGithubDiscovery, searchGithubCode, searchGithubLive, searchWebTech } from './live-probes.js'
+import { readmeBlobKey } from './object-keys.js'
 import { ProbeRequestError, probeToolFailure } from './probe-errors.js'
+import { hasHardRequirements } from './query-analysis.js'
 import { staleSources } from './rankings-document.js'
+import { consumePlatformRateLimit, PlatformRateLimitError, rateLimitStatus } from './rate-limit.js'
+import { findReadmeEvidence, README_EVIDENCE_MAX_RESULTS } from './readme-evidence.js'
 import { compareRepositories, getRepositoryDetails, RepositoryRequestError } from './repository-details.js'
 import { RESULT_SOURCES } from './result-compiler.js'
 import { retryUntilAcceptable } from './retry.js'
 import { searchDocuments } from './search-engine.js'
-import { DEFAULT_INGEST_CATEGORIES, TOOL_DEFINITIONS } from './tool-schemas.js'
+import { DEFAULT_INGEST_CATEGORIES, INPUT_LIMITS, TOOL_DEFINITIONS } from './tool-schemas.js'
+import { resolveToolset, ToolsetConfigError, toolsetStatus } from './toolsets.js'
+import { VERSION } from './version.js'
 
 const SILICONFLOW_URL = 'https://api.siliconflow.cn/v1/embeddings'
 
@@ -164,11 +175,6 @@ function enrichCategoriesWithTopRepos(catalog) {
   })
 }
 
-// The archive bucket also holds the JSON state objects, and `R2.list` applies its limit to
-// every object rather than to the READMEs. Listing therefore has to page past them, with a
-// cap so a bucket that never yields a README cannot spin forever.
-const MAX_LIST_PAGES = 20
-
 export default {
   fetch: async (req, env, ctx) => {
     try {
@@ -206,26 +212,81 @@ async function handleRequest(req, env, ctx) {
     const authHeader = req.headers.get('Authorization')
     const apiKey = authHeader?.replace(/^bearer\s+/i, '').trim()
 
-    if (!env.MCP_API_KEY) {
-      // The two runtimes need different commands, and naming only the production one sends a
-      // developer running `wrangler dev` down a path that cannot work locally.
-      return errorResponse(
-        'server_misconfigured',
-        'MCP_API_KEY is not set. Locally (`wrangler dev`) put it in `.dev.vars` — a plain environment '
-        + 'variable is not passed to the Worker. In production run: pnpm exec wrangler secret put MCP_API_KEY',
-        500,
-      )
+    let auth
+    try {
+      auth = authorizeCredential(apiKey, env)
+    }
+    catch (error) {
+      if (error instanceof AuthConfigError)
+        return errorResponse('server_misconfigured', error.message, 500)
+      throw error
+    }
+    const { canRead, canWrite } = auth
+
+    if (!canRead)
+      return errorResponse('unauthorized', 'Invalid API key. Supply your key via Authorization: Bearer <KEY> header.', 401)
+
+    // Read and write capabilities are intentionally separate. The write credential may read so a
+    // privileged operator does not need to juggle two keys in one session; the read key never writes.
+    const writeForbidden = () => errorResponse(
+      'write_forbidden',
+      'This credential is read-only. Use MCP_WRITE_API_KEY for capture or ingest operations.',
+      403,
+    )
+    const writeToolFailure = () => ({
+      isError: true,
+      content: [{ type: 'text', text: JSON.stringify({
+        error: 'write_forbidden',
+        message: 'This credential is read-only. Use the configured write credential for this operation.',
+      }) }],
+    })
+
+    const checkRateLimit = async (binding, label) => {
+      try {
+        const decision = await consumePlatformRateLimit(binding, apiKey)
+        if (!decision.success) {
+          return {
+            error: 'rate_limited',
+            message: `${label} request budget exceeded for this credential at the current Cloudflare location.`,
+            status: 429,
+          }
+        }
+        return null
+      }
+      catch (error) {
+        if (error instanceof PlatformRateLimitError) {
+          return {
+            error: 'rate_limiter_unavailable',
+            message: `${label} rate limiter is configured but unavailable: ${error.message}`,
+            status: 503,
+          }
+        }
+        throw error
+      }
     }
 
-    if (apiKey !== env.MCP_API_KEY) {
-      return errorResponse('unauthorized', 'Invalid API key. Supply your key via Authorization: Bearer <KEY> header.', 401)
+    const restRateLimit = async (binding, label) => {
+      const failure = await checkRateLimit(binding, label)
+      return failure ? errorResponse(failure.error, failure.message, failure.status) : null
+    }
+
+    const toolRateLimit = async (binding, label) => {
+      const failure = await checkRateLimit(binding, label)
+      if (!failure)
+        return null
+      return {
+        isError: true,
+        content: [{ type: 'text', text: JSON.stringify(failure) }],
+      }
     }
 
     // Direct REST API Endpoints
     if (url.pathname === '/health') {
+      const generation = await getDataGeneration(env)
       const catalog = await getCatalog(env)
       const rankings = await getRankings(env)
       const assetIndex = await getAssetIndex(env)
+      const readmes = await getReadmeManifest(env)
       const vectors = await getVectors(env)
       const harvested = await getHarvested(env)
       const dataPlane = dataPlaneStatus()
@@ -234,14 +295,23 @@ async function handleRequest(req, env, ctx) {
         // read": both used to answer 200 ok with an empty body of data.
         status: dataPlane.degraded ? 'degraded' : 'ok',
         name: 'Stars Radar',
-        version: '1.0.0',
+        version: VERSION,
         vectorModel: EMBEDDING_MODEL,
+        vectorInputProfile: vectors.inputProfile || null,
         vectorDimensions: DIMS,
         totalStarred: catalog.totalRepos || Object.keys(catalog.repos || {}).length,
         totalAssets: assetIndex.totalRepos || Object.keys(assetIndex.repos || {}).length,
-        vectorCount: vectors.names?.length || 0,
+        vectorCount: vectors.records?.length || 0,
+        repoVectorCount: vectors.records?.filter(record => record.kind === 'repo').length || 0,
+        readmeChunkVectorCount: vectors.records?.filter(record => record.kind === 'readme_chunk').length || 0,
+        readmeRefs: Object.keys(readmes.repos || {}).length,
         harvestedIngests: harvested.length,
+        dataGeneration: generation.id
+          ? { id: generation.id, publishedAt: generation.published_at, commit: generation.commit }
+          : null,
         dataPlane: dataPlane.statuses,
+        rateLimits: rateLimitStatus(env),
+        mcpToolset: toolsetStatus(env.MCP_TOOLSET),
         // Which community layers are actually from the latest run, and how old the oldest one is.
         // `updatedAt` alone cannot answer that: it moves on every run whether or not a layer
         // refreshed, which is how stale data came to look fresh.
@@ -259,12 +329,23 @@ async function handleRequest(req, env, ctx) {
     if (url.pathname === '/api/repository') {
       const include_readme = booleanParam(url.searchParams.get('include_readme'))
       const refresh = booleanParam(url.searchParams.get('refresh'))
-      return okResponse(await getRepositoryDetails(env, await researchDocuments(env), url.searchParams.get('repo'), { include_readme, refresh }))
+      if (refresh) {
+        const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+        if (limited)
+          return limited
+      }
+      const repo = stringParam(url.searchParams.get('repo'), { parameter: 'repo', minLength: 3, maxLength: INPUT_LIMITS.repo })
+      return okResponse(await getRepositoryDetails(env, await researchDocuments(env), repo, { include_readme, refresh }))
     }
 
     if (url.pathname === '/api/compare') {
-      const repos = (url.searchParams.get('repos') || '').split(',')
+      const repos = stringParam(url.searchParams.get('repos'), { parameter: 'repos', minLength: 1, maxLength: (INPUT_LIMITS.repo * 5) + 4 }).split(',')
       const refresh = booleanParam(url.searchParams.get('refresh'))
+      if (refresh) {
+        const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+        if (limited)
+          return limited
+      }
       return okResponse(await compareRepositories(env, await researchDocuments(env), repos, { refresh }))
     }
 
@@ -274,19 +355,28 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/search') {
-      const q = url.searchParams.get('q') || ''
-      const category = optionalString(url.searchParams.get('category'))
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: INPUT_LIMITS.query })
+      const category = optionalString(url.searchParams.get('category'), { parameter: 'category', maxLength: INPUT_LIMITS.category })
       const scope = enumParam(url.searchParams.get('scope'), { parameter: 'scope', allowed: ['all', 'starred', 'rankings'], fallback: 'all' })
       const source = enumParam(url.searchParams.get('source'), { parameter: 'source', allowed: RESULT_SOURCES, fallback: undefined })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 10, min: 1, max: 20 })
       const explain = booleanParam(url.searchParams.get('explain'))
+      if (scope !== 'rankings') {
+        const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+        if (limited)
+          return limited
+      }
       const results = await performHybridSearch(env, q, { category, source, scope, limit, explain })
       return okResponse(results, { pretty: true })
     }
 
     if (url.pathname === '/api/trending') {
       const rankings = await getRankings(env)
-      const cat = url.searchParams.get('category') || 'overall_daily'
+      const cat = enumParam(url.searchParams.get('category'), {
+        parameter: 'category',
+        allowed: ['overall_daily', 'overall_weekly', 'rust_weekly', 'python_weekly', 'typescript_weekly', 'go_weekly', 'cpp_weekly', 'csharp_weekly', 'breakout_weekly'],
+        fallback: 'overall_daily',
+      })
       const list = cat === 'breakout_weekly' ? (rankings.breakoutWeekly || []) : (rankings.trending?.[cat] || [])
       return okResponse(list, { meta: communityFreshness(rankings) })
     }
@@ -304,14 +394,17 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/live') {
-      const q = url.searchParams.get('q') || ''
-      const language = optionalString(url.searchParams.get('language'))
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: INPUT_LIMITS.query })
+      const language = optionalString(url.searchParams.get('language'), { parameter: 'language', maxLength: INPUT_LIMITS.language })
       const minStars = intParam(url.searchParams.get('min_stars'), { parameter: 'min_stars', fallback: 15, min: 0 })
       const sort = enumParam(url.searchParams.get('sort'), { parameter: 'sort', allowed: ['stars', 'updated', 'forks'], fallback: 'stars' })
-      const since = optionalString(url.searchParams.get('since'))
-      const until = optionalString(url.searchParams.get('until'))
+      const order = enumParam(url.searchParams.get('order'), { parameter: 'order', allowed: ['desc', 'asc'], fallback: 'desc' })
+      const since = optionalString(url.searchParams.get('since'), { parameter: 'since', maxLength: INPUT_LIMITS.dateRange })
+      const until = optionalString(url.searchParams.get('until'), { parameter: 'until', maxLength: INPUT_LIMITS.dateRange })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 10, min: 1, max: 30 })
-      const persist = booleanParam(url.searchParams.get('persist'))
+      const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+      if (limited)
+        return limited
       let result
       try {
         result = await searchGithubLive(env, {
@@ -319,10 +412,10 @@ async function handleRequest(req, env, ctx) {
           language,
           minStars,
           sort,
+          order,
           since,
           until,
           limit,
-          persist,
         })
       }
       catch (e) {
@@ -335,13 +428,35 @@ async function handleRequest(req, env, ctx) {
       return okResponse(result, { pretty: true })
     }
 
+    if (url.pathname === '/api/capture' && req.method === 'POST') {
+      if (!canWrite)
+        return writeForbidden()
+      const limited = await restRateLimit(env.WRITE_RATE_LIMITER, 'write')
+      if (limited)
+        return limited
+      try {
+        const body = z.object(TOOL_DEFINITIONS.capture_github_discovery.inputSchema).parse(await readJsonBody(req, { limit: INGEST_BODY_LIMIT }))
+        return okResponse(await captureGithubDiscovery(env, body), { pretty: true })
+      }
+      catch (e) {
+        if (e instanceof PayloadTooLargeError)
+          return errorResponse('payload_too_large', e.message, 413)
+        if (e instanceof ProbeRequestError)
+          return errorResponse(e.code, e.message, e.status, { retryAfterSeconds: e.retryAfterSeconds })
+        return errorResponse('invalid_request', e.message, 400)
+      }
+    }
+
     if (url.pathname === '/api/code') {
-      const q = url.searchParams.get('q') || ''
-      const repo = optionalString(url.searchParams.get('repo'))
-      const language = optionalString(url.searchParams.get('language'))
-      const extension = optionalString(url.searchParams.get('extension'))
-      const path = optionalString(url.searchParams.get('path'))
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: INPUT_LIMITS.codeQuery })
+      const repo = optionalString(url.searchParams.get('repo'), { parameter: 'repo', maxLength: INPUT_LIMITS.repo })
+      const language = optionalString(url.searchParams.get('language'), { parameter: 'language', maxLength: INPUT_LIMITS.language })
+      const extension = optionalString(url.searchParams.get('extension'), { parameter: 'extension', maxLength: INPUT_LIMITS.extension })
+      const path = optionalString(url.searchParams.get('path'), { parameter: 'path', maxLength: INPUT_LIMITS.path })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 5, min: 1, max: 15 })
+      const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+      if (limited)
+        return limited
       const result = await searchGithubCode(env, {
         query: q,
         repo,
@@ -354,10 +469,13 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/web') {
-      const q = url.searchParams.get('q') || ''
-      const domain = optionalString(url.searchParams.get('domain'))
+      const q = stringParam(url.searchParams.get('q'), { parameter: 'q', fallback: '', maxLength: INPUT_LIMITS.query })
+      const domain = optionalString(url.searchParams.get('domain'), { parameter: 'domain', maxLength: INPUT_LIMITS.domain })
       const freshness = enumParam(url.searchParams.get('freshness'), { parameter: 'freshness', allowed: ['all', 'day', 'week', 'month', 'year'], fallback: 'all' })
       const limit = intParam(url.searchParams.get('limit'), { parameter: 'limit', fallback: 5, min: 1, max: 10 })
+      const limited = await restRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+      if (limited)
+        return limited
       const result = await searchWebTech(env, {
         query: q,
         domain,
@@ -368,6 +486,11 @@ async function handleRequest(req, env, ctx) {
     }
 
     if (url.pathname === '/api/ingest' && req.method === 'POST') {
+      if (!canWrite)
+        return writeForbidden()
+      const limited = await restRateLimit(env.WRITE_RATE_LIMITER, 'write')
+      if (limited)
+        return limited
       try {
         const body = z.object(TOOL_DEFINITIONS.star_and_ingest_repo.inputSchema).parse(await readJsonBody(req, { limit: INGEST_BODY_LIMIT }))
         const result = await starAndIngestRepo(env, body)
@@ -386,30 +509,64 @@ async function handleRequest(req, env, ctx) {
       }
     }
 
-    // Initialize MCP Server with global tool-selection instructions
-    // NOTE: instructions must live in the SECOND argument (ServerOptions), not
-    // in serverInfo — the SDK only reads options.instructions into
-    // InitializeResult (server/index.js: `_instructions = options?.instructions`).
+    // Initialize MCP Server with a deployer-selected capability profile. REST stays available;
+    // MCP_TOOLSET only changes what an MCP client can discover/call through listTools.
+    let activeToolset
+    try {
+      activeToolset = resolveToolset(env.MCP_TOOLSET)
+    }
+    catch (error) {
+      if (error instanceof ToolsetConfigError)
+        return errorResponse('server_misconfigured', error.message, 500)
+      throw error
+    }
+
+    const instructionLines = [
+      'Stars Radar is an open-source intelligence and GitHub stars retrieval cockpit.',
+      `Active MCP toolset: ${activeToolset.name} (${activeToolset.tools.size} tools).`,
+      'Core workflow:',
+      '  - search_github_stars: curated personal/ingested semantic retrieval.',
+      '  - get_repo_readme: repository metadata and README evidence.',
+      '  - compare_repositories: compact evidence comparison for 2–5 candidates.',
+      '  - list_categories / get_category_repos / list_starred_repos: browse the personal archive.',
+    ]
+    if (activeToolset.tools.has('search_github_live')) {
+      instructionLines.push(
+        'Open-world research:',
+        '  - search_github_live: read-only GitHub repository discovery.',
+        '  - search_github_code: concrete public code/API usage.',
+        '  - search_web_tech: broader technical web research.',
+        '  - get_trending_repos / get_top_skills / get_hellogithub_picks: cached community intelligence.',
+      )
+    }
+    if (activeToolset.tools.has('capture_github_discovery')) {
+      instructionLines.push(
+        'Explicit mutations (only on clear user intent):',
+        '  - capture_github_discovery: persist one selected discovery observation.',
+        '  - star_and_ingest_repo: star and graduate a repository into curated assets.',
+      )
+    }
+    instructionLines.push('Context management: prefer limit=5..10 and minimal fields to protect the context window.')
+
+    // NOTE: instructions must live in the SECOND argument (ServerOptions), not serverInfo.
     const server = new McpServer(
-      { name: 'Stars Radar MCP', version: '1.0.0' },
-      {
-        instructions: [
-          'Stars Radar is an open-source intelligence and GitHub stars retrieval cockpit.',
-          'Choose a tool by the task:',
-          '  1. search_github_stars: Curated high-trust anchor (your personal stars + ingested tools). Use when looking for the user\'s own saved tools or vetted solutions.',
-          '  2. search_github_live: Open-world GitHub explorer. Use when looking for newly born, trending, or unstarred tools across GitHub.',
-          '  3. search_github_code: Public repository code and API usage snippets.',
-          '  4. search_web_tech: Technical documentation, blogs, and forums beyond GitHub.',
-          '  5. star_and_ingest_repo: Graduate discoveries from search_github_live into permanent curated stars (only upon user confirmation).',
-          'Context management: prefer limit=5..10 and minimal fields to protect the context window.',
-        ].join('\n'),
-      },
+      { name: 'Stars Radar MCP', version: VERSION },
+      { instructions: instructionLines.join('\n') },
     )
-    server.registerTool(
+    const registerTool = (name, config, handler) => {
+      if (activeToolset.tools.has(name))
+        server.registerTool(name, config, handler)
+    }
+    registerTool(
       TOOL_DEFINITIONS.search_github_stars.name,
       { description: TOOL_DEFINITIONS.search_github_stars.description, inputSchema: TOOL_DEFINITIONS.search_github_stars.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_stars.readOnly } },
       async ({ query, category, source, scope = 'all', limit = 5, min_score = 0.25, explain = false }) => {
         try {
+          if (scope !== 'rankings') {
+            const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+            if (limited)
+              return limited
+          }
           const results = await performHybridSearch(env, query, { category, source, scope, limit, min_score, explain })
           return {
             content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
@@ -423,11 +580,16 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_repo_readme.name,
       { description: TOOL_DEFINITIONS.get_repo_readme.description, inputSchema: TOOL_DEFINITIONS.get_repo_readme.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_repo_readme.readOnly } },
       async ({ repo, include_readme = true, refresh = false }) => {
         try {
+          if (refresh) {
+            const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+            if (limited)
+              return limited
+          }
           const result = await getRepositoryDetails(env, await researchDocuments(env), repo, { include_readme, refresh })
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
         }
@@ -437,11 +599,16 @@ async function handleRequest(req, env, ctx) {
       },
     )
 
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.compare_repositories.name,
       { description: TOOL_DEFINITIONS.compare_repositories.description, inputSchema: TOOL_DEFINITIONS.compare_repositories.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.compare_repositories.readOnly } },
       async ({ repos, refresh = false }) => {
         try {
+          if (refresh) {
+            const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+            if (limited)
+              return limited
+          }
           const result = await compareRepositories(env, await researchDocuments(env), repos, { refresh })
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
         }
@@ -450,7 +617,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_trending_repos.name,
       { description: TOOL_DEFINITIONS.get_trending_repos.description, inputSchema: TOOL_DEFINITIONS.get_trending_repos.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_trending_repos.readOnly } },
       async ({ category = 'overall_daily', limit = 10 }) => {
@@ -495,12 +662,15 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.search_github_live.name,
       { description: TOOL_DEFINITIONS.search_github_live.description, inputSchema: TOOL_DEFINITIONS.search_github_live.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_live.readOnly } },
-      async ({ query, language, min_stars = 15, sort = 'stars', order = 'desc', since, until, limit = 10, persist = false }) => {
+      async ({ query, language, min_stars = 15, sort = 'stars', order = 'desc', since, until, limit = 10 }) => {
         try {
-          const result = await searchGithubLive(env, { query, language, minStars: min_stars, sort, order, since, until, limit, persist })
+          const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+          if (limited)
+            return limited
+          const result = await searchGithubLive(env, { query, language, minStars: min_stars, sort, order, since, until, limit })
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           }
@@ -515,11 +685,34 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
+      TOOL_DEFINITIONS.capture_github_discovery.name,
+      { description: TOOL_DEFINITIONS.capture_github_discovery.description, inputSchema: TOOL_DEFINITIONS.capture_github_discovery.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.capture_github_discovery.readOnly } },
+      async ({ repo, query }) => {
+        if (!canWrite)
+          return writeToolFailure()
+        const limited = await toolRateLimit(env.WRITE_RATE_LIMITER, 'write')
+        if (limited)
+          return limited
+        try {
+          const result = await captureGithubDiscovery(env, { repo, query })
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+        }
+        catch (err) {
+          if (err instanceof ProbeRequestError)
+            return probeToolFailure(err)
+          return { isError: true, content: [{ type: 'text', text: `Discovery capture failed: ${err.message || String(err)}` }] }
+        }
+      },
+    )
+    registerTool(
       TOOL_DEFINITIONS.search_github_code.name,
       { description: TOOL_DEFINITIONS.search_github_code.description, inputSchema: TOOL_DEFINITIONS.search_github_code.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_github_code.readOnly } },
       async ({ query, repo, language, extension, path: filePath, limit = 5 }) => {
         try {
+          const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+          if (limited)
+            return limited
           const result = await searchGithubCode(env, { query, repo, language, extension, path: filePath, limit })
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
@@ -535,11 +728,14 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.search_web_tech.name,
       { description: TOOL_DEFINITIONS.search_web_tech.description, inputSchema: TOOL_DEFINITIONS.search_web_tech.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.search_web_tech.readOnly } },
       async ({ query, domain, freshness = 'all', limit = 5 }) => {
         try {
+          const limited = await toolRateLimit(env.EXPENSIVE_RATE_LIMITER, 'expensive')
+          if (limited)
+            return limited
           const result = await searchWebTech(env, { query, domain, freshness, limit })
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
@@ -555,10 +751,15 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.star_and_ingest_repo.name,
       { description: TOOL_DEFINITIONS.star_and_ingest_repo.description, inputSchema: TOOL_DEFINITIONS.star_and_ingest_repo.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.star_and_ingest_repo.readOnly } },
       async ({ repo, reason, categories = DEFAULT_INGEST_CATEGORIES }) => {
+        if (!canWrite)
+          return writeToolFailure()
+        const limited = await toolRateLimit(env.WRITE_RATE_LIMITER, 'write')
+        if (limited)
+          return limited
         try {
           const result = await starAndIngestRepo(env, { repo, reason, categories })
           return {
@@ -573,7 +774,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_top_skills.name,
       { description: TOOL_DEFINITIONS.get_top_skills.description, inputSchema: TOOL_DEFINITIONS.get_top_skills.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_top_skills.readOnly } },
       async ({ type = 'all', limit = 20 }) => {
@@ -622,7 +823,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_hellogithub_picks.name,
       { description: TOOL_DEFINITIONS.get_hellogithub_picks.description, inputSchema: TOOL_DEFINITIONS.get_hellogithub_picks.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_hellogithub_picks.readOnly } },
       async ({ category, limit = 10 }) => {
@@ -653,7 +854,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.list_categories.name,
       { description: TOOL_DEFINITIONS.list_categories.description, inputSchema: TOOL_DEFINITIONS.list_categories.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.list_categories.readOnly } },
       async () => {
@@ -678,7 +879,7 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_category_repos.name,
       { description: TOOL_DEFINITIONS.get_category_repos.description, inputSchema: TOOL_DEFINITIONS.get_category_repos.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_category_repos.readOnly } },
       async ({ category, limit = 25 }) => {
@@ -724,14 +925,12 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.list_starred_repos.name,
       { description: TOOL_DEFINITIONS.list_starred_repos.description, inputSchema: TOOL_DEFINITIONS.list_starred_repos.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.list_starred_repos.readOnly } },
       async ({ limit = 20, cursor }) => {
         try {
-          // Pagination lives in the tested module: `R2.list` limits every object, not the
-          // READMEs, so a single page can be all JSON state and look like an empty library.
-          const result = await listReadmePage(env.R2, { limit, cursor }, MAX_LIST_PAGES)
+          const result = await listReadmePage(await getReadmeManifest(env), { limit, cursor })
 
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
@@ -745,28 +944,43 @@ async function handleRequest(req, env, ctx) {
         }
       },
     )
-    server.registerTool(
+    registerTool(
       TOOL_DEFINITIONS.get_radar_status.name,
       { description: TOOL_DEFINITIONS.get_radar_status.description, inputSchema: TOOL_DEFINITIONS.get_radar_status.inputSchema, annotations: { readOnlyHint: TOOL_DEFINITIONS.get_radar_status.readOnly } },
       async () => {
         try {
-          const [catalog, rankings, vectors, harvested] = await Promise.all([
+          const [generation, catalog, rankings, readmes, vectors, harvested] = await Promise.all([
+            getDataGeneration(env),
             getCatalog(env),
             getRankings(env),
+            getReadmeManifest(env),
             getVectors(env),
             getHarvested(env),
           ])
-          const vectorNames = vectors?.names || []
+          const vectorRecords = vectors?.records || []
           return {
             content: [{
               type: 'text',
               text: JSON.stringify({
                 workspace: 'Stars Radar',
-                version: '1.0.0',
+                version: VERSION,
+                data_generation: generation.id
+                  ? { id: generation.id, published_at: generation.published_at, commit: generation.commit }
+                  : null,
                 total_starred: Object.keys(catalog.repos || {}).length,
-                vector_db_capacity: vectorNames.length,
+                vector_db_capacity: vectorRecords.length,
+                repo_vector_count: vectorRecords.filter(record => record.kind === 'repo').length,
+                readme_chunk_vector_count: vectorRecords.filter(record => record.kind === 'readme_chunk').length,
+                readme_refs: Object.keys(readmes.repos || {}).length,
                 vector_dimensions: DIMS,
                 vector_model: EMBEDDING_MODEL,
+                vector_input_profile: vectors.inputProfile || null,
+                rate_limits: rateLimitStatus(env),
+                mcp_toolset: {
+                  name: activeToolset.name,
+                  tool_count: activeToolset.tools.size,
+                  write_tools_exposed: activeToolset.tools.has('capture_github_discovery'),
+                },
                 intent_domains: Object.keys(defaultIntents || {}).length,
                 community_layers: {
                   trending_categories: Object.keys(rankings.trending || {}).length,
@@ -802,8 +1016,70 @@ async function handleRequest(req, env, ctx) {
 
 // True BAAI/bge-m3 1024-Dim Vectors + Intent & Subject Anchoring Hybrid Engine
 async function researchDocuments(env) {
-  const [catalog, assetIndex, harvested] = await Promise.all([getCatalog(env), getAssetIndex(env), getHarvested(env)])
-  return { catalog, assetIndex, harvested }
+  const [catalog, assetIndex, harvested, readmes] = await Promise.all([
+    getCatalog(env),
+    getAssetIndex(env),
+    getHarvested(env),
+    getReadmeManifest(env),
+  ])
+  return { catalog, assetIndex, harvested, readmes }
+}
+
+async function attachReadmeEvidence(env, results, query) {
+  const manifest = await getReadmeManifest(env)
+
+  // Binding semantic README evidence to immutable generation identity is cheap: it only consults
+  // the already-loaded manifest, so every returned result gets complete provenance. Blob reads and
+  // literal snippet expansion remain capped to the top-N results below.
+  bindResultReadmeEvidence(results, manifest)
+
+  const candidates = results
+    .slice(0, README_EVIDENCE_MAX_RESULTS)
+    .filter(result => /^[\w.-]+\/[\w.-]+$/.test(result.repo || ''))
+
+  await Promise.all(candidates.map(async (result) => {
+    const ref = manifest.repos?.[result.repo.toLowerCase()]
+
+    const readmeState = {
+      status: ref?.status === 'unavailable' ? 'unavailable' : (ref?.status === 'absent' ? 'absent' : 'missing'),
+      generation_id: manifest.generation?.id || null,
+      readme_sha256: ref?.sha256 || null,
+      literal_hits: 0,
+    }
+    try {
+      if (ref?.sha256) {
+        const object = await env.R2.get(readmeBlobKey(ref.sha256))
+        if (object) {
+          readmeState.status = ref.status === 'stale' ? 'stale' : 'ok'
+          const hits = findReadmeEvidence(await object.text(), query, defaultIntents)
+          readmeState.literal_hits = hits.length
+          result.evidence.push(...hits.map(hit => buildReadmeEvidence({
+            kind: 'readme_literal',
+            repo: result.repo,
+            chunkId: `literal:${ref.sha256}:${hit.section_ordinal}:${hit.section_chunk_ordinal}`,
+            ordinal: hit.section_ordinal,
+            chunkOrdinal: hit.section_chunk_ordinal,
+            heading: hit.heading,
+            headingPath: hit.heading_path,
+            snippet: hit.snippet,
+            keywordWeight: hit.keyword_weight,
+            matchedTokens: hit.matched_tokens,
+            matchedSubjects: hit.matched_subjects,
+            matchedIntents: hit.matched_intents,
+            ref,
+            generation: manifest.generation,
+          })))
+        }
+      }
+    }
+    catch (error) {
+      readmeState.status = 'unavailable'
+      console.warn(`[README evidence] Could not read ${result.repo}: ${error.message || String(error)}`)
+    }
+    result.evidence_state = { readme: readmeState }
+  }))
+
+  return results
 }
 
 async function performHybridSearch(env, query, options = {}) {
@@ -813,15 +1089,16 @@ async function performHybridSearch(env, query, options = {}) {
     getAssetIndex(env),
     getHarvested(env),
   ])
-  let vectors = { values: null, names: null }
+  let vectors = { values: null, norms: null, records: null }
   let queryVector = null
   if (options.scope !== 'rankings') {
     const loaded = await getVectors(env)
-    vectors = { values: loaded.vectors, names: loaded.names }
-    if (vectors.values && vectors.names?.length > 0)
+    vectors = { values: loaded.vectors, norms: loaded.norms, records: loaded.records }
+    if (vectors.values && vectors.records?.length > 0 && !hasHardRequirements(query, defaultIntents))
       queryVector = await getQueryEmbedding(query, env)
   }
-  return searchDocuments({ catalog, rankings, assetIndex, harvested, vectors, queryVector, intents: defaultIntents }, query, options)
+  const results = searchDocuments({ catalog, rankings, assetIndex, harvested, vectors, queryVector, intents: defaultIntents }, query, options)
+  return options.explain ? attachReadmeEvidence(env, results, query) : results
 }
 
 async function starAndIngestRepo(env, { repo, reason, categories = DEFAULT_INGEST_CATEGORIES } = {}) {
@@ -898,7 +1175,6 @@ async function starAndIngestRepo(env, { repo, reason, categories = DEFAULT_INGES
     language: repoData.language || '',
     categories,
     reason: reason || `Ingested via Stars Radar on ${new Date().toISOString().slice(0, 10)}`,
-    summary: repoData.description || '',
     topics: repoData.topics || [],
     created_at: repoData.created_at,
     pushed_at: repoData.pushed_at,
