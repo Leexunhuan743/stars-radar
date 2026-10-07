@@ -67,12 +67,6 @@ jobs:
           console.log(`Production Worker auth secrets present: ${required.join(', ')}`)
           NODE
 
-      - name: Skip production smoke check when not configured
-        if: ${{ env.WORKER_URL == '' || env.MCP_API_KEY == '' }}
-        run: |
-          echo "::warning::Post-deploy smoke check skipped because WORKER_URL or GitHub MCP_API_KEY is not configured."
-          echo "::warning::Deployment itself and Worker-side MCP_API_KEY/MCP_WRITE_API_KEY bindings were still validated."
-
       - name: Validate active v3 data generation before deploy
         run: node scripts/validate_remote_generation.js --active
 
@@ -99,3 +93,10 @@ jobs:
             throw new Error('Production has no active data generation.')
           console.log(`Production healthy: v${health.version}, generation ${health.dataGeneration.id}`)
           NODE
+
+      - name: Skip production smoke check when not configured
+        if: ${{ env.WORKER_URL == '' || env.MCP_API_KEY == '' }}
+        run: |
+          echo "::warning::Post-deploy smoke check skipped because WORKER_URL or GitHub MCP_API_KEY is not configured."
+          echo "::warning::Deployment itself and Worker-side MCP_API_KEY/MCP_WRITE_API_KEY bindings were still validated."
+
