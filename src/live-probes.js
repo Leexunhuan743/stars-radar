@@ -2,11 +2,12 @@ import { appendJsonLines } from './append-store.js'
 import { buildCommunityIndex } from './community-index.js'
 import { parseDateRange } from './date-range.js'
 import { getCatalog, getHarvested, getRankings } from './documents.js'
+import { EVIDENCE_TRUST } from './evidence.js'
 import { buildRepositoryQuery } from './github-query.js'
 import { enrichLiveResults } from './live-results.js'
 import { PROBE_CAPTURE_PREFIX } from './object-keys.js'
-import { buildProbeCaptures, PROBE_MAX_CAPTURES, PROBE_MIN_STARS } from './probe-capture.js'
-import { ProbeRequestError, readGithubSearch, requestProbe } from './probe-errors.js'
+import { buildProbeCaptures, PROBE_MIN_STARS } from './probe-capture.js'
+import { githubFailure, ProbeRequestError, readGithubSearch, requestProbe } from './probe-errors.js'
 
 export async function searchGithubLive(env, {
   query = '',
@@ -17,7 +18,6 @@ export async function searchGithubLive(env, {
   since,
   until,
   limit = 10,
-  persist = false,
 } = {}, { fetcher = fetch } = {}) {
   const catalog = await getCatalog(env)
   const reposCatalog = catalog.repos || {}
@@ -50,32 +50,6 @@ export async function searchGithubLive(env, {
 
   const enriched = enrichLiveResults(items, { reposCatalog, communityIndex: communitySet })
 
-  // 开集探测沉淀: persist=true 时, 把满足预过滤的发现项捕获到 R2 state/probe-captures/<key>.jsonl
-  // (每次响应一个新 key, 由 CI 的 asset_store 合并; 探针命中永不自动进向量库)
-  //
-  // 这里以前写的是一个按日共享的 probes/<date>.jsonl, 读出来拼接再整体写回 —— 同一天两个
-  // isolate 同时捕获就会互相覆盖。改成每次一个新对象后, 捕获之间不可能冲突。
-  // 预过滤规则本身在 src/probe-capture.js（纯函数，可测）。
-  //
-  // 结果里如实报告捕获了几条：`persist=true` 是调用方的一个请求，只说"我记下了"而没有任何
-  // 可核对的字段，就等于让调用方凭信任相信一次副作用发生了（捕获失败只写 console.warn，
-  // 线上的调用方看不到）。
-  let capture = null
-  if (persist && enriched.length > 0) {
-    const captures = buildProbeCaptures(enriched, { query: query || githubQuery })
-    if (captures.length > 0) {
-      try {
-        capture = { captured: captures.length, capture_key: await appendJsonLines(env, PROBE_CAPTURE_PREFIX, captures) }
-      }
-      catch (e) {
-        capture = { captured: 0, capture_error: e.message || String(e) }
-      }
-    }
-    else {
-      capture = { captured: 0, capture_skipped: `no discovery met the capture rule (>=${PROBE_MIN_STARS} stars, described, top ${PROBE_MAX_CAPTURES})` }
-    }
-  }
-
   return {
     source: 'github_live_search',
     query: githubQuery,
@@ -83,7 +57,77 @@ export async function searchGithubLive(env, {
     ...(typeof data.incomplete_results === 'boolean' ? { incomplete_results: data.incomplete_results } : {}),
     returned: enriched.length,
     repos: enriched,
-    ...(capture ? { capture } : {}),
+  }
+}
+
+export async function captureGithubDiscovery(env, {
+  repo,
+  query,
+} = {}, { fetcher = fetch } = {}) {
+  let cleanRepo = String(repo || '').trim()
+  cleanRepo = cleanRepo.replace(/^https?:\/\/github\.com\//i, '')
+  cleanRepo = cleanRepo.replace(/\.git$/i, '')
+  cleanRepo = cleanRepo.replace(/\/$/, '')
+  const cleanQuery = String(query || '').trim()
+
+  if (!/^[\w.-]+\/[\w.-]+$/.test(cleanRepo) || cleanRepo.split('/').some(part => part === '.' || part === '..'))
+    throw new ProbeRequestError('invalid_repo', 'Discovery capture requires a repository in owner/repo format.', 400)
+  if (!cleanQuery)
+    throw new ProbeRequestError('invalid_query', 'Discovery capture requires the originating search query.', 400)
+
+  const headers = {
+    'User-Agent': 'Stars-Radar-MCP',
+    'Accept': 'application/vnd.github+json',
+  }
+  if (env.GITHUB_TOKEN)
+    headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`
+
+  const operation = 'GitHub discovery capture'
+  const encodedRepo = cleanRepo.split('/').map(encodeURIComponent).join('/')
+  const response = await requestProbe(
+    `https://api.github.com/repos/${encodedRepo}`,
+    { headers, signal: AbortSignal.timeout(10000) },
+    fetcher,
+    operation,
+  )
+  if (!response.ok)
+    throw githubFailure(response, operation)
+
+  let data
+  try {
+    data = await response.json()
+  }
+  catch (error) {
+    throw new ProbeRequestError('invalid_upstream_response', `${operation}: GitHub returned invalid JSON (${error.message}).`)
+  }
+  if (typeof data?.full_name !== 'string' || !Number.isFinite(data.stargazers_count))
+    throw new ProbeRequestError('invalid_upstream_response', `${operation}: GitHub repository metadata is incomplete.`)
+
+  const [capture] = buildProbeCaptures([{
+    repo: data.full_name,
+    url: data.html_url,
+    stars: data.stargazers_count,
+    description: data.description || '',
+    language: data.language || '',
+    topics: data.topics || [],
+    created_at: data.created_at,
+    pushed_at: data.pushed_at,
+  }], { query: cleanQuery })
+
+  if (!capture) {
+    return {
+      captured: 0,
+      repo: data.full_name,
+      capture_skipped: `repository does not meet the capture rule (>=${PROBE_MIN_STARS} stars and non-empty description)`,
+    }
+  }
+
+  try {
+    const captureKey = await appendJsonLines(env, PROBE_CAPTURE_PREFIX, [capture])
+    return { captured: 1, repo: data.full_name, query: cleanQuery, capture_key: captureKey }
+  }
+  catch (error) {
+    throw new ProbeRequestError('capture_failed', `Could not append discovery capture: ${error.message || String(error)}`, 503)
   }
 }
 
@@ -147,6 +191,7 @@ export async function searchGithubCode(env, {
       url: htmlUrl,
       language: ext,
       snippet: fragment ? `\`\`\`${ext}\n${fragment}\n\`\`\`` : '(No snippet fragment returned)',
+      trust: EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
     }
   })
 
@@ -202,6 +247,7 @@ export async function searchWebTech(env, {
           title: r.title?.replace(/<[^>]+>/g, '').trim(),
           url: r.url,
           snippet: r.description?.replace(/<[^>]+>/g, '').trim() || '',
+          trust: EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
           source: 'brave_search',
         }))
         return {
@@ -242,6 +288,7 @@ export async function searchWebTech(env, {
           title: r.title,
           url: r.url,
           snippet: r.content || '',
+          trust: EVIDENCE_TRUST.EXTERNAL_UNTRUSTED,
           source: 'tavily_search',
         }))
         return {
@@ -258,58 +305,9 @@ export async function searchWebTech(env, {
     }
   }
 
-  // 3. Keyless Fallback: DuckDuckGo HTML parser
-  try {
-    const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(fullQuery)}`
-    const resp = await fetcher(ddgUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(6000),
-    })
-    if (resp.ok) {
-      const html = await resp.text()
-      const items = []
-      const regex = /<h2 class="result__title">[\s\S]*?<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g
-      let match = regex.exec(html)
-      while (match !== null && items.length < limit) {
-        let rawUrl = match[1]
-        const mUddg = rawUrl.match(/uddg=([^&]+)/)
-        if (mUddg)
-          rawUrl = decodeURIComponent(mUddg[1])
-        // Skip sponsored/ad results: DuckDuckGo routes ads through its y.js click
-        // tracker carrying ad_domain / ad_type / ad_provider params, instead of the
-        // uddg= organic redirect. They match the same result__a markup but are not
-        // organic web results, so drop them.
-        const isAd = /duckduckgo\.com\/y\.js/.test(rawUrl)
-          || /[?&](?:ad_domain|ad_type|ad_provider)=/.test(rawUrl)
-        if (!isAd) {
-          const title = match[2].replace(/<[^>]+>/g, '').trim()
-          const snippet = match[3].replace(/<[^>]+>/g, '').trim()
-          items.push({
-            rank: items.length + 1,
-            title,
-            url: rawUrl,
-            snippet,
-            source: 'duckduckgo_html',
-          })
-        }
-        match = regex.exec(html)
-      }
-      if (items.length > 0 || /<(?:div|p)[^>]*class=["'][^"']*\bno-results\b/i.test(html)) {
-        return {
-          provider: 'duckduckgo_html (keyless)',
-          freshness_applied: false,
-          query: fullQuery,
-          count: items.length,
-          results: items,
-        }
-      }
-    }
-  }
-  catch (e) {
-    console.warn('DuckDuckGo HTML fallback failed:', e.message)
-  }
-
-  throw new ProbeRequestError('search_unavailable', 'All configured web search providers failed or the keyless response could not be parsed. Configure BRAVE_SEARCH_API_KEY or TAVILY_API_KEY, or retry.', 503)
+  throw new ProbeRequestError(
+    'search_unavailable',
+    'No configured web search provider succeeded. Configure BRAVE_SEARCH_API_KEY or TAVILY_API_KEY and retry.',
+    503,
+  )
 }
